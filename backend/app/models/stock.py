@@ -1,0 +1,34 @@
+from __future__ import annotations
+
+from datetime import datetime
+
+from sqlalchemy import DateTime, Integer, String
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from ..db.base import Base
+
+
+class WatchedStock(Base):
+    __tablename__ = "watched_stocks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    symbol: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    display_name: Mapped[str] = mapped_column(String(80))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
+
+    analyses = relationship("AnalysisHistory", back_populates="stock", cascade="all, delete-orphan")
+    backtests = relationship("BacktestHistory", back_populates="stock", cascade="all, delete-orphan")
+
+class StockMaster(Base):
+    __tablename__ = "stocks_master"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    symbol: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    company_name: Mapped[str] = mapped_column(String(128), nullable=True)
+    sector: Mapped[str] = mapped_column(String(128), nullable=True)
+    series: Mapped[str] = mapped_column(String(16), nullable=True)
+    isin: Mapped[str] = mapped_column(String(32), nullable=True)
+    universe: Mapped[str] = mapped_column(String(32), nullable=True, index=True)
+    is_active: Mapped[bool] = mapped_column(default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)

@@ -1,0 +1,650 @@
+export type AnalysisMode = "intraday" | "swing" | "both";
+
+export type ThemeMode = "dark" | "light";
+
+export type DetailTab = "research" | "overview" | "technicals" | "trade-plan" | "news" | "backtest" | "chart";
+
+export type SignalFilter = "ALL" | "BUY" | "WATCH" | "REJECT";
+
+export type SortKey = "rank" | "score" | "confidence" | "riskReward";
+
+export type TimeframeConfig = {
+  intraday: string;
+  swing: string;
+  lookback_window: number;
+};
+
+export type OHLCVPoint = {
+  timestamp: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+};
+
+export type TechnicalAnalysisResult = {
+  mode: AnalysisMode;
+  signal: string;
+  score: number;
+  indicators: Record<string, string | number | boolean>;
+  summary: string;
+};
+
+export type ArticleItem = {
+  title: string;
+  description: string;
+  source: string;
+  url: string;
+  published_at: string;
+  sentiment_score: number;
+};
+
+export type BacktestEquityPoint = {
+  label: string;
+  equity: number;
+};
+
+export type BacktestResult = {
+  mode: AnalysisMode;
+  strategy_name: string;
+  total_return: number;
+  cagr: number;
+  max_drawdown: number;
+  win_rate: number;
+  profit_factor: number;
+  trade_count: number;
+  verdict: string;
+  equity_curve: BacktestEquityPoint[];
+  // Extended
+  trades?: { entry_date: string; exit_date: string; entry_price: number; exit_price: number; pnl_percent: number }[];
+  monthly_returns?: { month: string; return: number }[];
+  sharpe_ratio?: number;
+  best_trade?: { entry_date: string; exit_date: string; entry_price: number; exit_price: number; pnl_percent: number } | null;
+  worst_trade?: { entry_date: string; exit_date: string; entry_price: number; exit_price: number; pnl_percent: number } | null;
+};
+
+export type RecommendationReasoning = {
+  bullets: string[];
+  risk_factors: string[];
+  invalidation_signals: string[];
+};
+
+export type TradePlan = {
+  mode: AnalysisMode;
+  strategy_name: string;
+  setup_type: string;
+  timeframe: string;
+  bias: string;
+  entry_low: number;
+  entry_high: number;
+  stop_loss: number;
+  target_1: number;
+  target_2: number;
+  target_3?: number | null;
+  risk_reward_ratio: number;
+  notes: string;
+  partial_exit?: string | null;
+  suggested_holding_days?: number | null;
+  trailing_stop_atr_multiplier?: number | null;
+};
+
+export type FinalRecommendation = {
+  action: string;
+  confidence: number;
+  score: number;
+  reasoning: RecommendationReasoning;
+  trade_plans: TradePlan[];
+  summary: string;
+};
+
+export type StockAnalysisResult = {
+  symbol: string;
+  ohlcv: OHLCVPoint[];
+  technical: TechnicalAnalysisResult[];
+  news_articles: ArticleItem[];
+  news_summary: string;
+  news_sentiment_label: string;
+  news_sentiment_score: number;
+  backtests: BacktestResult[];
+  recommendation: FinalRecommendation;
+  disclaimer: string;
+  data_source?: string;
+  data_quality?: Record<string, string | number | boolean>;
+  trade_readiness?: string;
+  confidence_breakdown?: Record<string, string | number>;
+  year52_high?: number | null;
+  year52_low?: number | null;
+  company_name?: string | null;
+  company_description?: string | null;
+  sector?: string | null;
+  industry?: string | null;
+  market_cap?: number | null;
+  corporate_events?: Record<string, string> | null;
+  social_sentiment_score?: number | null;
+  /** Optional lab engines block (RE-001). Production recommendation remains authoritative. */
+  lab_engines?: Record<string, Record<string, unknown>> | null;
+};
+
+export type RankingItem = {
+  rank: number;
+  symbol: string;
+  overall_score: number;
+  recommendation: string;
+  best_for_mode?: string | null;
+};
+
+export type RankingsResponse = {
+  rankings: RankingItem[];
+  buy_rankings: RankingItem[];
+  watch_rankings: RankingItem[];
+  best_intraday_candidate?: string | null;
+  best_swing_candidate?: string | null;
+  disclaimer: string;
+};
+
+export type FullAnalysisResponse = {
+  items: StockAnalysisResult[];
+  rankings: RankingsResponse;
+  disclaimer: string;
+  generated_at: string;
+};
+
+export type ScreenerConditionResult = {
+  symbol: string;
+  close: number;
+  ema_20: number;
+  ema_50?: number;
+  ema50_available?: boolean;
+  ema20_above_ema50?: boolean;
+  sma_30: number;
+  sma_50: number;
+  sma_100: number;
+  sma_200: number;
+  macd: number;
+  macd_signal: number;
+  supertrend: number;
+  volume: number;
+  previous_volume: number;
+  screener_score: number;
+  technical_signal: string;
+  technical_score: number;
+  conditions: Record<string, boolean>;
+  matched: boolean;
+};
+
+export type ScreenerStageSummary = {
+  stage_name: string;
+  source_universe_size: number;
+  unique_symbols_scanned: number;
+  duplicate_symbols_skipped: number;
+  matched_symbols: number;
+  shortlisted_symbols: number;
+  buy_candidate_symbols: string[];
+  watch_candidate_symbols: string[];
+  stopped_here: boolean;
+};
+
+export type ScreenerResponse = {
+  scanned_symbols: number;
+  screener_name: string;
+  data_valid_symbols: string[];
+  eligible_symbols: string[];
+  shortlisted_symbols: string[];
+  buy_candidate_symbols: string[];
+  watch_candidate_symbols: string[];
+  matched_symbols: string[];
+  matches: ScreenerConditionResult[];
+  all_analyzed_stocks?: ScreenerConditionResult[];
+  analysis?: FullAnalysisResponse | null;
+  disclaimer: string;
+  data_source?: string;
+  data_warning?: string | null;
+  market_context?: Record<string, string | number | boolean>;
+  scan_stages?: ScreenerStageSummary[];
+  stopped_at_stage?: string | null;
+  duplicate_symbols_skipped?: number;
+  scanned_at?: string;
+  last_scan_completed_at?: string;
+};
+
+export type CandidateRow = {
+  rank: number | null;
+  symbol: string;
+  signal: "BUY" | "WATCH" | "REJECT";
+  /** Composite recommendation score; null when full analysis did not complete. */
+  score: number | null;
+  confidence: number | null;
+  entryLow: number | null;
+  entryHigh: number | null;
+  stopLoss: number | null;
+  target1: number | null;
+  target2: number | null;
+  riskReward: number | null;
+  /** True when analysis failed and fields should render as N/A. */
+  analysisFailed?: boolean;
+  trend: string;
+  momentum: string;
+  volume: string;
+  newsSentiment: string;
+  lastUpdated: string | null;
+  tradeReadiness: string;
+  recommendationSummary: string;
+  analysisItem?: StockAnalysisResult;
+  screenerMatch?: ScreenerConditionResult;
+};
+
+export type DashboardFilters = {
+  signal: SignalFilter;
+  search: string;
+  scoreRange: [number, number];
+  sortBy: SortKey;
+  onlyHighConfidence: boolean;
+};
+
+export type MainAppView =
+  | "home"
+  | "markets"
+  | "scanner"
+  | "watchlist"
+  | "paper-trading"
+  | "performance"
+  | "logs"
+  | "central_command"
+  | "profile";
+
+export type ScanHistoryItem = {
+  id: string;
+  generated_at: string;
+  screener_name: string;
+  scanned_symbols: number;
+  shortlisted_count: number;
+  buy_symbols: string[];
+  watch_symbols: string[];
+  data_source?: string;
+  data_warning?: string | null;
+};
+
+/** Full paper account capital (dashboard.account + /account/summary). */
+export type PaperAccountSummary = {
+  account_id: number;
+  account_name: string;
+  base_currency: string;
+  starting_balance: number;
+  balance: number;
+  /** Alias of balance (cash_balance column). */
+  cash_balance?: number;
+  equity: number;
+  realized_pnl: number;
+  unrealized_pnl: number;
+  total_invested: number;
+  reserved_cash: number;
+  /** Cash available to buy after pending-order reservations. Source of truth. */
+  available_cash: number;
+  /** Alias of available_cash for widget consumers. */
+  available_funds?: number;
+  total_capital?: number;
+  invested_value?: number;
+  total_pnl?: number;
+  daily_pnl?: number;
+  daily_pnl_pct?: number;
+  open_positions_count: number;
+  open_orders_count: number;
+  max_risk_per_trade: number;
+  updated_at: string;
+};
+
+export type PaperPosition = {
+  id: number;
+  symbol: string;
+  side: "LONG" | "SHORT";
+  qty: number;
+  avg_entry_price: number;
+  average_price: number;
+  current_price: number;
+  unrealized_pnl: number;
+  unrealized_pnl_percent: number;
+  invested_value: number;
+  stop_loss?: number | null;
+  target?: number | null;
+  lifecycle_state?: string;
+  monitor_enabled?: boolean;
+  paused_reason?: string | null;
+  risk_reward_ratio?: number | null;
+  source_signal?: string | null;
+  source_score?: number | null;
+  source_confidence?: number | null;
+  price_source?: "FYERS_QUOTE" | "CANDLE_FALLBACK" | "NO_DATA" | null;
+  price_fetched_at?: string | null;
+  is_price_stale?: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type PaperOrderStatus =
+  | "PENDING"
+  | "PENDING_MARKET_OPEN"
+  | "OPEN"
+  | "EXECUTED"
+  | "FILLED"
+  | "PARTIALLY_EXECUTED"
+  | "CANCELLED"
+  | "REJECTED";
+
+export type PaperOrder = {
+  id: number;
+  symbol: string;
+  side: "BUY" | "SELL";
+  type: "MARKET" | "LIMIT" | "STOP" | "STOP_LIMIT" | "GTT";
+  product_type?: "MIS" | "CNC" | "NRML";
+  qty: number;
+  price?: number | null;
+  stop_price?: number | null;
+  stop_loss?: number | null;
+  target?: number | null;
+  status: PaperOrderStatus;
+  lifecycle_state?:
+    | "PENDING_ENTRY"
+    | "PENDING_MARKET_OPEN"
+    | "ENTRY_FILLED"
+    | "OPEN_POSITION"
+    | "EXIT_FILLED"
+    | "CANCELLED"
+    | "TOKEN_EXPIRED_PAUSED"
+    | "ERROR_RETRYING";
+  requested_entry_price?: number | null;
+  execution_price?: number | null;
+  monitor_enabled?: boolean;
+  paused_reason?: string | null;
+  notes?: string | null;
+  source_signal?: string | null;
+  source_score?: number | null;
+  source_confidence?: number | null;
+  last_evaluated_at?: string | null;
+  last_seen_ltp?: number | null;
+  price_source?: "FYERS_QUOTE" | "CANDLE_FALLBACK" | "NO_DATA" | null;
+  price_fetched_at?: string | null;
+  is_price_stale?: boolean;
+  created_at: string;
+  scheduled_execution?: string | null;
+  executed_at?: string | null;
+  filled_at?: string | null;
+  filled_price?: number | null;
+  market_session?: string | null;
+};
+
+export type MarketSessionStatusResponse = {
+  is_open: boolean;
+  is_trading_day: boolean;
+  status: string;
+  reason: string;
+  current_ist: string;
+  open_time: string;
+  close_time: string;
+  next_open_ist?: string | null;
+  session?: string | null;
+};
+
+export type PaperTradeHistoryItem = {
+  id: number;
+  symbol: string;
+  qty: number;
+  entry_price: number;
+  exit_price: number;
+  pnl: number;
+  pnl_percent: number;
+  notes?: string | null;
+  source_signal?: string | null;
+  source_score?: number | null;
+  source_confidence?: number | null;
+  opened_at: string;
+  closed_at: string;
+  holding_period_hours: number;
+  exit_reason?: string | null;
+  exit_source?: string | null;
+};
+
+export type MarketEngineHealth = {
+  status: string;
+  last_tick_at?: string | null;
+  last_reconciliation_at?: string | null;
+  open_positions: number;
+  tracked_symbols: number;
+};
+
+export type TransactionItem = {
+  id: string;
+  timestamp: string;
+  symbol?: string | null;
+  action: string;
+  amount: number;
+  balance_after?: number | null;
+  qty?: number | null;
+  price?: number | null;
+};
+
+export type TransactionPageResponse = {
+  items: TransactionItem[];
+  page: number;
+  per_page: number;
+  total: number;
+  total_pages: number;
+};
+
+export type NotificationItem = {
+  id: number;
+  message: string;
+  level: "info" | "success" | "error";
+  is_read: boolean;
+  created_at: string;
+};
+
+export type AlertItem = {
+  id: number;
+  symbol: string;
+  condition: ">=" | "<=";
+  target_price: number;
+  status: string;
+  created_at: string;
+  triggered_at?: string | null;
+  triggered_price?: number | null;
+};
+
+export type DailyPnlPoint = {
+  date: string;
+  pnl: number;
+};
+
+export type HoldingPeriodRow = {
+  symbol: string;
+  avg_holding_minutes: number;
+  total_trades: number;
+  win_rate_pct: number;
+};
+
+export type AnalyticsResponse = {
+  period?: string;
+  range_label?: string;
+  total_trades: number;
+  winning_trades?: number;
+  losing_trades?: number;
+  win_rate_pct: number;
+  total_pnl?: number;
+  todays_pnl?: number;
+  unrealized_pnl?: number;
+  realized_pnl?: number;
+  portfolio_value?: number;
+  available_cash?: number;
+  capital_utilized?: number;
+  roi_pct?: number;
+  profit_factor?: number | null;
+  average_profit?: number | null;
+  average_loss?: number | null;
+  average_risk_reward?: number | null;
+  largest_profit?: number | null;
+  largest_loss?: number | null;
+  best_trade_symbol?: string | null;
+  best_trade_amount?: number | null;
+  worst_trade_symbol?: string | null;
+  worst_trade_amount?: number | null;
+  most_profitable_symbol?: string | null;
+  most_losing_symbol?: string | null;
+  longest_winning_streak?: number;
+  longest_losing_streak?: number;
+  average_holding_minutes?: number;
+  average_return_pct?: number;
+  max_drawdown?: number;
+  max_drawdown_pct?: number;
+  sharpe_ratio?: number | null;
+  open_positions_count?: number;
+  total_orders?: number;
+  executed_orders?: number;
+  cancelled_orders?: number;
+  pending_orders?: number;
+  buy_orders?: number;
+  sell_orders?: number;
+  intraday_trades?: number;
+  delivery_trades?: number;
+  daily_pnl: DailyPnlPoint[];
+  monthly_pnl?: DailyPnlPoint[];
+  cumulative_pnl: DailyPnlPoint[];
+  equity_curve?: { date: string; equity: number }[];
+  capital_growth?: { date: string; value: number }[];
+  sector_performance?: { sector: string; pnl: number }[];
+  trade_frequency?: { date: string; count: number }[];
+  portfolio_allocation?: { symbol: string; value: number; pct: number }[];
+  wins: number;
+  losses: number;
+  holding_periods: HoldingPeriodRow[];
+  current_streak_type?: string;
+  current_streak_count?: number;
+};
+
+export type PaperWorkspaceSnapshot = {
+  symbol: string;
+  current_price: number;
+  candles: OHLCVPoint[];
+  ema_20?: number | null;
+  supertrend?: number | null;
+  source_signal?: string | null;
+  source_score?: number | null;
+  source_confidence?: number | null;
+  price_source?: "FYERS_QUOTE" | "CANDLE_FALLBACK" | "NO_DATA" | null;
+  price_fetched_at?: string | null;
+  is_price_stale?: boolean;
+};
+
+export type TechnicalExtras = {
+  atr?: number | null;
+  atr_pct?: number | null;
+  atr_class?: "low" | "medium" | "high" | string | null;
+  bollinger_status?: string | null;
+  bollinger_position?: string | null;
+  multi_timeframe?: { daily?: string | null; weekly?: string | null } | null;
+};
+
+export type BacktestExtras = {
+  total_return?: number;
+  cagr?: number;
+  max_drawdown?: number;
+  win_rate?: number;
+  profit_factor?: number;
+  trade_count?: number;
+  equity_curve?: BacktestEquityPoint[];
+  monthly_returns?: { month: string; return: number }[];
+  sharpe_ratio?: number;
+  best_trade?: { entry_date: string; exit_date: string; entry_price: number; exit_price: number; pnl_percent: number } | null;
+  worst_trade?: { entry_date: string; exit_date: string; entry_price: number; exit_price: number; pnl_percent: number } | null;
+};
+
+export type SymbolDetail = {
+  symbol: string;
+  year52_high?: number | null;
+  year52_low?: number | null;
+  company_name?: string | null;
+  company_description?: string | null;
+  sector?: string | null;
+  industry?: string | null;
+  market_cap?: number | null;
+  technical_extras?: TechnicalExtras | null;
+  backtest_extras?: BacktestExtras | null;
+  news_extras?: { corporate_events?: Record<string, unknown> | null; social_sentiment?: number | null } | null;
+  ohlcv?: OHLCVPoint[] | null;
+  /** AI Swing Trading Research dashboard payload from /analysis/symbol/{symbol}/detail */
+  research?: Record<string, unknown> | null;
+};
+
+export type PaperQuoteResponse = {
+  symbol: string;
+  current_price: number;
+  source: "FYERS_QUOTE" | "CANDLE_FALLBACK" | "NO_DATA" | "TEST_MOCK";
+  updated_at: string;
+  reason?: string | null;
+  is_stale?: boolean;
+  last_successful_at?: string | null;
+};
+
+export type PaperTradingDashboardResponse = {
+  account: PaperAccountSummary;
+  positions: PaperPosition[];
+  open_orders: PaperOrder[];
+  order_history: PaperOrder[];
+  trades: PaperTradeHistoryItem[];
+  symbols: string[];
+  selected_workspace?: PaperWorkspaceSnapshot | null;
+};
+
+export type PaperOrderTicketState = {
+  symbol: string;
+  side: "BUY" | "SELL";
+  type: "MARKET" | "LIMIT" | "STOP" | "STOP_LIMIT" | "GTT";
+  productType?: "MIS" | "CNC" | "NRML";
+  qty: number;
+  limitPrice?: number | null;
+  stopPrice?: number | null;
+  stopLoss?: number | null;
+  target?: number | null;
+  notes?: string;
+  sourceSignal?: string | null;
+  sourceScore?: number | null;
+  sourceConfidence?: number | null;
+};
+
+export type RecommendationPrefillRequest = {
+  symbol: string;
+  suggested_entry?: number | null;
+  suggested_stop?: number | null;
+  suggested_targets: number[];
+  recommendation_meta: Record<string, string | number>;
+};
+
+export type RecommendationPrefillResponse = {
+  symbol: string;
+  side: "BUY";
+  type: "LIMIT";
+  qty: number;
+  limit_price?: number | null;
+  stop_loss?: number | null;
+  target?: number | null;
+  note: string;
+};
+
+export type PaperOrderActionResponse = {
+  account: PaperAccountSummary;
+  order?: PaperOrder | null;
+  position?: PaperPosition | null;
+  trade?: PaperTradeHistoryItem | null;
+  message: string;
+};
+
+export type MarketEngineStatus = {
+  status: string;
+  websocket_connected: boolean;
+  token_status: string;
+  paused_reason?: string | null;
+  last_heartbeat_at?: string | null;
+  last_tick_at?: string | null;
+  active_monitored_symbols_count: number;
+  active_symbols: string[];
+  trading_date?: string | null;
+};

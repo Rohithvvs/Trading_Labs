@@ -1,0 +1,43 @@
+{
+  "name": "stock-analysis-frontend",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:coverage:feature-guards": "vitest run --coverage --coverage.include=src/components/FeatureGuard.tsx --coverage.include=src/hooks/useFeaturePermissions.ts --coverage.include=src/contexts/FeaturePermissionsContext.tsx --coverage.include=src/layout/navConfig.tsx src/hooks/__tests__/useFeaturePermissions.test.tsx src/components/__tests__/FeatureGuard.test.tsx src/components/__tests__/navConfig.featureGuards.test.tsx",
+    "test:watch": "vitest",
+    "e2e": "powershell -ExecutionPolicy Bypass -File ../scripts/run-e2e.ps1",
+    "e2e:raw": "playwright test",
+    "e2e:ui": "playwright test --ui",
+    "e2e:headed": "playwright test --headed",
+    "e2e:auth-mobile": "playwright test e2e/auth_mobile.spec.ts"
+  },
+  "dependencies": {
+    "@react-oauth/google": "^0.13.5",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^7.15.1",
+    "recharts": "^2.15.4"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.52.0",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "@vitest/coverage-v8": "^4.1.10",
+    "autoprefixer": "^10.5.0",
+    "jsdom": "^29.1.1",
+    "postcss": "^8.5.15",
+    "tailwindcss": "^3.4.19",
+    "typescript": "^5.8.3",
+    "vite": "^5.4.19",
+    "vitest": "^4.1.7"
+  }
+}

@@ -1,0 +1,46 @@
+# Python virtual environments
+.venv/
+venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+
+# Environment files
+.env
+backend/.env
+frontend/.env
+
+# Database files
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+
+# Log files
+*.log
+logs/
+backend/logs/
+
+# Frontend build
+node_modules/
+dist/
+build/
+
+# OS files
+.DS_Store
+
+# Local state files
+server_state.json
+backend/server_state.json
+*.db
+*.db.bak
+*.sqlite
+*.sqlite3
+
+backend/tests/data/*.db
+backend/tests/data/*.bak
