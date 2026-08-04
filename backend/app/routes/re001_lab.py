@@ -90,10 +90,28 @@ def get_registration(
 @router.get("/scans/recent", response_model=Re001RecentScansResponse)
 def get_recent_scans(
     limit: int = Query(default=20, ge=1, le=100),
+    min_decisions: int = Query(
+        default=1,
+        ge=1,
+        le=500,
+        description="Minimum decisions per scan_run_id. Use 2+ to hide single-symbol detail re-analyses.",
+    ),
+    prefer_cohorts: bool = Query(
+        default=True,
+        description="When true, order multi-symbol screener cohorts before 1-row full-* analyses.",
+    ),
     _=Depends(_lab_access()),
     db: Session = Depends(get_sync_db),
 ) -> Re001RecentScansResponse:
-    items = [Re001ScanRunSummary(**row) for row in list_recent_scan_runs(db, limit=limit)]
+    items = [
+        Re001ScanRunSummary(**row)
+        for row in list_recent_scan_runs(
+            db,
+            limit=limit,
+            min_decisions=min_decisions,
+            prefer_cohorts=prefer_cohorts,
+        )
+    ]
     return Re001RecentScansResponse(items=items)
 
 

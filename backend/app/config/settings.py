@@ -246,9 +246,10 @@ class Settings(BaseSettings):
     shadow_mode_ruleset: str = Field(default="experimental_v1", alias="SHADOW_MODE_RULESET")
     shadow_mode_persistence_enabled: bool = Field(default=False, alias="SHADOW_MODE_PERSISTENCE_ENABLED")
 
-    # RE-001 Trend Continuation lab engine (default OFF — production shortlist authority unchanged)
-    re001_enabled: bool = Field(default=False, alias="RE001_ENABLED")
-    re001_stage: str = Field(default="OFF", alias="RE001_STAGE")  # OFF | LAB_SHADOW | PAPER_LINKED
+    # RE-001 Trend Continuation lab engine
+    # Stages: OFF | LAB_SHADOW | PAPER_LINKED (ACTIVE reserved / not used). "ON" is invalid.
+    re001_enabled: bool = Field(default=True, alias="RE001_ENABLED")
+    re001_stage: str = Field(default="LAB_SHADOW", alias="RE001_STAGE")
     re001_version: str = Field(default="1.0", alias="RE001_VERSION")
     re001_persist_decisions: bool = Field(default=True, alias="RE001_PERSIST_DECISIONS")
     re001_compare_with_production: bool = Field(default=True, alias="RE001_COMPARE_WITH_PRODUCTION")

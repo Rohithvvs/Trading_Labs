@@ -1613,15 +1613,25 @@ export async function resetPassword(token: string, password: string, confirmPass
 }
 
 /** RE-001 recent scan runs (stable scan_run_id list) */
-export async function fetchRe001RecentScans(limit = 20): Promise<{
+export async function fetchRe001RecentScans(
+  limit = 20,
+  opts?: { minDecisions?: number; preferCohorts?: boolean },
+): Promise<{
   items: Array<{
     scan_run_id: string;
     decision_count: number;
     latest_created_at?: string | null;
   }>;
 }> {
+  const minDecisions = opts?.minDecisions ?? 1;
+  const preferCohorts = opts?.preferCohorts ?? true;
+  const qs = new URLSearchParams({
+    limit: String(limit),
+    min_decisions: String(minDecisions),
+    prefer_cohorts: preferCohorts ? "true" : "false",
+  });
   const response = await fetchWithDiagnostics(
-    `/api/v1/recommendation-lab/scans/recent?limit=${limit}`,
+    `/api/v1/recommendation-lab/scans/recent?${qs.toString()}`,
     { method: "GET" },
     "RE-001 recent scans",
   );

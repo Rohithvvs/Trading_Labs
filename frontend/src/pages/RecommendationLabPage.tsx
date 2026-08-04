@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
-import { fetchRe001RecentScans, fetchRe001ScanComparison } from "../api";
+import {
+  fetchRe001RecentScans,
+  fetchRe001Registration,
+  fetchRe001ScanComparison,
+} from "../api";
 
 type ComparisonRow = {
   symbol: string;
@@ -18,26 +22,86 @@ type ScanSummary = {
   latest_created_at?: string | null;
 };
 
+type Registration = {
+  engine_id: string;
+  name: string;
+  engine_version: string;
+  stage: string;
+  enabled: boolean;
+};
+
+function isEngineActive(reg: Registration | null): boolean {
+  if (!reg?.enabled) return false;
+  const stage = String(reg.stage || "OFF").toUpperCase();
+  return stage === "LAB_SHADOW" || stage === "PAPER_LINKED";
+}
+
 export default function RecommendationLabPage() {
   const [scanRunId, setScanRunId] = useState("");
   const [recent, setRecent] = useState<ScanSummary[]>([]);
   const [rows, setRows] = useState<ComparisonRow[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [info, setInfo] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [registration, setRegistration] = useState<Registration | null>(null);
 
   useEffect(() => {
-    void fetchRe001RecentScans(20)
-      .then((data) => {
+    void (async () => {
+      try {
+        const reg = await fetchRe001Registration();
+        setRegistration(reg);
+        if (!reg.enabled || !isEngineActive(reg)) {
+          setInfo(
+            `RE-001 is not active (enabled=${String(reg.enabled)}, stage=${reg.stage}). ` +
+              `Set RE001_ENABLED=true and RE001_STAGE=LAB_SHADOW, then restart the backend and run a new Scanner scan.`,
+          );
+        }
+      } catch (e) {
+        setError(
+          e instanceof Error
+            ? `Cannot load RE-001 registration: ${e.message}`
+            : "Cannot load RE-001 registration (backend down or permission denied).",
+        );
+      }
+
+      try {
+        // Prefer multi-symbol screener cohorts (decision_count first).
+        // Single-symbol stock-detail re-analyses create many 1-row full-* scan ids.
+        const data = await fetchRe001RecentScans(20, {
+          minDecisions: 1,
+          preferCohorts: true,
+        });
         const items = data.items || [];
         setRecent(items);
-        if (items[0]?.scan_run_id && !scanRunId) {
-          setScanRunId(items[0].scan_run_id);
+        const best =
+          items.find((s) => (s.decision_count || 0) > 1) || items[0] || null;
+        if (best?.scan_run_id) {
+          setScanRunId((prev) => prev || best.scan_run_id);
+          if ((best.decision_count || 0) <= 1) {
+            setInfo(
+              "Latest lab entries are single-symbol analyses (1 row each). " +
+                "Select a scan with many decisions (e.g. 20) from the dropdown — that is a real Scanner shortlist. " +
+                "Or run a new full Scanner to create a multi-symbol cohort.",
+            );
+          } else {
+            setInfo(
+              `Auto-selected cohort ${best.scan_run_id} with ${best.decision_count} RE-001 decisions. Click Load comparison.`,
+            );
+          }
+        } else {
+          setInfo((prev) =>
+            prev ||
+            "No RE-001 lab scans yet. Run a NEW Scanner (full screener) after RE-001 is active — old production scans are not listed here.",
+          );
         }
-      })
-      .catch(() => {
-        /* empty lab is expected when RE-001 is OFF */
-      });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+      } catch (e) {
+        setError(
+          e instanceof Error
+            ? `Cannot load recent lab scans: ${e.message}`
+            : "Cannot load recent lab scans.",
+        );
+      }
+    })();
   }, []);
 
   const load = useCallback(async () => {
@@ -50,6 +114,13 @@ export default function RecommendationLabPage() {
     try {
       const data = await fetchRe001ScanComparison(scanRunId.trim());
       setRows(data.items || []);
+      if (!(data.items || []).length) {
+        setInfo(
+          "This scan_run_id has no RE-001 decision rows. It must come from a scan that ran while RE-001 was active.",
+        );
+      } else {
+        setInfo(null);
+      }
     } catch (e) {
       setRows([]);
       setError(e instanceof Error ? e.message : "Failed to load lab comparison");
@@ -58,13 +129,28 @@ export default function RecommendationLabPage() {
     }
   }, [scanRunId]);
 
+  const active = isEngineActive(registration);
+
   return (
     <div className="p-4 max-w-5xl mx-auto" data-testid="recommendation-lab-page">
       <h1 className="text-xl font-semibold mb-2">Recommendation Lab · RE-001</h1>
-      <p className="text-sm opacity-70 mb-4">
+      <p className="text-sm opacity-70 mb-2">
         Experimental comparison of production vs RE-001. Production scanner shortlists are unchanged.
-        Empty results are expected when RE-001 is disabled (default).
       </p>
+
+      {registration ? (
+        <p
+          className={`text-sm mb-4 ${active ? "text-green-700" : "text-amber-700"}`}
+          data-testid="lab-registration-status"
+        >
+          Engine: {registration.engine_id} · v{registration.engine_version} · enabled=
+          {String(registration.enabled)} · stage={registration.stage} ·{" "}
+          {active ? "ACTIVE (will write lab rows on next scan)" : "INACTIVE (will not write lab rows)"}
+        </p>
+      ) : (
+        <p className="text-sm mb-4 opacity-60">Loading engine registration…</p>
+      )}
+
       <div className="flex gap-2 mb-4 flex-wrap items-center">
         <select
           className="border rounded px-2 py-1 min-w-[280px]"
@@ -75,7 +161,8 @@ export default function RecommendationLabPage() {
           <option value="">Select recent scan…</option>
           {recent.map((s) => (
             <option key={s.scan_run_id} value={s.scan_run_id}>
-              {s.scan_run_id} ({s.decision_count})
+              {s.decision_count > 1 ? "COHORT" : "SINGLE"} · {s.decision_count} symbols ·{" "}
+              {s.scan_run_id}
             </option>
           ))}
         </select>
@@ -93,6 +180,11 @@ export default function RecommendationLabPage() {
       {error ? (
         <p className="text-sm text-red-600 mb-2" role="alert">
           {error}
+        </p>
+      ) : null}
+      {info ? (
+        <p className="text-sm text-amber-700 mb-2" role="status">
+          {info}
         </p>
       ) : null}
       <div className="overflow-x-auto">
