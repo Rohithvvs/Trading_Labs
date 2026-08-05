@@ -46,6 +46,8 @@ class RecommendationEngineDecision(Base):
     production_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     is_mismatch: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     evaluation_status: Mapped[str] = mapped_column(String(32), nullable=False, default="success")
+    # Long-lived experiment attribution (RE-002+); nullable for RE-001 rows
+    experiment_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, index=True, nullable=False

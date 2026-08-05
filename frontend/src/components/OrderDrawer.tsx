@@ -83,6 +83,12 @@ export function OrderDrawer({
   const [error, setError] = useState<string | null>(null);
   const [localSymbols, setLocalSymbols] = useState<string[]>(symbols);
   const [quoteStatus, setQuoteStatus] = useState<"idle" | "loading" | "live" | "degraded" | "error">("idle");
+  const [labProvenance, setLabProvenance] = useState<{
+    engine_id: string;
+    engine_version?: string | null;
+    recommendation_id?: string | null;
+    experiment_id?: string | null;
+  } | null>(null);
   const drawerRef = useRef<HTMLDivElement>(null);
 
   const isMobile = typeof window !== "undefined" && window.matchMedia("(max-width: 768px)").matches;
@@ -113,6 +119,7 @@ export function OrderDrawer({
       setQuoteStatus("idle");
       setAccountLoaded(false);
       setAvailableCash(null);
+      setLabProvenance(null);
       return;
     }
 
@@ -120,6 +127,7 @@ export function OrderDrawer({
     setStatusMessage(null);
     setAccountLoaded(false);
     setAvailableCash(null);
+    setLabProvenance(null);
 
     if (drawerState.orderId) {
       setEditingOrderId(drawerState.orderId);
@@ -239,6 +247,21 @@ export function OrderDrawer({
       if (prefill) {
         try {
           const result = await prefillPaperTrade(prefill);
+          const engineId =
+            result.source_engine_id ||
+            prefill.source_engine_id ||
+            null;
+          if (engineId) {
+            setLabProvenance({
+              engine_id: String(engineId),
+              engine_version: result.source_engine_version ?? prefill.source_engine_version ?? null,
+              recommendation_id:
+                result.source_recommendation_id ?? prefill.source_recommendation_id ?? null,
+              experiment_id: result.experiment_id ?? prefill.experiment_id ?? null,
+            });
+          } else {
+            setLabProvenance(null);
+          }
           const ticketFromPrefill: PaperOrderTicketState = {
             symbol: toCanonicalSymbol(result.symbol),
             side: result.side,
@@ -270,6 +293,14 @@ export function OrderDrawer({
         } catch (e) {
           console.warn("Failed to prefill order", e);
           // Fall back to raw prefill fields so the drawer still opens with data
+          if (prefill.source_engine_id) {
+            setLabProvenance({
+              engine_id: String(prefill.source_engine_id),
+              engine_version: prefill.source_engine_version ?? null,
+              recommendation_id: prefill.source_recommendation_id ?? null,
+              experiment_id: prefill.experiment_id ?? null,
+            });
+          }
           const fallback = buildTicketFromPrefill(prefill, side);
           setTicket(fallback);
           ticketRef.current = fallback;
@@ -474,6 +505,21 @@ export function OrderDrawer({
           <div>
             <p className="section-label">Order ticket</p>
             <h2>{editingOrderId ? "Edit paper order" : "Place paper order"}</h2>
+            {labProvenance ? (
+              <p
+                className="text-xs mt-1 opacity-80"
+                data-testid="order-drawer-lab-provenance"
+              >
+                Lab · Experimental · {labProvenance.engine_id}
+                {labProvenance.engine_version ? ` v${labProvenance.engine_version}` : ""}
+                {labProvenance.recommendation_id
+                  ? ` · rec ${labProvenance.recommendation_id.slice(0, 8)}…`
+                  : ""}
+                {labProvenance.experiment_id
+                  ? ` · exp ${labProvenance.experiment_id.slice(0, 8)}…`
+                  : ""}
+              </p>
+            ) : null}
           </div>
           <button
             type="button"

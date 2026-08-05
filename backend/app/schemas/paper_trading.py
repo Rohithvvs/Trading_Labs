@@ -61,6 +61,10 @@ class PaperPositionResponse(BaseModel):
     source_signal: str | None = None
     source_score: float | None = None
     source_confidence: float | None = None
+    source_engine_id: str | None = None
+    source_engine_version: str | None = None
+    source_recommendation_id: str | None = None
+    experiment_id: str | None = None
     price_source: Literal["FYERS_QUOTE", "CANDLE_FALLBACK", "NO_DATA", "TEST_MOCK"] | None = None
     price_fetched_at: datetime | None = None
     is_price_stale: bool = False
@@ -106,6 +110,10 @@ class PaperOrderResponse(BaseModel):
     source_signal: str | None = None
     source_score: float | None = None
     source_confidence: float | None = None
+    source_engine_id: str | None = None
+    source_engine_version: str | None = None
+    source_recommendation_id: str | None = None
+    experiment_id: str | None = None
     last_evaluated_at: datetime | None = None
     last_seen_ltp: float | None = None
     price_source: Literal["FYERS_QUOTE", "CANDLE_FALLBACK", "NO_DATA", "TEST_MOCK"] | None = None
@@ -239,6 +247,11 @@ class PaperOrderCreateRequest(BaseModel):
     source_signal: str | None = Field(default=None, max_length=16)
     source_score: float | None = None
     source_confidence: float | None = None
+    # Lab engine provenance (optional; RE-001 / RE-002)
+    source_engine_id: str | None = Field(default=None, max_length=32)
+    source_engine_version: str | None = Field(default=None, max_length=32)
+    source_recommendation_id: str | None = Field(default=None, max_length=64)
+    experiment_id: str | None = Field(default=None, max_length=64)
 
     @field_validator("symbol")
     @classmethod
@@ -282,10 +295,11 @@ class RecommendationPrefillRequest(BaseModel):
     suggested_stop: float | None = None
     suggested_targets: list[float] = Field(default_factory=list)
     recommendation_meta: dict[str, float | str]
-    # RE-001 provenance (optional)
+    # Lab engine provenance (optional; RE-001 / RE-002 multi-engine)
     source_engine_id: str | None = None
     source_engine_version: str | None = None
     source_recommendation_id: str | None = None
+    experiment_id: str | None = None
 
 
 class RecommendationPrefillResponse(BaseModel):
@@ -300,6 +314,7 @@ class RecommendationPrefillResponse(BaseModel):
     source_engine_id: str | None = None
     source_engine_version: str | None = None
     source_recommendation_id: str | None = None
+    experiment_id: str | None = None
 
 
 class PaperOrderActionResponse(BaseModel):

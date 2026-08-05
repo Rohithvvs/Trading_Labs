@@ -1699,3 +1699,135 @@ export async function fetchRe001Registration(): Promise<{
   return response.json();
 }
 
+/** RE-002 latest decision for a symbol */
+export async function fetchRe002SymbolLatest(symbol: string): Promise<Record<string, unknown>> {
+  const response = await fetchWithDiagnostics(
+    `/api/v1/recommendation-lab/re002/symbols/${encodeURIComponent(symbol)}/latest`,
+    { method: "GET" },
+    "RE-002 lab symbol latest",
+  );
+  if (!response.ok) {
+    throw mapHttpError(response.status, response.url);
+  }
+  return response.json();
+}
+
+/** RE-002 recent scan cohorts (independent of RE-001) */
+export async function fetchRe002RecentScans(
+  limit = 20,
+  opts?: { minDecisions?: number; preferCohorts?: boolean },
+): Promise<{
+  items: Array<{
+    scan_run_id: string;
+    decision_count: number;
+    latest_created_at?: string | null;
+  }>;
+}> {
+  const params = new URLSearchParams({
+    limit: String(limit),
+    min_decisions: String(opts?.minDecisions ?? 1),
+    prefer_cohorts: String(opts?.preferCohorts ?? true),
+  });
+  const response = await fetchWithDiagnostics(
+    `/api/v1/recommendation-lab/re002/scans/recent?${params}`,
+    { method: "GET" },
+    "RE-002 recent scans",
+  );
+  if (!response.ok) {
+    throw mapHttpError(response.status, response.url);
+  }
+  return response.json();
+}
+
+/** RE-002 paged decision history */
+export async function fetchRe002History(params?: {
+  experiment_id?: string;
+  symbol?: string;
+  state?: string;
+  limit?: number;
+  offset?: number;
+}): Promise<{
+  engine_id: string;
+  total: number;
+  limit: number;
+  offset: number;
+  items: Array<Record<string, unknown>>;
+}> {
+  const q = new URLSearchParams();
+  if (params?.experiment_id) q.set("experiment_id", params.experiment_id);
+  if (params?.symbol) q.set("symbol", params.symbol);
+  if (params?.state) q.set("state", params.state);
+  if (params?.limit != null) q.set("limit", String(params.limit));
+  if (params?.offset != null) q.set("offset", String(params.offset));
+  const response = await fetchWithDiagnostics(
+    `/api/v1/recommendation-lab/re002/history?${q}`,
+    { method: "GET" },
+    "RE-002 history",
+  );
+  if (!response.ok) {
+    throw mapHttpError(response.status, response.url);
+  }
+  return response.json();
+}
+
+/** RE-002 scan comparison */
+export async function fetchRe002ScanComparison(scanRunId: string): Promise<{
+  scan_run_id: string;
+  items: Array<{
+    symbol: string;
+    recommendation_id: string;
+    production_action?: string | null;
+    production_score?: number | null;
+    re002_state: string;
+    confidence_score: number;
+    strategy_name?: string | null;
+    strategy_family?: string | null;
+    is_mismatch?: boolean | null;
+    experiment_id?: string | null;
+  }>;
+}> {
+  const response = await fetchWithDiagnostics(
+    `/api/v1/recommendation-lab/re002/scans/${encodeURIComponent(scanRunId)}/comparison`,
+    { method: "GET" },
+    "RE-002 lab scan comparison",
+  );
+  if (!response.ok) {
+    throw mapHttpError(response.status, response.url);
+  }
+  return response.json();
+}
+
+/** RE-002 engine registration / stage */
+export async function fetchRe002Registration(): Promise<{
+  engine_id: string;
+  name: string;
+  engine_version: string;
+  stage: string;
+  enabled: boolean;
+  experiment_id?: string | null;
+  active?: boolean;
+}> {
+  const response = await fetchWithDiagnostics(
+    "/api/v1/recommendation-lab/re002/registration",
+    { method: "GET" },
+    "RE-002 registration",
+  );
+  if (!response.ok) {
+    throw mapHttpError(response.status, response.url);
+  }
+  return response.json();
+}
+
+/** RE-002 health segment */
+export async function fetchRe002Health(days = 7): Promise<Record<string, unknown>> {
+  const response = await fetchWithDiagnostics(
+    `/api/v1/recommendation-lab/re002/health?days=${days}`,
+    { method: "GET" },
+    "RE-002 health",
+  );
+  if (!response.ok) {
+    throw mapHttpError(response.status, response.url);
+  }
+  return response.json();
+}
+

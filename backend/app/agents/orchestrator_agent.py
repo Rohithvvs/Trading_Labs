@@ -1312,12 +1312,15 @@ class OrchestratorAgent:
             articles=articles
         )
 
-        # RE-001 lab engine: isolated async, fail-open; never mutates production recommendation.
+        # Lab engines (RE-001 / RE-002): isolated async, fail-open; never mutates production.
+        # Shared portfolio snapshot once; engines run in parallel when both active.
         re001_decision = None
+        re002_decision = None
         try:
-            if settings.is_re001_active():
+            re001_on = bool(settings.is_re001_active())
+            re002_on = bool(settings.is_re002_active())
+            if re001_on or re002_on:
                 from ..db.session import SessionLocal
-                from ..services.re001 import run_re001_isolated_async
                 from ..services.re001.portfolio_loader import load_user_portfolio_dict
                 from ..services.re001.scan_context import get_scan_run_id, get_user_id
 
@@ -1326,21 +1329,21 @@ class OrchestratorAgent:
                 scan_run_id = get_scan_run_id()
                 user_portfolio = None
                 try:
-                    # Bound portfolio DB read separately from RE-001 eval timeout.
-                    # timeout_s=0 avoids nested ThreadPool when already on a worker thread.
+                    # Bound portfolio DB read once for all lab engines.
                     user_portfolio = await asyncio.wait_for(
                         asyncio.to_thread(load_user_portfolio_dict, uid, timeout_s=0),
                         timeout=2.0,
                     )
                 except Exception as portfolio_exc:
                     self.logger.warning(
-                        "RE-001 portfolio snapshot skipped | symbol=%s | scan_run_id=%s | err=%s",
+                        "Lab portfolio snapshot skipped | symbol=%s | scan_run_id=%s | err=%s",
                         symbol,
                         scan_run_id,
                         portfolio_exc,
                     )
                     user_portfolio = None
-                re001_decision = await run_re001_isolated_async(
+
+                lab_kwargs = dict(
                     symbol=symbol,
                     mode=request.mode.value,
                     scan_run_id=scan_run_id,
@@ -1354,25 +1357,62 @@ class OrchestratorAgent:
                     sector_overlay=sector_overlay,
                     market_breadth_soft_score=None,
                     user_portfolio=user_portfolio,
-                    risk_settings=None,  # FR-026: no invented system portfolio for unauthenticated scans
+                    risk_settings=None,  # FR-026: no invented system portfolio
                     analysis_history_id=analysis_history_id,
                     db_session_factory=SessionLocal,
                 )
-        except Exception as re001_exc:
-            try:
-                from ..services.re001.scan_context import get_scan_run_id as _get_re001_scan
 
-                _re001_scan = _get_re001_scan()
+                async def _run_re001():
+                    from ..services.re001 import run_re001_isolated_async
+
+                    return await run_re001_isolated_async(**lab_kwargs)
+
+                async def _run_re002():
+                    from ..services.re002 import run_re002_isolated_async
+
+                    return await run_re002_isolated_async(**lab_kwargs)
+
+                tasks = []
+                labels = []
+                if re001_on:
+                    tasks.append(_run_re001())
+                    labels.append("RE-001")
+                if re002_on:
+                    tasks.append(_run_re002())
+                    labels.append("RE-002")
+
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                for label, res in zip(labels, results):
+                    if isinstance(res, Exception):
+                        self.logger.warning(
+                            "%s hook failed (production path unchanged) | symbol=%s | scan_run_id=%s | err=%s",
+                            label,
+                            symbol,
+                            scan_run_id,
+                            res,
+                            exc_info=True,
+                        )
+                        continue
+                    if label == "RE-001":
+                        re001_decision = res
+                    elif label == "RE-002":
+                        re002_decision = res
+        except Exception as lab_exc:
+            try:
+                from ..services.re001.scan_context import get_scan_run_id as _get_lab_scan
+
+                _lab_scan = _get_lab_scan()
             except Exception:
-                _re001_scan = None
+                _lab_scan = None
             self.logger.warning(
-                "RE-001 hook failed (production path unchanged) | symbol=%s | scan_run_id=%s | err=%s",
+                "Lab engines hook failed (production path unchanged) | symbol=%s | scan_run_id=%s | err=%s",
                 symbol,
-                _re001_scan,
-                re001_exc,
+                _lab_scan,
+                lab_exc,
                 exc_info=True,
             )
             re001_decision = None
+            re002_decision = None
 
         # FEAT-011 Spec 1: Shadow Execution Context hook
         # Gate: master toggle AND stage != OFF (ACTIVE is reserved but still isolated).
@@ -1462,14 +1502,13 @@ class OrchestratorAgent:
         )
 
         lab_engines = None
-        if re001_decision is not None:
-            try:
-                lab_engines = {
-                    "RE-001": re001_decision.model_dump(mode="json"),
-                }
-            except Exception:
-                lab_engines = {
-                    "RE-001": {
+        if re001_decision is not None or re002_decision is not None:
+            lab_engines = {}
+            if re001_decision is not None:
+                try:
+                    lab_engines["RE-001"] = re001_decision.model_dump(mode="json")
+                except Exception:
+                    lab_engines["RE-001"] = {
                         "engine_id": getattr(re001_decision, "engine_id", "RE-001"),
                         "recommendation_state": getattr(
                             re001_decision, "recommendation_state", None
@@ -1491,7 +1530,33 @@ class OrchestratorAgent:
                             re001_decision, "engine_version", None
                         ),
                     }
-                }
+            if re002_decision is not None:
+                try:
+                    lab_engines["RE-002"] = re002_decision.model_dump(mode="json")
+                except Exception:
+                    lab_engines["RE-002"] = {
+                        "engine_id": getattr(re002_decision, "engine_id", "RE-002"),
+                        "recommendation_state": getattr(
+                            re002_decision, "recommendation_state", None
+                        ),
+                        "confidence_score": getattr(
+                            re002_decision, "confidence_score", None
+                        ),
+                        "strategy_name": getattr(re002_decision, "strategy_name", None),
+                        "explanation": getattr(re002_decision, "explanation", None),
+                        "production_action": getattr(
+                            re002_decision, "production_action", None
+                        ),
+                        "reason_codes": getattr(re002_decision, "reason_codes", None),
+                        "market_regime": getattr(re002_decision, "market_regime", None),
+                        "recommendation_id": getattr(
+                            re002_decision, "recommendation_id", None
+                        ),
+                        "engine_version": getattr(
+                            re002_decision, "engine_version", None
+                        ),
+                        "experiment_id": getattr(re002_decision, "experiment_id", None),
+                    }
 
         return StockAnalysisResult(
             symbol=symbol,

@@ -58,6 +58,11 @@ class PaperPosition(Base):
     source_signal: Mapped[str | None] = mapped_column(String(16), nullable=True)
     source_score: Mapped[Decimal | None] = mapped_column(Numeric(18, 8), nullable=True)
     source_confidence: Mapped[Decimal | None] = mapped_column(Numeric(18, 8), nullable=True)
+    # Lab engine provenance (RE-001 / RE-002) — filterable RE trade set (FR-029)
+    source_engine_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    source_engine_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    source_recommendation_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    experiment_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow, index=True)
 
@@ -111,6 +116,11 @@ class PaperOrder(Base):
     source_signal: Mapped[str | None] = mapped_column(String(16), nullable=True)
     source_score: Mapped[Decimal | None] = mapped_column(Numeric(18, 8), nullable=True)
     source_confidence: Mapped[Decimal | None] = mapped_column(Numeric(18, 8), nullable=True)
+    # Lab engine provenance (RE-001 / RE-002) — filterable RE trade set (FR-029)
+    source_engine_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    source_engine_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    source_recommendation_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    experiment_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     filled_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 8), nullable=True)
     # Next session when a PENDING_MARKET_OPEN order is expected to execute
     scheduled_execution: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

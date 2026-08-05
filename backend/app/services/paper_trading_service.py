@@ -228,6 +228,10 @@ class PaperTradingService:
             source_signal=payload.source_signal,
             source_score=payload.source_score,
             source_confidence=payload.source_confidence,
+            source_engine_id=getattr(payload, "source_engine_id", None),
+            source_engine_version=getattr(payload, "source_engine_version", None),
+            source_recommendation_id=getattr(payload, "source_recommendation_id", None),
+            experiment_id=getattr(payload, "experiment_id", None),
             status="PENDING",
             lifecycle_state="PENDING_ENTRY",
             market_session=str(market_status.get("status") or market_status.get("session") or "UNKNOWN"),
@@ -527,10 +531,13 @@ class PaperTradingService:
         source_engine_id = payload.source_engine_id
         source_engine_version = payload.source_engine_version
         source_recommendation_id = payload.source_recommendation_id
+        experiment_id = getattr(payload, "experiment_id", None)
 
-        # FR-015: when RE-001 recommendation_id is provided, prefer complete RE-001
-        # trade_guidance; else keep client levels (typically production plan).
-        if source_recommendation_id or (source_engine_id or "").upper() == "RE-001":
+        # FR-015 (multi-engine): when a lab recommendation_id / engine is provided,
+        # prefer complete trade_guidance from multi-engine decisions store; else keep
+        # client levels (typically production plan). Shared table for RE-001 / RE-002.
+        engine_upper = (source_engine_id or "").strip().upper()
+        if source_recommendation_id or engine_upper in {"RE-001", "RE-002"}:
             try:
                 from .re001.persistence import get_decision_by_id
 
@@ -538,9 +545,11 @@ class PaperTradingService:
                 if source_recommendation_id:
                     row = get_decision_by_id(self.db, source_recommendation_id)
                 if row is not None:
-                    source_engine_id = row.engine_id or "RE-001"
+                    source_engine_id = row.engine_id or source_engine_id or "RE-001"
                     source_engine_version = row.engine_version or source_engine_version or "1.0"
                     source_recommendation_id = row.recommendation_id
+                    if experiment_id is None and hasattr(row, "experiment_id"):
+                        experiment_id = getattr(row, "experiment_id", None)
                     tg = row.trade_guidance if isinstance(row.trade_guidance, dict) else None
                     if tg and tg.get("complete"):
                         entry = float(tg.get("entry_high") or tg.get("entry_low") or entry or 0) or entry
@@ -549,14 +558,15 @@ class PaperTradingService:
                         if t1 is not None:
                             targets = [float(t1)] + [t for t in targets if t != float(t1)]
                     # else: keep client-supplied production levels (fallback)
-            except Exception as re001_prefill_exc:
+            except Exception as lab_prefill_exc:
                 # Fail-open: never block paper prefill on lab lookup errors.
                 import logging
 
-                logging.getLogger("app.re001").warning(
-                    "RE-001 paper prefill guidance lookup failed | recommendation_id=%s | err=%s",
+                logging.getLogger("app.paper_trading").warning(
+                    "Lab paper prefill guidance lookup failed | engine=%s | recommendation_id=%s | err=%s",
+                    source_engine_id,
                     source_recommendation_id,
-                    re001_prefill_exc,
+                    lab_prefill_exc,
                     exc_info=True,
                 )
 
@@ -570,6 +580,7 @@ class PaperTradingService:
                 f"Imported from {source_engine_id} "
                 f"v{source_engine_version or 'n/a'} | "
                 f"rec_id={source_recommendation_id or 'n/a'} | "
+                f"experiment_id={experiment_id or 'n/a'} | "
                 f"signal={payload.recommendation_meta.get('signal', 'BUY')} | "
                 f"score={payload.recommendation_meta.get('score', 'n/a')} | "
                 f"confidence={payload.recommendation_meta.get('confidence', 'n/a')}"
@@ -584,6 +595,7 @@ class PaperTradingService:
             source_engine_id=source_engine_id,
             source_engine_version=source_engine_version,
             source_recommendation_id=source_recommendation_id,
+            experiment_id=experiment_id,
         )
 
     def get_workspace(self, symbol: str) -> PaperWorkspaceSnapshot:
@@ -1095,6 +1107,10 @@ class PaperTradingService:
                     source_signal=order.source_signal,
                     source_score=order.source_score,
                     source_confidence=order.source_confidence,
+                    source_engine_id=getattr(order, "source_engine_id", None),
+                    source_engine_version=getattr(order, "source_engine_version", None),
+                    source_recommendation_id=getattr(order, "source_recommendation_id", None),
+                    experiment_id=getattr(order, "experiment_id", None),
                 )
                 self.db.add(position)
                 self.db.flush()
@@ -2093,6 +2109,10 @@ class PaperTradingService:
             source_signal=position.source_signal,
             source_score=position.source_score,
             source_confidence=position.source_confidence,
+            source_engine_id=getattr(position, "source_engine_id", None),
+            source_engine_version=getattr(position, "source_engine_version", None),
+            source_recommendation_id=getattr(position, "source_recommendation_id", None),
+            experiment_id=getattr(position, "experiment_id", None),
             price_source=snapshot.source if snapshot else None,
             price_fetched_at=snapshot.fetched_at if snapshot else None,
             is_price_stale=(snapshot.source != "FYERS_QUOTE") if snapshot else False,
@@ -2122,6 +2142,10 @@ class PaperTradingService:
             source_signal=order.source_signal,
             source_score=order.source_score,
             source_confidence=order.source_confidence,
+            source_engine_id=getattr(order, "source_engine_id", None),
+            source_engine_version=getattr(order, "source_engine_version", None),
+            source_recommendation_id=getattr(order, "source_recommendation_id", None),
+            experiment_id=getattr(order, "experiment_id", None),
             last_evaluated_at=order.last_evaluated_at,
             last_seen_ltp=as_float(q_price(order.last_seen_ltp)) if order.last_seen_ltp is not None else None,
             price_source=snapshot.source if snapshot else None,

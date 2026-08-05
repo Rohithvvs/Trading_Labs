@@ -257,6 +257,18 @@ class Settings(BaseSettings):
     # UI kill-switch (default True so feature permission remains primary gate; set false to hide lab APIs)
     re001_ui_enabled: bool = Field(default=True, alias="RE001_UI_ENABLED")
 
+    # RE-002 Relative Strength Momentum lab engine
+    # Stages: OFF | LAB_SHADOW | PAPER_LINKED (ACTIVE reserved / not used). Defaults OFF for safe deploy.
+    re002_enabled: bool = Field(default=True, alias="RE002_ENABLED")
+    re002_stage: str = Field(default="ON", alias="RE002_STAGE")
+    re002_version: str = Field(default="1.0", alias="RE002_VERSION")
+    re002_persist_decisions: bool = Field(default=True, alias="RE002_PERSIST_DECISIONS")
+    re002_compare_with_production: bool = Field(default=True, alias="RE002_COMPARE_WITH_PRODUCTION")
+    re002_timeout_ms: float = Field(default=3000.0, ge=200.0, le=60000.0, alias="RE002_TIMEOUT_MS")
+    re002_ui_enabled: bool = Field(default=True, alias="RE002_UI_ENABLED")
+    re002_experiment_id: str | None = Field(default=None, alias="RE002_EXPERIMENT_ID")
+    re002_experiment_paused: bool = Field(default=False, alias="RE002_EXPERIMENT_PAUSED")
+
     # Sprint 3: Reduce Scan-Result Fan-out feature flag
     scan_result_minimal_writes: bool = Field(default=False, alias="SCAN_RESULT_MINIMAL_WRITES")
 
@@ -484,6 +496,30 @@ class Settings(BaseSettings):
             return False
         stage = str(self.re001_stage or "OFF").strip().upper()
         return stage in {"LAB_SHADOW", "PAPER_LINKED"}
+
+    def is_re002_active(self) -> bool:
+        """True when RE-002 lab evaluation should run (enabled + lab stage + experiment gate).
+
+        Single gate used by orchestrator and runner (FR-019 / FR-028):
+        - re002_enabled
+        - stage in {LAB_SHADOW, PAPER_LINKED}
+        - long-lived experiment configured and not paused
+        """
+        if not bool(self.re002_enabled):
+            return False
+        stage = str(self.re002_stage or "OFF").strip().upper()
+        if stage not in {"LAB_SHADOW", "PAPER_LINKED"}:
+            return False
+        try:
+            from ..services.re002.experiment_binding import side_effects_allowed
+
+            return bool(side_effects_allowed())
+        except Exception:
+            # Fail closed for side effects if binding cannot be resolved
+            if bool(getattr(self, "re002_experiment_paused", False)):
+                return False
+            eid = getattr(self, "re002_experiment_id", None)
+            return bool(eid and str(eid).strip())
 
     @field_validator("portfolio_simulation_enabled")
     @classmethod

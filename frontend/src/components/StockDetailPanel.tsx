@@ -25,6 +25,7 @@ import { getCached } from "../utils/appCache";
 import { isPrefetched } from "../utils/researchPrefetcher";
 import { ResearchDashboard } from "./ResearchDashboard";
 import { Re001DetailSection } from "./Re001DetailSection";
+import { Re002DetailSection } from "./Re002DetailSection";
 
 type StockDetailPanelProps = {
   row: CandidateRow | null;
@@ -256,6 +257,14 @@ function OverviewTab({
             (analysis as { lab_engines?: { "RE-001"?: Record<string, unknown> } } | undefined)?.lab_engines?.[
               "RE-001"
             ] as import("./Re001DetailSection").Re001DecisionSummary | undefined
+          }
+          symbol={row.symbol}
+        />
+        <Re002DetailSection
+          decision={
+            (analysis as { lab_engines?: { "RE-002"?: Record<string, unknown> } } | undefined)?.lab_engines?.[
+              "RE-002"
+            ] as import("./Re002DetailSection").Re002DecisionSummary | undefined
           }
           symbol={row.symbol}
         />

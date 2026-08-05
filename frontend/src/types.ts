@@ -616,6 +616,11 @@ export type RecommendationPrefillRequest = {
   suggested_stop?: number | null;
   suggested_targets: number[];
   recommendation_meta: Record<string, string | number>;
+  /** Lab engine provenance (RE-001 / RE-002) */
+  source_engine_id?: string | null;
+  source_engine_version?: string | null;
+  source_recommendation_id?: string | null;
+  experiment_id?: string | null;
 };
 
 export type RecommendationPrefillResponse = {
@@ -627,6 +632,10 @@ export type RecommendationPrefillResponse = {
   stop_loss?: number | null;
   target?: number | null;
   note: string;
+  source_engine_id?: string | null;
+  source_engine_version?: string | null;
+  source_recommendation_id?: string | null;
+  experiment_id?: string | null;
 };
 
 export type PaperOrderActionResponse = {
