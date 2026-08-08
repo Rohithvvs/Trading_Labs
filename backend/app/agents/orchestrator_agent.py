@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import json
 import os
 import threading
+import time
 from typing import Any
 
 _db_lock = threading.Lock()
@@ -323,9 +324,31 @@ class OrchestratorAgent:
                         stock_ids[sym] = (await _db.scalars(
                             _select(WatchedStock).where(WatchedStock.symbol == sym)
                         )).first().id
+        # Shared lab portfolio snapshot once for the whole shortlist (was per-symbol,
+        # each timing out at 2s → up to 40s waste on a 20-name shortlist).
+        shared_lab_portfolio = None
+        try:
+            if settings.is_re001_active() or settings.is_re002_active():
+                from ..services.re001.portfolio_loader import load_user_portfolio_dict
+                from ..services.re001.scan_context import get_user_id as _get_scan_uid
+
+                _uid = _get_scan_uid()
+                shared_lab_portfolio = await asyncio.wait_for(
+                    asyncio.to_thread(load_user_portfolio_dict, _uid, timeout_s=0),
+                    timeout=2.0,
+                )
+        except Exception as port_exc:
+            self.logger.warning(
+                "Shared lab portfolio snapshot skipped | err=%s",
+                port_exc,
+            )
+            shared_lab_portfolio = None
+
         # Dispatch Backtest / News / Fundamental agents with bounded concurrency.
         async def run_remaining_agents():
-            agent_sem = asyncio.Semaphore(6)
+            # Shortlist is typically top_n=20; higher concurrency cuts wall-clock
+            # while RE-001/RE-002 still run in parallel inside each symbol.
+            agent_sem = asyncio.Semaphore(12)
             completed_count = {"n": 0}
             total_symbols = len(request.symbols)
 
@@ -354,6 +377,7 @@ class OrchestratorAgent:
                                 feat007_config=feat007_config,
                                 stock_id=stock_ids.get(symbol),
                                 market_regime=_market_regime,
+                                shared_lab_portfolio=shared_lab_portfolio,
                             )
                     except Exception as exc:
                         self.logger.error(
@@ -627,6 +651,7 @@ class OrchestratorAgent:
                 timeframe=request.timeframe,
             )
             self.logger.info("STEP 6/8 | Run full analysis only on top set | stage=%s | count=%s", stage_name, len(shortlisted_symbols))
+            deep_t0 = time.perf_counter()
             # Reuse OHLCV data from screener phase (avoids duplicate FYERS fetch).
             # May be partial — run_full fills any shortlisted symbol still missing.
             prefetched_candles: dict[str, dict[AnalysisMode, list[OHLCVPoint]]] = {}
@@ -730,11 +755,12 @@ class OrchestratorAgent:
             buy_candidate_symbols = [item.symbol for item in buy_items]
             watch_candidate_symbols = [item.symbol for item in watch_items]
             self.logger.info(
-                "STEP 7/8 | RecommendationAgent finished | stage=%s | buy=%s | watch=%s | reject=%s",
+                "STEP 7/8 | RecommendationAgent finished | stage=%s | buy=%s | watch=%s | reject=%s | deep_analysis_ms=%.0f",
                 stage_name,
                 len(buy_items),
                 len(watch_items),
                 len(reject_items),
+                (time.perf_counter() - deep_t0) * 1000,
             )
             # Keep REJECT results in the payload so the UI still receives the real
             # composite score, confidence, trade plan, and equity curve.
@@ -1040,6 +1066,7 @@ class OrchestratorAgent:
         feat007_config: dict | None = None,
         stock_id: int | None = None,
         market_regime: Any = None,
+        shared_lab_portfolio: dict | None = None,
     ) -> StockAnalysisResult:
         import asyncio
         if stock_id is None:
@@ -1057,7 +1084,7 @@ class OrchestratorAgent:
             source = self.fyers_service.get_ohlcv_source(symbol, mode, resolution)
             candle_count = len(candles_by_mode[mode])
             latest_ts = candles_by_mode[mode][-1].timestamp.isoformat() if candles_by_mode[mode] else "n/a"
-            self.logger.info(
+            self.logger.debug(
                 "Symbol candle summary | symbol=%s | mode=%s | resolution=%s | source=%s | candles=%s | latest_ts=%s",
                 symbol,
                 mode.value,
@@ -1118,10 +1145,30 @@ class OrchestratorAgent:
                         ))
                 return results
 
+            async def _news_bounded():
+                # External news (DuckDuckGo) often stalls 5–30s; fail-open neutral for scan throughput.
+                try:
+                    return await asyncio.wait_for(
+                        asyncio.to_thread(safe_news_run, symbol),
+                        timeout=2.5,
+                    )
+                except Exception:
+                    return [], 0.5, "NEUTRAL", "No recent news found"
+
+            async def _fund_bounded():
+                try:
+                    return await asyncio.wait_for(
+                        asyncio.to_thread(self.fundamental_agent.run, symbol),
+                        timeout=3.0,
+                    )
+                except Exception as e:
+                    self.logger.warning("Fundamental agent timed out/failed for %s: %s", symbol, e)
+                    return self.fundamental_agent._fallback_result()
+
             return await asyncio.gather(
                 asyncio.to_thread(run_backtest),
-                asyncio.to_thread(safe_news_run, symbol),
-                asyncio.to_thread(self.fundamental_agent.run, symbol)
+                _news_bounded(),
+                _fund_bounded(),
             )
 
         backtests, (articles, sentiment_score, sentiment_label, news_summary), fundamental_result = await _run_agents_concurrently()
@@ -1312,6 +1359,55 @@ class OrchestratorAgent:
             articles=articles
         )
 
+        # Auto paper trading for Production BUY — fail-open; independent of lab engines.
+        try:
+            prod_action = str(getattr(recommendation, "action", "") or "").strip().upper()
+            if prod_action == "BUY":
+                from ..db.session import SessionLocal
+                from ..services.auto_paper_trading_service import maybe_auto_paper_from_production
+                from ..services.re001.scan_context import get_user_id as _get_scan_user
+
+                swing_plan = None
+                try:
+                    plans = list(getattr(recommendation, "trade_plans", None) or [])
+                    swing_plan = next(
+                        (p for p in plans if str(getattr(p, "mode", "") or "").lower() == "swing"),
+                        plans[0] if plans else None,
+                    )
+                except Exception:
+                    swing_plan = None
+                stop = getattr(swing_plan, "stop_loss", None) if swing_plan else None
+                targets = list(getattr(swing_plan, "targets", None) or []) if swing_plan else []
+                entry = getattr(swing_plan, "entry", None) if swing_plan else None
+                if entry is None and swing_plan is not None:
+                    entry = getattr(swing_plan, "entry_price", None)
+
+                def _auto_prod():
+                    db = SessionLocal()
+                    try:
+                        return maybe_auto_paper_from_production(
+                            db,
+                            symbol=symbol,
+                            action=prod_action,
+                            score=float(getattr(recommendation, "score", 0) or 0) or None,
+                            confidence=float(getattr(recommendation, "confidence", 0) or 0) or None,
+                            stop_loss=float(stop) if stop else None,
+                            target=float(targets[0]) if targets else None,
+                            entry=float(entry) if entry else None,
+                            user_id=_get_scan_user(),
+                        )
+                    finally:
+                        db.close()
+
+                await asyncio.to_thread(_auto_prod)
+        except Exception as auto_prod_exc:
+            self.logger.warning(
+                "Production auto paper hook failed (ignored) | symbol=%s | err=%s",
+                symbol,
+                auto_prod_exc,
+                exc_info=True,
+            )
+
         # Lab engines (RE-001 / RE-002): isolated async, fail-open; never mutates production.
         # Shared portfolio snapshot once; engines run in parallel when both active.
         re001_decision = None
@@ -1327,21 +1423,22 @@ class OrchestratorAgent:
                 primary_candles = self._primary_candle_set(candles_by_mode)
                 uid = get_user_id()
                 scan_run_id = get_scan_run_id()
-                user_portfolio = None
-                try:
-                    # Bound portfolio DB read once for all lab engines.
-                    user_portfolio = await asyncio.wait_for(
-                        asyncio.to_thread(load_user_portfolio_dict, uid, timeout_s=0),
-                        timeout=2.0,
-                    )
-                except Exception as portfolio_exc:
-                    self.logger.warning(
-                        "Lab portfolio snapshot skipped | symbol=%s | scan_run_id=%s | err=%s",
-                        symbol,
-                        scan_run_id,
-                        portfolio_exc,
-                    )
-                    user_portfolio = None
+                # Prefer shared shortlist portfolio; fall back to per-symbol only if needed.
+                user_portfolio = shared_lab_portfolio
+                if user_portfolio is None:
+                    try:
+                        user_portfolio = await asyncio.wait_for(
+                            asyncio.to_thread(load_user_portfolio_dict, uid, timeout_s=0),
+                            timeout=1.0,
+                        )
+                    except Exception as portfolio_exc:
+                        self.logger.warning(
+                            "Lab portfolio snapshot skipped | symbol=%s | scan_run_id=%s | err=%s",
+                            symbol,
+                            scan_run_id,
+                            portfolio_exc,
+                        )
+                        user_portfolio = None
 
                 lab_kwargs = dict(
                     symbol=symbol,

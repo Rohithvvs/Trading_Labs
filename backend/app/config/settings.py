@@ -269,6 +269,27 @@ class Settings(BaseSettings):
     re002_experiment_id: str | None = Field(default=None, alias="RE002_EXPERIMENT_ID")
     re002_experiment_paused: bool = Field(default=False, alias="RE002_EXPERIMENT_PAUSED")
 
+    # Automated Paper Trading from recommendation engine BUY signals
+    # Places independent paper orders per engine (Production / RE-001 / RE-002).
+    auto_paper_trading_enabled: bool = Field(default=True, alias="AUTO_PAPER_TRADING_ENABLED")
+    # When True, RE-001/RE-002 auto-trade only in PAPER_LINKED stage.
+    # Default False so engine comparison auto-paper works in LAB_SHADOW too.
+    auto_paper_trading_lab_requires_paper_linked: bool = Field(
+        default=False, alias="AUTO_PAPER_TRADING_LAB_REQUIRES_PAPER_LINKED"
+    )
+    # When True, RE-001/RE-002 auto-trade even if paper-linked gate is on.
+    auto_paper_trading_force_lab: bool = Field(default=False, alias="AUTO_PAPER_TRADING_FORCE_LAB")
+    # Cash allocation fraction of available cash per auto BUY (default 5%).
+    auto_paper_trading_allocation_pct: float = Field(
+        default=0.05, ge=0.005, le=0.5, alias="AUTO_PAPER_TRADING_ALLOCATION_PCT"
+    )
+    # Optional fixed user UUID for system/batch scans without scan-context user.
+    auto_paper_trading_user_id: str | None = Field(default=None, alias="AUTO_PAPER_TRADING_USER_ID")
+    # When no context user: "all" places for every paper account; "none" skips.
+    auto_paper_trading_system_scope: str = Field(
+        default="all", alias="AUTO_PAPER_TRADING_SYSTEM_SCOPE"
+    )
+
     # Sprint 3: Reduce Scan-Result Fan-out feature flag
     scan_result_minimal_writes: bool = Field(default=False, alias="SCAN_RESULT_MINIMAL_WRITES")
 

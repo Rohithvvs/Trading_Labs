@@ -465,7 +465,29 @@ class TechnicalAnalysisService:
         support_series = grouped["low"].transform(lambda x: x.rolling(window=20).min())
         resistance_series = grouped["high"].transform(lambda x: x.rolling(window=20).max())
 
-        final_supertrend = grouped.apply(lambda f: self._calculate_supertrend(f).iloc[-1], include_groups=False)
+        # Supertrend is pure Python per series — sequential groupby.apply was a major
+        # wall-clock cost on 700+ symbols. Parallelize last-value only.
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        symbol_list = list(frame.index.get_level_values("symbol").unique())
+        st_map: dict[str, SupertrendPoint] = {}
+
+        def _st_last(sym: str):
+            try:
+                sym_frame = frame.xs(sym, level="symbol")
+                series = self._calculate_supertrend(sym_frame)
+                return sym, series.iloc[-1] if series is not None and len(series) else None
+            except Exception:
+                return sym, None
+
+        workers = min(12, max(4, (os.cpu_count() or 4)))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futs = [pool.submit(_st_last, s) for s in symbol_list]
+            for fut in as_completed(futs):
+                sym, pt = fut.result()
+                if pt is not None:
+                    st_map[sym] = pt
+        final_supertrend = pd.Series(st_map)
 
         df_indicators = pd.DataFrame({
             "ema_20": ema_20_series,

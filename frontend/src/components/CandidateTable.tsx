@@ -13,9 +13,18 @@ type CandidateTableProps = {
   onSelect: (symbol: string) => void;
   onBuy?: (row: CandidateRow) => void;
   liveTicks?: Record<string, number>;
+  /** Optional export filename prefix (e.g. scan_production / scan_re001). */
+  exportFilePrefix?: string;
 };
 
-export const CandidateTable = memo(function CandidateTable({ rows, selectedSymbol, onSelect, onBuy, liveTicks }: CandidateTableProps) {
+export const CandidateTable = memo(function CandidateTable({
+  rows,
+  selectedSymbol,
+  onSelect,
+  onBuy,
+  liveTicks,
+  exportFilePrefix = "scan_results",
+}: CandidateTableProps) {
   const { hoverHandlers } = useResearchPrefetch();
 
   const handleExportCsv = useCallback(() => {
@@ -26,10 +35,10 @@ export const CandidateTable = memo(function CandidateTable({ rows, selectedSymbo
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `scan_results_${new Date().toISOString().slice(0, 10)}.csv`;
+    a.download = `${exportFilePrefix}_${new Date().toISOString().slice(0, 10)}.csv`;
     a.click();
     URL.revokeObjectURL(url);
-  }, [rows]);
+  }, [rows, exportFilePrefix]);
 
   if (!rows.length) {
     return (

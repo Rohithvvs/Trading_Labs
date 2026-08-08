@@ -19,9 +19,14 @@ _account_creation_lock = threading.Lock()
 from ..config import settings
 from ..models.paper_trading import (
     DEFAULT_PAPER_STARTING_BALANCE,
+    FAILED_ORDER_STATUS,
+    MARKET_OPEN_EXECUTABLE_STATUSES,
+    MARKET_WAITING_STATUSES,
     OPEN_ORDER_STATUSES,
     PENDING_MARKET_OPEN_STATUS,
+    READY_TO_EXECUTE_STATUS,
     TERMINAL_ORDER_STATUSES,
+    WAITING_FOR_MARKET_STATUS,
     ExecutionEvent,
     PaperOrder,
     PaperPosition,
@@ -53,11 +58,16 @@ from ..utils import get_logger, safe_int
 from ..core.log_manager import trading_logger
 from ..utils.money import as_float, dec, q_pnl, q_price, q_qty
 from ..observability.metrics import DUPLICATE_EXECUTIONS, ORDER_EXECUTIONS
+from .recommendation_engine_ids import PRODUCTION, normalize_recommendation_engine
 
 # In-memory PriceSnapshot cache with TTL (avoids redundant FYERS calls across requests within short window)
 _price_snapshot_cache: dict[str, tuple[PriceSnapshot, float]] = {}
 _price_snapshot_cache_lock = threading.Lock()
-_PRICE_CACHE_TTL_SEC = 3.0  # 3-second TTL — fresh enough for paper trading
+_PRICE_CACHE_TTL_SEC = 5.0  # fresh LTP for execution / quotes
+# Soft-stale reuse on confirm when broker is slow (still better than multi-second hang)
+_PRICE_CACHE_STALE_SEC = 60.0
+# Hard budget for live LTP on place/confirm — never wait the full FYERS/yfinance path
+_PRICE_EXEC_TIMEOUT_SEC = 0.75
 
 
 
@@ -176,12 +186,50 @@ class PaperTradingService:
         return self.get_dashboard()
 
     def place_order(self, payload: PaperOrderCreateRequest) -> PaperOrderActionResponse:
+        """Place paper order — optimized hot path.
+
+        Critical path (blocks response): validate → lock account → price (LTP) →
+        insert/fill → single commit → lightweight account summary.
+
+        Explicitly does NOT call ``get_dashboard()`` (full history + multi-symbol
+        FYERS fan-out) after commit — that was the multi-second confirm bottleneck.
+        """
+        import time as _time
+
+        t0 = _time.perf_counter()
+        phase: dict[str, int] = {}
+
+        def _mark(name: str, start: float) -> None:
+            phase[name] = int((_time.perf_counter() - start) * 1000)
+
         if not payload.idempotency_key:
             raise ValueError("Idempotency key is required.")
 
+        # Normalize optional prices: never store/pass 0 (clients sometimes send 0 for "unset")
+        def _pos_or_none(v: float | None) -> float | None:
+            try:
+                if v is None:
+                    return None
+                f = float(v)
+                return f if f > 0 else None
+            except (TypeError, ValueError):
+                return None
+
+        if hasattr(payload, "limit_price"):
+            payload.limit_price = _pos_or_none(payload.limit_price)
+        if hasattr(payload, "stop_price"):
+            payload.stop_price = _pos_or_none(payload.stop_price)
+        if hasattr(payload, "stop_loss"):
+            payload.stop_loss = _pos_or_none(payload.stop_loss)
+        if hasattr(payload, "target"):
+            payload.target = _pos_or_none(payload.target)
+
+        t = _time.perf_counter()
         account = self._get_or_create_account(for_update=True)
+        _mark("account_lock", t)
         from ..utils.symbol import canonical_symbol
 
+        t = _time.perf_counter()
         self._validate_symbol(payload.symbol)
         # Always persist canonical form so quote polling and positions stay consistent
         order_symbol = canonical_symbol(payload.symbol)
@@ -191,27 +239,78 @@ class PaperTradingService:
                 PaperOrder.idempotency_key == payload.idempotency_key,
             )
         )
+        _mark("idempotency_lookup", t)
         if existing:
-            position = self.db.scalar(
-                select(PaperPosition).where(
-                    PaperPosition.account_id == account.id,
-                    PaperPosition.symbol == existing.symbol,
-                    PaperPosition.status == "OPEN",
-                )
+            existing_engine = normalize_recommendation_engine(
+                getattr(existing, "source_engine_id", None)
+            )
+            position = self._find_open_position(
+                account.id, existing.symbol, existing_engine
             )
             return PaperOrderActionResponse(
-                account=self.get_dashboard(selected_symbol=existing.symbol).account,
-                order=self._serialize_order(existing),
-                position=self._serialize_position(position) if position else None,
+                account=self._account_capital_for_confirm(account),
+                order=self._serialize_order_lean(existing),
+                position=self._serialize_position_lean(position) if position else None,
+                trade=None,
                 message="Idempotent retry: existing order returned.",
             )
-        self._refresh_pending_orders(account.id)
-        price = self._price_snapshot(order_symbol)
-        trigger_price = self._requested_price(payload, price.current_price)
+        # Do NOT call _refresh_pending_orders here — it fans out live prices for
+        # every open order and can dominate confirm latency. Market engine / open
+        # scheduler owns pending fills; place path only needs this order's LTP
+        # when a live fill decision is required.
+        t = _time.perf_counter()
         market_status = trading_hours.get_market_status()
         market_is_open = bool(market_status.get("is_open"))
         next_open = None if market_is_open else trading_hours.get_next_market_open()
 
+        # Smart price for confirm:
+        # - After hours LIMIT/GTT/STOP: use ticket prices (0 network).
+        # - MARKET open or fill decision: LTP with hard timeout + cache (no yfinance).
+        order_type_u = str(payload.type or "MARKET").upper()
+        if not market_is_open and order_type_u in {"LIMIT", "GTT"} and payload.limit_price:
+            price = self._price_snapshot_from_known(
+                order_symbol, float(payload.limit_price), "LIMIT_REF"
+            )
+            _mark("price_ltp", t)
+            self.logger.info(
+                "PRICE_EXEC_SKIP_NETWORK | symbol=%s | reason=market_closed_limit | ref=%s",
+                order_symbol,
+                payload.limit_price,
+            )
+        elif not market_is_open and order_type_u in {"STOP", "STOP_LIMIT"} and (
+            payload.stop_price or payload.limit_price
+        ):
+            ref = float(payload.stop_price or payload.limit_price or 0)
+            price = self._price_snapshot_from_known(order_symbol, ref, "STOP_REF")
+            _mark("price_ltp", t)
+            self.logger.info(
+                "PRICE_EXEC_SKIP_NETWORK | symbol=%s | reason=market_closed_stop | ref=%s",
+                order_symbol,
+                ref,
+            )
+        else:
+            price = self._price_for_execution(order_symbol, timeout_sec=_PRICE_EXEC_TIMEOUT_SEC)
+            _mark("price_ltp", t)
+        trigger_price = self._requested_price(payload, price.current_price)
+
+        # Recommendation engine ownership (Production | RE-001 | RE-002) — never null
+        order_engine = normalize_recommendation_engine(
+            getattr(payload, "recommendation_engine", None)
+            or getattr(payload, "source_engine_id", None)
+            or PRODUCTION
+        )
+        self.logger.info(
+            "ORDER_PLACE_ENGINE | symbol=%s | engine=%s | recommendation_id=%s | "
+            "type=%s | side=%s | limit=%s | stop_loss=%s | target=%s",
+            order_symbol,
+            order_engine,
+            getattr(payload, "source_recommendation_id", None),
+            payload.type,
+            payload.side,
+            payload.limit_price,
+            payload.stop_loss,
+            payload.target,
+        )
         order = PaperOrder(
             account_id=account.id,
             symbol=order_symbol,
@@ -228,7 +327,7 @@ class PaperTradingService:
             source_signal=payload.source_signal,
             source_score=payload.source_score,
             source_confidence=payload.source_confidence,
-            source_engine_id=getattr(payload, "source_engine_id", None),
+            source_engine_id=order_engine,
             source_engine_version=getattr(payload, "source_engine_version", None),
             source_recommendation_id=getattr(payload, "source_recommendation_id", None),
             experiment_id=getattr(payload, "experiment_id", None),
@@ -251,8 +350,9 @@ class PaperTradingService:
             )
             if existing:
                 return PaperOrderActionResponse(
-                    account=self.get_dashboard(selected_symbol=existing.symbol).account,
-                    order=self._serialize_order(existing),
+                    account=self._account_capital_for_confirm(account),
+                    order=self._serialize_order_lean(existing),
+                    trade=None,
                     message="Idempotent retry: existing order returned.",
                 )
             raise
@@ -264,15 +364,19 @@ class PaperTradingService:
         trade = None
         message = "Order placed."
 
+        t_exec = _time.perf_counter()
         if not market_is_open:
-            # After hours / weekend / holiday: accept order, do NOT create position or touch capital
-            order.status = PENDING_MARKET_OPEN_STATUS
-            order.lifecycle_state = PENDING_MARKET_OPEN_STATUS
+            # After hours / weekend / holiday: accept order into Orders tab only.
+            # Do NOT create position or touch capital until market open execution.
+            order.status = WAITING_FOR_MARKET_STATUS
+            order.lifecycle_state = WAITING_FOR_MARKET_STATUS
             order.scheduled_execution = next_open
+            order.paused_reason = None
             try:
                 trading_logger.info(
-                    "ORDER_PLACED_PENDING | user_id=%s | account=%s | order_id=%s | symbol=%s | side=%s | qty=%s | "
-                    "status=%s | market_status=%s | scheduled_execution=%s | order_type=%s | requested_price=%s",
+                    "ORDER_PLACED_WAITING_FOR_MARKET | user_id=%s | account=%s | order_id=%s | symbol=%s | "
+                    "side=%s | qty=%s | status=%s | engine=%s | market_status=%s | scheduled_execution=%s | "
+                    "order_type=%s | requested_price=%s",
                     self.user_id,
                     account.id,
                     getattr(order, "id", None),
@@ -280,6 +384,7 @@ class PaperTradingService:
                     order.side,
                     order.qty,
                     order.status,
+                    order_engine,
                     order.market_session,
                     order.scheduled_execution.isoformat() if order.scheduled_execution else None,
                     order.order_type,
@@ -289,26 +394,28 @@ class PaperTradingService:
                 pass
             message = (
                 "Order accepted. The market is currently closed. "
-                "Your order has been placed successfully and will be executed automatically when the market opens."
+                "Your order is in the Orders tab (WAITING_FOR_MARKET) and will be executed "
+                "automatically when the market opens."
             )
             try:
                 self.add_notification(
                     account.id,
                     (
-                        f"Order accepted for {order.symbol}. Market is closed "
+                        f"Order accepted for {order.symbol} ({order_engine}). Market is closed "
                         f"({order.market_session}). "
-                        f"Scheduled for next market open"
+                        f"Waiting for market open"
                         f"{(' at ' + order.scheduled_execution.astimezone(timezone.utc).isoformat()) if order.scheduled_execution else ''}."
                     ),
                     "info",
-                    "ORDER_PLACED_PENDING",
+                    "ORDER_WAITING_FOR_MARKET",
                     "order",
                     order.id,
-                    dedupe_key=f"pending-market-open:{order.id}",
+                    dedupe_key=f"waiting-for-market:{order.id}",
                     commit=False,
+                    skip_db_dedupe=True,
                 )
             except Exception:
-                self.logger.exception("Failed to write PENDING_MARKET_OPEN notification")
+                self.logger.exception("Failed to write WAITING_FOR_MARKET notification")
         else:
             try:
                 trading_logger.info(
@@ -360,6 +467,7 @@ class PaperTradingService:
                         filled_order.id,
                         dedupe_key=f"entry-filled:{filled_order.id}",
                         commit=False,
+                        skip_db_dedupe=True,
                     )
                 elif filled_order.status in OPEN_ORDER_STATUSES and filled_order.side == "BUY":
                     self.add_notification(
@@ -371,6 +479,7 @@ class PaperTradingService:
                         filled_order.id,
                         dedupe_key=f"pending-entry:{filled_order.id}",
                         commit=False,
+                        skip_db_dedupe=True,
                     )
                 elif filled_order.status in {"FILLED", "EXECUTED"} and filled_order.side == "SELL":
                     self.add_notification(
@@ -382,12 +491,16 @@ class PaperTradingService:
                         filled_order.id,
                         dedupe_key=f"exit-filled:{filled_order.id}",
                         commit=False,
+                        skip_db_dedupe=True,
                     )
             except Exception as e:
                 print(f"ERROR creating notifications in place_order: {e}")
                 self.logger.exception("Failed to write transaction or notification in place_order")
 
+        _mark("execute_fill", t_exec)
+
         # Commit the order + position + account + transactions + notifications as one atomic unit
+        t = _time.perf_counter()
         try:
             self.db.commit()
         except Exception:
@@ -397,13 +510,53 @@ class PaperTradingService:
                 pass
             self.logger.exception("Failed to commit order for symbol=%s account=%s", payload.symbol, account.id)
             raise
+        _mark("commit", t)
 
-        summary = self.get_dashboard(selected_symbol=payload.symbol).account
+        # Minimal capital for confirm payload — no portfolio book, no realized SUM
+        t = _time.perf_counter()
+        try:
+            self.db.refresh(account)
+        except Exception:
+            pass
+        summary = self._account_capital_for_confirm(account)
+        _mark("summary_capital", t)
+
+        t = _time.perf_counter()
+        lean_order = self._serialize_order_lean(filled_order)
+        lean_position = self._serialize_position_lean(position) if position else None
+        # trade intentionally omitted from confirm payload (Desk loads history async)
+        _mark("serialize_lean", t)
+
+        total_ms = int((_time.perf_counter() - t0) * 1000)
+        slow_steps = {k: v for k, v in phase.items() if v > 50}
+        self.logger.info(
+            "ORDER_PLACE_TIMING | symbol=%s | status=%s | total_ms=%s | phases=%s | slow_gt_50ms=%s",
+            order_symbol,
+            getattr(filled_order, "status", None),
+            total_ms,
+            phase,
+            slow_steps or {},
+        )
+        if slow_steps:
+            self.logger.warning(
+                "ORDER_PLACE_SLOW_STEPS | symbol=%s | steps=%s | total_ms=%s",
+                order_symbol,
+                slow_steps,
+                total_ms,
+            )
+        if total_ms > 500:
+            self.logger.warning(
+                "SLOW_ORDER_PLACE | symbol=%s | total_ms=%s | phases=%s",
+                order_symbol,
+                total_ms,
+                phase,
+            )
+
         return PaperOrderActionResponse(
             account=summary,
-            order=self._serialize_order(filled_order),
-            position=self._serialize_position(position) if position else None,
-            trade=self._serialize_trade(trade) if trade else None,
+            order=lean_order,
+            position=lean_position,
+            trade=None,
             message=message,
         )
 
@@ -528,7 +681,11 @@ class PaperTradingService:
         entry = payload.suggested_entry
         stop = payload.suggested_stop
         targets = list(payload.suggested_targets or [])
-        source_engine_id = payload.source_engine_id
+        source_engine_id = normalize_recommendation_engine(
+            getattr(payload, "recommendation_engine", None)
+            or payload.source_engine_id
+            or PRODUCTION
+        )
         source_engine_version = payload.source_engine_version
         source_recommendation_id = payload.source_recommendation_id
         experiment_id = getattr(payload, "experiment_id", None)
@@ -545,7 +702,9 @@ class PaperTradingService:
                 if source_recommendation_id:
                     row = get_decision_by_id(self.db, source_recommendation_id)
                 if row is not None:
-                    source_engine_id = row.engine_id or source_engine_id or "RE-001"
+                    source_engine_id = normalize_recommendation_engine(
+                        row.engine_id or source_engine_id or "RE-001"
+                    )
                     source_engine_version = row.engine_version or source_engine_version or "1.0"
                     source_recommendation_id = row.recommendation_id
                     if experiment_id is None and hasattr(row, "experiment_id"):
@@ -585,6 +744,20 @@ class PaperTradingService:
                 f"score={payload.recommendation_meta.get('score', 'n/a')} | "
                 f"confidence={payload.recommendation_meta.get('confidence', 'n/a')}"
             )
+
+        def _pos(v):
+            try:
+                if v is None:
+                    return None
+                f = float(v)
+                return f if f > 0 else None
+            except (TypeError, ValueError):
+                return None
+
+        entry = _pos(entry)
+        stop = _pos(stop)
+        targets = [t for t in (_pos(x) for x in targets) if t is not None]
+
         return RecommendationPrefillResponse(
             symbol=symbol,
             qty=1,
@@ -648,6 +821,47 @@ class PaperTradingService:
         ltp: float | None = None
         source = "NO_DATA"
 
+        # 0) Fresh in-process snapshot (same process, ~3s TTL) — skip network entirely.
+        try:
+            import time as _mono
+
+            with _price_snapshot_cache_lock:
+                cached_entry = _price_snapshot_cache.get(normalized_symbol)
+            if cached_entry:
+                snap, cache_ts = cached_entry
+                age = _mono.monotonic() - cache_ts
+                if (
+                    snap
+                    and snap.current_price
+                    and float(snap.current_price) > 0
+                    and age < _PRICE_CACHE_TTL_SEC
+                ):
+                    snap_source = (
+                        snap.source
+                        if snap.source in {"FYERS_QUOTE", "CANDLE_FALLBACK", "NO_DATA", "TEST_MOCK"}
+                        else "CANDLE_FALLBACK"
+                    )
+                    latency_ms = int((_time.perf_counter() - started) * 1000)
+                    self.logger.info(
+                        "QUOTE_MEMORY_CACHE_HIT | symbol=%s | ltp=%s | source=%s | age_ms=%s | latency_ms=%s",
+                        normalized_symbol,
+                        snap.current_price,
+                        snap_source,
+                        int(age * 1000),
+                        latency_ms,
+                    )
+                    return PaperQuoteResponse(
+                        symbol=normalized_symbol,
+                        current_price=round(float(snap.current_price), 2),
+                        source=snap_source,  # type: ignore[arg-type]
+                        updated_at=now,
+                        reason=None if snap_source == "FYERS_QUOTE" else "Using cached price",
+                        is_stale=snap_source != "FYERS_QUOTE",
+                        last_successful_at=snap.fetched_at,
+                    )
+        except Exception:
+            pass
+
         # 1) Live LTP via shared event loop (bounded timeout).
         # Unit tests mock run_coroutine_threadsafe; production uses main_event_loop.
         try:
@@ -658,7 +872,8 @@ class PaperTradingService:
                 self.fyers_service.fetch_ltp(normalized_symbol),
                 main_event_loop,
             )
-            ltp = future.result(timeout=5)
+            # Bound tightly: FYERS path already has PG LTP cache; long waits block Order UI.
+            ltp = future.result(timeout=3)
             if ltp is not None and float(ltp) > 0:
                 source = "FYERS_QUOTE"
             else:
@@ -683,46 +898,7 @@ class PaperTradingService:
             )
             ltp = None
 
-        # 2) Candle fallback (bounded) when live LTP missing
-        if ltp is None:
-            try:
-                from .fyers_service import _run_sync
-
-                candles = None
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                    fut = pool.submit(
-                        _run_sync,
-                        self.fyers_service.fetch_ohlcv(normalized_symbol, AnalysisMode.swing, "1d", 2),
-                    )
-                    candles = fut.result(timeout=8)
-                if candles:
-                    close = getattr(candles[-1], "close", None)
-                    if close is not None and float(close) > 0:
-                        ltp = float(close)
-                        source = "CANDLE_FALLBACK"
-                        reason = reason or (
-                            "Quote Provider Timeout"
-                            if exception_name in {"TimeoutError", "CancelledError", "FuturesTimeoutError"}
-                            else "Live quote unavailable; using candle fallback"
-                        )
-                        is_stale = True
-            except Exception as e:
-                retry_count += 1
-                exception_name = exception_name or type(e).__name__
-                self.logger.warning(
-                    "QUOTE_CANDLE_FALLBACK_FAILURE | timestamp=%s | user=%s | broker=%s | symbol=%s | "
-                    "endpoint=ohlcv | latency_ms=%s | retry_count=%s | exception=%s | error=%s",
-                    datetime.now(timezone.utc).isoformat(),
-                    user,
-                    broker,
-                    normalized_symbol,
-                    int((_time.perf_counter() - started) * 1000),
-                    retry_count,
-                    type(e).__name__,
-                    str(e)[:200],
-                )
-
-        # 3) Last successful in-process snapshot (failover display)
+        # 2) Stale in-process snapshot before expensive candle OHLCV
         if ltp is None:
             try:
                 import time as _mono
@@ -753,6 +929,45 @@ class PaperTradingService:
                         )
             except Exception:
                 pass
+
+        # 3) Candle fallback (bounded) when live LTP + cache both miss
+        if ltp is None:
+            try:
+                from .fyers_service import _run_sync
+
+                candles = None
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                    fut = pool.submit(
+                        _run_sync,
+                        self.fyers_service.fetch_ohlcv(normalized_symbol, AnalysisMode.swing, "1d", 2),
+                    )
+                    candles = fut.result(timeout=3)
+                if candles:
+                    close = getattr(candles[-1], "close", None)
+                    if close is not None and float(close) > 0:
+                        ltp = float(close)
+                        source = "CANDLE_FALLBACK"
+                        reason = reason or (
+                            "Quote Provider Timeout"
+                            if exception_name in {"TimeoutError", "CancelledError", "FuturesTimeoutError"}
+                            else "Live quote unavailable; using candle fallback"
+                        )
+                        is_stale = True
+            except Exception as e:
+                retry_count += 1
+                exception_name = exception_name or type(e).__name__
+                self.logger.warning(
+                    "QUOTE_CANDLE_FALLBACK_FAILURE | timestamp=%s | user=%s | broker=%s | symbol=%s | "
+                    "endpoint=ohlcv | latency_ms=%s | retry_count=%s | exception=%s | error=%s",
+                    datetime.now(timezone.utc).isoformat(),
+                    user,
+                    broker,
+                    normalized_symbol,
+                    int((_time.perf_counter() - started) * 1000),
+                    retry_count,
+                    type(e).__name__,
+                    str(e)[:200],
+                )
 
         if ltp is None or float(ltp) <= 0:
             ltp = 0.0
@@ -837,6 +1052,489 @@ class PaperTradingService:
             is_stale=is_stale,
             last_successful_at=last_successful_at,
         )
+
+    def get_account_summary_fast(self) -> dict:
+        """Lightweight capital summary for Order page / widgets.
+
+        Avoids the full dashboard path which:
+        - refreshes pending orders (live price fan-out)
+        - loads full order history + trade history rows
+        - fetches FYERS/OHLCV snapshots for every open symbol
+        - embeds Nifty-500 symbol list + workspace
+
+        Uses stored position prices and order limit prices only so available
+        cash / reserved cash stay consistent with order validation without
+        blocking on market data.
+        """
+        import time as _time
+
+        started = _time.perf_counter()
+        t_db = started
+        account = self._get_or_create_account()
+        ms_account = int((_time.perf_counter() - t_db) * 1000)
+
+        t_db = _time.perf_counter()
+        positions = self._position_models(account.id)
+        # Only working orders matter for reserved cash / open-order count
+        open_orders = list(
+            self.db.scalars(
+                select(PaperOrder).where(
+                    PaperOrder.account_id == account.id,
+                    PaperOrder.status.in_(tuple(OPEN_ORDER_STATUSES)),
+                )
+            )
+        )
+        ms_positions_orders = int((_time.perf_counter() - t_db) * 1000)
+
+        # Realized PnL + today PnL via aggregates (no full trade history load)
+        t_db = _time.perf_counter()
+        realized_pnl = float(
+            self.db.scalar(
+                select(func.coalesce(func.sum(PaperTradeHistory.pnl), 0)).where(
+                    PaperTradeHistory.account_id == account.id
+                )
+            )
+            or 0
+        )
+
+        try:
+            from zoneinfo import ZoneInfo
+
+            ist = ZoneInfo("Asia/Kolkata")
+        except Exception:
+            ist = timezone(timedelta(hours=5, minutes=30))
+        now_ist = datetime.now(ist)
+        start_ist = datetime(now_ist.year, now_ist.month, now_ist.day, 0, 0, 0, tzinfo=ist)
+        start_utc = start_ist.astimezone(timezone.utc)
+        end_utc = (start_ist + timedelta(days=1)).astimezone(timezone.utc)
+        daily_pnl = float(
+            self.db.scalar(
+                select(func.coalesce(func.sum(PaperTradeHistory.pnl), 0)).where(
+                    PaperTradeHistory.account_id == account.id,
+                    PaperTradeHistory.closed_at >= start_utc,
+                    PaperTradeHistory.closed_at < end_utc,
+                )
+            )
+            or 0
+        )
+        ms_pnl_agg = int((_time.perf_counter() - t_db) * 1000)
+
+        # Reuse reserved/invested math without live price cache
+        summary = self._build_account_summary(
+            account,
+            positions,
+            open_orders,
+            trades=[],  # realized applied below from SQL
+            price_cache={},
+        )
+        invested_value = float(summary.total_invested)
+        unrealized_pnl = float(summary.unrealized_pnl)
+        balance = float(summary.balance)
+        available_cash = float(summary.available_cash)
+        equity = float(summary.equity)
+        starting_balance = float(summary.starting_balance)
+        reserved_cash = float(summary.reserved_cash)
+        max_risk_per_trade = float(summary.max_risk_per_trade)
+        # Prefer SQL realized over empty-trades summary (which would be 0)
+        total_capital = round(equity, 2) if equity else round(balance + invested_value, 2)
+        available_funds = round(available_cash, 2)
+        total_pnl = round(unrealized_pnl + realized_pnl, 2)
+        daily_pnl = round(daily_pnl, 2)
+        daily_pnl_pct = round((daily_pnl / total_capital) * 100, 2) if total_capital else 0.0
+
+        payload = {
+            "account_id": summary.account_id,
+            "account_name": summary.account_name,
+            "base_currency": summary.base_currency,
+            "starting_balance": starting_balance,
+            "balance": balance,
+            "cash_balance": balance,
+            "equity": equity,
+            "realized_pnl": round(realized_pnl, 2),
+            "unrealized_pnl": unrealized_pnl,
+            "total_invested": invested_value,
+            "reserved_cash": reserved_cash,
+            "available_cash": available_cash,
+            "open_positions_count": summary.open_positions_count,
+            "open_orders_count": summary.open_orders_count,
+            "max_risk_per_trade": max_risk_per_trade,
+            "updated_at": summary.updated_at,
+            "total_capital": total_capital,
+            "available_funds": available_funds,
+            "invested_value": invested_value,
+            "total_pnl": total_pnl,
+            "daily_pnl": daily_pnl,
+            "daily_pnl_pct": daily_pnl_pct,
+        }
+        latency_ms = int((_time.perf_counter() - started) * 1000)
+        self.logger.info(
+            "PAPER_ACCOUNT_SUMMARY_FAST | account_id=%s available_cash=%s positions=%s "
+            "open_orders=%s latency_ms=%s db_account_ms=%s db_pos_orders_ms=%s db_pnl_agg_ms=%s",
+            summary.account_id,
+            available_cash,
+            summary.open_positions_count,
+            summary.open_orders_count,
+            latency_ms,
+            ms_account,
+            ms_positions_orders,
+            ms_pnl_agg,
+        )
+        if latency_ms > 100:
+            self.logger.warning(
+                "SLOW_QUERY | endpoint=account_summary_fast | latency_ms=%s | "
+                "db_account_ms=%s | db_pos_orders_ms=%s | db_pnl_agg_ms=%s",
+                latency_ms,
+                ms_account,
+                ms_positions_orders,
+                ms_pnl_agg,
+            )
+        return payload
+
+    def get_order_by_id(self, order_id: int) -> PaperOrderResponse | None:
+        """Single pending/open order by id — avoids loading full pending list + price fan-out."""
+        account = self._get_or_create_account()
+        order = self.db.scalar(
+            select(PaperOrder).where(
+                PaperOrder.id == order_id,
+                PaperOrder.account_id == account.id,
+            )
+        )
+        if not order:
+            return None
+        return self._serialize_order(order, None)
+
+    def _reserved_cash_sql(self, account_id: int) -> float:
+        """Reserved BUY limit/GTT cash via indexed aggregate — no full-row order load.
+
+        Mirrors ``_build_account_summary`` reserved rules without ORM hydration:
+        status in PENDING/OPEN/PARTIALLY_EXECUTED, side BUY, type LIMIT/GTT.
+        Uses order_price (limit) only — same as summary when price_cache empty.
+        """
+        reserved = self.db.scalar(
+            select(
+                func.coalesce(
+                    func.sum(func.coalesce(PaperOrder.order_price, 0) * PaperOrder.qty),
+                    0,
+                )
+            ).where(
+                PaperOrder.account_id == account_id,
+                PaperOrder.status.in_(("PENDING", "OPEN", "PARTIALLY_EXECUTED")),
+                PaperOrder.side == "BUY",
+                PaperOrder.order_type.in_(("LIMIT", "GTT")),
+            )
+        )
+        return float(reserved or 0)
+
+    def _available_cash_fast(self, account: PaperTradingAccount) -> float:
+        """cash_balance − reserved open BUY limits (indexed SUM, no trade history)."""
+        reserved = self._reserved_cash_sql(int(account.id))
+        return float(q_pnl(dec(account.cash_balance) - dec(reserved)))
+
+    def _account_summary_light(self, account: PaperTradingAccount) -> PaperAccountSummary:
+        """DB-only capital summary for order responses — no live prices, no full portfolio.
+
+        - Open positions only (indexed account_id+status)
+        - Reserved cash via SQL SUM (not SELECT * orders)
+        - Skips full trade-history load; realized via one aggregate when needed
+        """
+        positions = self._position_models(account.id)
+        reserved_cash = self._reserved_cash_sql(int(account.id))
+        balance = as_float(q_pnl(account.cash_balance))
+        available_cash = as_float(q_pnl(dec(account.cash_balance) - dec(reserved_cash)))
+
+        invested = Decimal("0")
+        unrealized = Decimal("0")
+        position_value = Decimal("0")
+        for position in positions:
+            raw_price = position.current_price if position.current_price and position.current_price > 0 else position.avg_entry_price
+            current_price = dec(raw_price if raw_price and raw_price > 0 else position.avg_entry_price)
+            qty = dec(position.qty)
+            invested += dec(position.avg_entry_price) * qty
+            unrealized += (current_price - dec(position.avg_entry_price)) * qty
+            position_value += current_price * qty
+
+        open_orders_count = int(
+            self.db.scalar(
+                select(func.count())
+                .select_from(PaperOrder)
+                .where(
+                    PaperOrder.account_id == account.id,
+                    PaperOrder.status.in_(tuple(OPEN_ORDER_STATUSES)),
+                )
+            )
+            or 0
+        )
+        # One aggregate — not SELECT * trade history
+        realized = float(
+            self.db.scalar(
+                select(func.coalesce(func.sum(PaperTradeHistory.pnl), 0)).where(
+                    PaperTradeHistory.account_id == account.id
+                )
+            )
+            or 0
+        )
+        equity = as_float(q_pnl(dec(account.cash_balance) + position_value))
+        return PaperAccountSummary(
+            account_id=account.id,
+            account_name=account.name,
+            base_currency=account.base_currency or "INR",
+            starting_balance=as_float(q_pnl(account.starting_balance)),
+            balance=balance,
+            equity=equity,
+            realized_pnl=round(realized, 2),
+            unrealized_pnl=as_float(q_pnl(unrealized)),
+            total_invested=as_float(q_pnl(invested)),
+            reserved_cash=as_float(q_pnl(reserved_cash)),
+            available_cash=available_cash,
+            open_positions_count=len(positions),
+            open_orders_count=open_orders_count,
+            max_risk_per_trade=as_float(account.max_risk_per_trade),
+            updated_at=datetime.now(timezone.utc),
+        )
+
+    def _account_capital_for_confirm(self, account: PaperTradingAccount) -> PaperAccountSummary:
+        """Minimal capital after place — cash / buying power only (no realized SUM).
+
+        Used for Confirm Order response payload (Task 12). Full analytics stay on Desk.
+        """
+        reserved_cash = self._reserved_cash_sql(int(account.id))
+        balance = as_float(q_pnl(account.cash_balance))
+        available_cash = as_float(q_pnl(dec(account.cash_balance) - dec(reserved_cash)))
+        open_pos = int(
+            self.db.scalar(
+                select(func.count())
+                .select_from(PaperPosition)
+                .where(
+                    PaperPosition.account_id == account.id,
+                    PaperPosition.status == "OPEN",
+                )
+            )
+            or 0
+        )
+        open_ord = int(
+            self.db.scalar(
+                select(func.count())
+                .select_from(PaperOrder)
+                .where(
+                    PaperOrder.account_id == account.id,
+                    PaperOrder.status.in_(tuple(OPEN_ORDER_STATUSES)),
+                )
+            )
+            or 0
+        )
+        return PaperAccountSummary(
+            account_id=account.id,
+            account_name=account.name,
+            base_currency=account.base_currency or "INR",
+            starting_balance=as_float(q_pnl(account.starting_balance)),
+            balance=balance,
+            equity=balance,  # Desk refreshes mark-to-market async
+            realized_pnl=0.0,
+            unrealized_pnl=0.0,
+            total_invested=0.0,
+            reserved_cash=as_float(q_pnl(reserved_cash)),
+            available_cash=available_cash,
+            open_positions_count=open_pos,
+            open_orders_count=open_ord,
+            max_risk_per_trade=as_float(account.max_risk_per_trade),
+            updated_at=datetime.now(timezone.utc),
+        )
+
+    def _engine_of(self, entity: object | None) -> str:
+        """Canonical recommendation engine for an order/position/trade row."""
+        return normalize_recommendation_engine(
+            getattr(entity, "source_engine_id", None) if entity is not None else None
+        )
+
+    def _find_open_position(
+        self, account_id: int, symbol: str, engine: str | None
+    ) -> PaperPosition | None:
+        """Open position unique by (account, symbol, recommendation_engine)."""
+        eng = normalize_recommendation_engine(engine)
+        return self.db.scalar(
+            select(PaperPosition).where(
+                PaperPosition.account_id == account_id,
+                PaperPosition.symbol == symbol,
+                PaperPosition.status == "OPEN",
+                PaperPosition.source_engine_id == eng,
+            )
+        )
+
+    def _serialize_order_lean(self, order: PaperOrder) -> PaperOrderResponse:
+        """Confirm response: id/status/levels only — no price-source metadata bloat."""
+        filled_price = as_float(q_price(order.filled_price)) if order.filled_price is not None else None
+        eng = self._engine_of(order)
+        return PaperOrderResponse(
+            id=order.id,
+            symbol=order.symbol,
+            side=order.side,  # type: ignore[arg-type]
+            type=order.order_type,  # type: ignore[arg-type]
+            qty=int(dec(order.qty)),
+            price=as_float(q_price(order.order_price)) if order.order_price is not None else None,
+            stop_price=as_float(q_price(order.stop_price)) if getattr(order, "stop_price", None) is not None else None,
+            stop_loss=as_float(q_price(order.stop_loss)) if order.stop_loss is not None else None,
+            target=as_float(q_price(order.target)) if order.target is not None else None,
+            status=order.status,  # type: ignore[arg-type]
+            lifecycle_state=order.lifecycle_state,  # type: ignore[arg-type]
+            filled_price=filled_price,
+            filled_at=order.filled_at,
+            executed_at=order.filled_at,
+            created_at=order.created_at,
+            product_type=getattr(order, "product_type", None),
+            market_session=getattr(order, "market_session", None),
+            source_engine_id=eng,
+            recommendation_engine=eng,
+        )
+
+    def _serialize_position_lean(self, position: PaperPosition) -> PaperPositionResponse:
+        """Confirm response: affected symbol only — not full holdings book."""
+        current_price = dec(position.current_price) if position.current_price and position.current_price > 0 else dec(position.avg_entry_price)
+        avg_entry = dec(position.avg_entry_price)
+        qty = dec(position.qty)
+        unrealized = q_pnl((current_price - avg_entry) * qty)
+        unrealized_pct = q_pnl(((current_price - avg_entry) / avg_entry) * Decimal("100")) if avg_entry else Decimal("0.00")
+        eng = self._engine_of(position)
+        return PaperPositionResponse(
+            id=position.id,
+            symbol=position.symbol,
+            qty=int(qty),
+            avg_entry_price=as_float(q_price(avg_entry)),
+            current_price=as_float(q_price(current_price)),
+            unrealized_pnl=as_float(unrealized),
+            unrealized_pnl_percent=as_float(unrealized_pct),
+            invested_value=as_float(q_pnl(avg_entry * qty)),
+            stop_loss=as_float(q_price(position.stop_loss)) if position.stop_loss else None,
+            target=as_float(q_price(position.target)) if position.target else None,
+            lifecycle_state=position.lifecycle_state,
+            monitor_enabled=bool(position.monitor_enabled),
+            source_engine_id=eng,
+            recommendation_engine=eng,
+            created_at=position.created_at,
+            updated_at=position.updated_at,
+        )
+
+    def _price_snapshot_from_known(
+        self, symbol: str, price: float, source: str = "ORDER_REF"
+    ) -> PriceSnapshot:
+        """Build a zero-latency snapshot when price is already known (limit/stop)."""
+        return PriceSnapshot(
+            symbol=symbol,
+            current_price=float(price),
+            candles=[],
+            ema_20=None,
+            supertrend=None,
+            source=source,
+            fetched_at=datetime.now(timezone.utc),
+        )
+
+    def _price_for_execution(
+        self,
+        symbol: str,
+        *,
+        timeout_sec: float | None = None,
+        allow_stale: bool = True,
+    ) -> PriceSnapshot:
+        """LTP-first price for order placement — no OHLCV / EMA / yfinance.
+
+        Hot-path budget: prefer in-process cache → PG/FYERS LTP (≤ ~750ms) →
+        soft-stale memory cache → test mock / NO_DATA. Never blocks confirm for
+        multi-second Yahoo/candle fallbacks.
+        Full ``_price_snapshot`` remains for workspace/dashboard chart paths.
+        """
+        import time as _time
+
+        started = _time.perf_counter()
+        now_mono = _time.monotonic()
+        timeout = _PRICE_EXEC_TIMEOUT_SEC if timeout_sec is None else float(timeout_sec)
+        cached: tuple[PriceSnapshot, float] | None = None
+        with _price_snapshot_cache_lock:
+            cached = _price_snapshot_cache.get(symbol)
+            if (
+                cached
+                and (now_mono - cached[1]) < _PRICE_CACHE_TTL_SEC
+                and cached[0].current_price > 0
+            ):
+                self.logger.info(
+                    "PRICE_EXEC_CACHE_HIT | symbol=%s | ltp=%s | latency_ms=%s",
+                    symbol,
+                    cached[0].current_price,
+                    int((_time.perf_counter() - started) * 1000),
+                )
+                return cached[0]
+
+        ltp: float | None = None
+        source = "NO_DATA"
+        try:
+            import asyncio
+            from ..db.session import main_event_loop
+
+            future = asyncio.run_coroutine_threadsafe(
+                self.fyers_service.fetch_ltp(
+                    symbol,
+                    allow_yfinance=False,
+                    pg_ttl_sec=15.0,
+                    allow_stale_pg_sec=120.0 if allow_stale else 0.0,
+                ),
+                main_event_loop,
+            )
+            ltp = future.result(timeout=timeout)
+            if ltp is not None and float(ltp) > 0:
+                source = "FYERS_QUOTE"
+            else:
+                ltp = None
+        except Exception as e:
+            self.logger.warning(
+                "PRICE_EXEC_LTP_FAIL | symbol=%s | error=%s | timeout_sec=%s",
+                symbol,
+                str(e)[:120],
+                timeout,
+            )
+            ltp = None
+
+        if ltp is None and cached and cached[0].current_price > 0:
+            age = now_mono - cached[1]
+            if allow_stale or age < _PRICE_CACHE_TTL_SEC:
+                if age < _PRICE_CACHE_STALE_SEC or allow_stale:
+                    self.logger.info(
+                        "PRICE_EXEC_STALE_CACHE | symbol=%s | ltp=%s | age_ms=%s",
+                        symbol,
+                        cached[0].current_price,
+                        int(age * 1000),
+                    )
+                    return cached[0]
+
+        if ltp is None:
+            if settings.app_env == "test":
+                ltp = 150.0
+                source = "TEST_MOCK"
+            else:
+                ltp = 0.0
+                source = "NO_DATA"
+
+        if ltp is None or float(ltp) <= 0:
+            ltp = 0.0
+            source = "NO_DATA"
+
+        result = PriceSnapshot(
+            symbol=symbol,
+            current_price=float(ltp),
+            candles=[],
+            ema_20=None,
+            supertrend=None,
+            source=source,
+            fetched_at=datetime.now(timezone.utc),
+        )
+        if result.current_price > 0:
+            with _price_snapshot_cache_lock:
+                _price_snapshot_cache[symbol] = (result, _time.monotonic())
+        self.logger.info(
+            "PRICE_EXEC | symbol=%s | ltp=%s | source=%s | latency_ms=%s",
+            symbol,
+            result.current_price,
+            source,
+            int((_time.perf_counter() - started) * 1000),
+        )
+        return result
 
     def get_account_by_id(self, account_id: int, for_update: bool = False) -> PaperTradingAccount:
         """Load a specific paper account (engine/system use). Does not create."""
@@ -983,37 +1681,54 @@ class PaperTradingService:
         require_market_open: bool = True,
     ) -> tuple[PaperOrder, PaperPosition | None, PaperTradeHistory | None, str]:
         if order.status in TERMINAL_ORDER_STATUSES:
-            position = self.db.scalar(
-                select(PaperPosition).where(
-                    PaperPosition.account_id == account.id,
-                    PaperPosition.symbol == order.symbol,
-                    PaperPosition.status == "OPEN",
-                )
+            position = self._find_open_position(
+                account.id, order.symbol, self._engine_of(order)
             )
             return order, position, None, "Order is already terminal."
 
         # Never execute outside market hours unless explicitly forced (tests only).
         if require_market_open and not trading_hours.is_market_open():
-            if order.status != PENDING_MARKET_OPEN_STATUS:
-                # Preserve after-hours intent if already pending market open; otherwise leave working.
+            if order.status not in MARKET_WAITING_STATUSES:
+                # Preserve after-hours intent if already waiting; otherwise leave working.
                 if order.status not in OPEN_ORDER_STATUSES:
                     order.status = "PENDING"
-                if order.lifecycle_state not in {"TOKEN_EXPIRED_PAUSED", "ERROR_RETRYING", PENDING_MARKET_OPEN_STATUS}:
+                if order.lifecycle_state not in {
+                    "TOKEN_EXPIRED_PAUSED",
+                    "ERROR_RETRYING",
+                    WAITING_FOR_MARKET_STATUS,
+                    PENDING_MARKET_OPEN_STATUS,
+                }:
                     order.lifecycle_state = "PENDING_ENTRY"
-            return order, None, None, "Market closed; order remains pending until next session."
+            return order, None, None, "Market closed; order remains waiting until next session."
 
         if current_price <= 0:
-            if order.status != PENDING_MARKET_OPEN_STATUS:
+            # Auto-execution queue (market-open / retry): mark FAILED for automatic retry.
+            # Other working orders (e.g. limits) stay PENDING until a price is available.
+            if order.status in MARKET_OPEN_EXECUTABLE_STATUSES or (
+                order.order_type == "MARKET" and order.status in OPEN_ORDER_STATUSES
+            ):
+                order.status = FAILED_ORDER_STATUS
+                order.lifecycle_state = "ERROR_RETRYING"
+                order.paused_reason = "LIVE_PRICE_UNAVAILABLE"
+                return order, None, None, "Live market price unavailable; order marked FAILED for retry."
+            if order.status not in MARKET_WAITING_STATUSES:
                 order.status = "PENDING"
-            if order.lifecycle_state not in {"TOKEN_EXPIRED_PAUSED", "ERROR_RETRYING", PENDING_MARKET_OPEN_STATUS}:
+            if order.lifecycle_state not in {
+                "TOKEN_EXPIRED_PAUSED",
+                "ERROR_RETRYING",
+                WAITING_FOR_MARKET_STATUS,
+                PENDING_MARKET_OPEN_STATUS,
+            }:
                 order.lifecycle_state = "PENDING_ENTRY"
             return order, None, None, "Live market price unavailable; order remains pending."
 
-        # After-hours queue promoted to working when session is open
-        if order.status == PENDING_MARKET_OPEN_STATUS:
-            order.status = "PENDING"
-            if order.lifecycle_state == PENDING_MARKET_OPEN_STATUS:
-                order.lifecycle_state = "PENDING_ENTRY"
+        # Waiting-for-market / failed queue promoted when session is open
+        if order.status in MARKET_WAITING_STATUSES or order.status == FAILED_ORDER_STATUS:
+            order.status = READY_TO_EXECUTE_STATUS
+            order.lifecycle_state = READY_TO_EXECUTE_STATUS
+            order.paused_reason = None
+        elif order.status == READY_TO_EXECUTE_STATUS:
+            order.paused_reason = None
 
         should_fill = False
         if order.order_type == "MARKET":
@@ -1051,10 +1766,8 @@ class PaperTradingService:
         order_qty = q_qty(order.qty)
         if order.side == "BUY":
             estimated_cost = q_pnl(fill_price * order_qty)
-            # compute available cash using current open positions/orders
-            available_cash = dec(self._build_account_summary(
-                account, self._position_models(account.id), self._order_models(account.id), self._trade_models(account.id), {}
-            ).available_cash)
+            # Indexed SUM(reserved) — no full-row order/trade hydration
+            available_cash = dec(self._available_cash_fast(account))
             if estimated_cost > available_cash:
                 order.status = "REJECTED"
                 try:
@@ -1074,16 +1787,11 @@ class PaperTradingService:
             order.filled_at = datetime.now(timezone.utc)
             order.filled_price = fill_price
             order.scheduled_execution = None
-            # Deduct funds and create/update OPEN position
+            # Deduct funds and create/update OPEN position for THIS engine only
             prior_cash = account.cash_balance
             account.cash_balance = q_pnl(dec(account.cash_balance) - estimated_cost)
-            position = self.db.scalar(
-                select(PaperPosition).where(
-                    PaperPosition.account_id == account.id,
-                    PaperPosition.symbol == order.symbol,
-                    PaperPosition.status == "OPEN",
-                )
-            )
+            order_engine = self._engine_of(order)
+            position = self._find_open_position(account.id, order.symbol, order_engine)
             if position:
                 total_cost = (dec(position.avg_entry_price) * dec(position.qty)) + estimated_cost
                 position.qty = q_qty(dec(position.qty) + order_qty)
@@ -1107,7 +1815,7 @@ class PaperTradingService:
                     source_signal=order.source_signal,
                     source_score=order.source_score,
                     source_confidence=order.source_confidence,
-                    source_engine_id=getattr(order, "source_engine_id", None),
+                    source_engine_id=order_engine,
                     source_engine_version=getattr(order, "source_engine_version", None),
                     source_recommendation_id=getattr(order, "source_recommendation_id", None),
                     experiment_id=getattr(order, "experiment_id", None),
@@ -1173,15 +1881,18 @@ class PaperTradingService:
                 pass
             return order, position, None, "Buy order filled."
 
-        position = self.db.scalar(select(PaperPosition).where(PaperPosition.account_id == account.id, PaperPosition.symbol == order.symbol, PaperPosition.status == "OPEN"))
+        # SELL targets the same recommendation engine as the order (or position engine)
+        sell_engine = self._engine_of(order)
+        position = self._find_open_position(account.id, order.symbol, sell_engine)
         if not position or dec(position.qty) < order_qty:
             order.status = "REJECTED"
             try:
                 trading_logger.warning(
-                    "ORDER_REJECTED | order_id=%s | account=%s | symbol=%s | reason=NOT_ENOUGH_POSITION | requested_qty=%s | available_qty=%s",
+                    "ORDER_REJECTED | order_id=%s | account=%s | symbol=%s | engine=%s | reason=NOT_ENOUGH_POSITION | requested_qty=%s | available_qty=%s",
                     getattr(order, "id", None),
                     account.id,
                     order.symbol,
+                    sell_engine,
                     order.qty,
                     position.qty if position else 0,
                 )
@@ -1194,10 +1905,14 @@ class PaperTradingService:
         order.filled_at = datetime.now(timezone.utc)
         order.filled_price = fill_price
         order.scheduled_execution = None
+        # Propagate engine onto sell order if missing/default mismatched
+        if getattr(order, "source_engine_id", None) != self._engine_of(position):
+            order.source_engine_id = self._engine_of(position)
         prior_cash = account.cash_balance
         account.cash_balance = q_pnl(dec(account.cash_balance) + q_pnl(fill_price * order_qty))
         pnl = q_pnl((fill_price - dec(position.avg_entry_price)) * order_qty)
         pnl_percent = q_pnl(((fill_price - dec(position.avg_entry_price)) / dec(position.avg_entry_price)) * Decimal("100")) if position.avg_entry_price else Decimal("0.00")
+        pos_engine = self._engine_of(position)
         trade = PaperTradeHistory(
             account_id=account.id,
             symbol=position.symbol,
@@ -1210,6 +1925,10 @@ class PaperTradingService:
             source_signal=position.source_signal,
             source_score=position.source_score,
             source_confidence=position.source_confidence,
+            source_engine_id=pos_engine,
+            source_engine_version=getattr(position, "source_engine_version", None),
+            source_recommendation_id=getattr(position, "source_recommendation_id", None),
+            experiment_id=getattr(position, "experiment_id", None),
             opened_at=position.created_at,
             closed_at=datetime.now(timezone.utc),
             exit_reason="MANUAL",
@@ -1329,19 +2048,31 @@ class PaperTradingService:
         entity_id: int | None = None,
         dedupe_key: str | None = None,
         commit: bool = True,
+        *,
+        skip_db_dedupe: bool = False,
     ) -> None:
+        """Append a paper notification.
+
+        ``skip_db_dedupe=True`` skips the extra SELECT on brand-new order keys
+        (confirm path) — still de-dupes against pending objects in this session.
+        """
         if dedupe_key:
             for pending in self.db.new:
-                if isinstance(pending, PaperNotification) and pending.account_id == account_id and pending.dedupe_key == dedupe_key:
+                if (
+                    isinstance(pending, PaperNotification)
+                    and pending.account_id == account_id
+                    and pending.dedupe_key == dedupe_key
+                ):
                     return
-            existing = self.db.scalar(
-                select(PaperNotification).where(
-                    PaperNotification.account_id == account_id,
-                    PaperNotification.dedupe_key == dedupe_key,
+            if not skip_db_dedupe:
+                existing = self.db.scalar(
+                    select(PaperNotification).where(
+                        PaperNotification.account_id == account_id,
+                        PaperNotification.dedupe_key == dedupe_key,
+                    )
                 )
-            )
-            if existing:
-                return
+                if existing:
+                    return
         note = PaperNotification(
             account_id=account_id,
             message=message,
@@ -1476,7 +2207,8 @@ class PaperTradingService:
             raise ValueError("Position exit has already been processed.")
         fill_price_dec = q_price(fill_price)
 
-        # Create a filled sell order representing the exit
+        # Create a filled sell order representing the exit (same engine as position)
+        pos_engine = self._engine_of(position)
         order = PaperOrder(
             account_id=account.id,
             symbol=position.symbol,
@@ -1493,6 +2225,13 @@ class PaperTradingService:
             notes=f"Auto exit: {reason} (Source: {source})",
             filled_price=fill_price_dec,
             filled_at=datetime.now(timezone.utc),
+            source_signal=position.source_signal,
+            source_score=position.source_score,
+            source_confidence=position.source_confidence,
+            source_engine_id=pos_engine,
+            source_engine_version=getattr(position, "source_engine_version", None),
+            source_recommendation_id=getattr(position, "source_recommendation_id", None),
+            experiment_id=getattr(position, "experiment_id", None),
         )
         self.db.add(order)
         self.db.flush()
@@ -1511,6 +2250,10 @@ class PaperTradingService:
             source_signal=position.source_signal,
             source_score=position.source_score,
             source_confidence=position.source_confidence,
+            source_engine_id=pos_engine,
+            source_engine_version=getattr(position, "source_engine_version", None),
+            source_recommendation_id=getattr(position, "source_recommendation_id", None),
+            experiment_id=getattr(position, "experiment_id", None),
             opened_at=position.created_at,
             closed_at=datetime.now(timezone.utc),
             exit_reason=reason,
@@ -1616,8 +2359,8 @@ class PaperTradingService:
         """
         Re-evaluate working orders for this account.
 
-        - When market is CLOSED: leave PENDING_MARKET_OPEN orders untouched (no position, no capital).
-        - When market is OPEN: promote PENDING_MARKET_OPEN and attempt fills for all open orders.
+        - When market is CLOSED: leave WAITING_FOR_MARKET orders untouched (no position, no capital).
+        - When market is OPEN: promote WAITING_FOR_MARKET / FAILED → READY_TO_EXECUTE and fill.
         """
         if not trading_hours.is_market_open():
             return
@@ -1650,14 +2393,31 @@ class PaperTradingService:
         for order in pending_orders:
             price = price_cache.get(order.symbol)
             if not price or price.current_price <= 0:
+                if order.status in MARKET_OPEN_EXECUTABLE_STATUSES:
+                    order.status = FAILED_ORDER_STATUS
+                    order.lifecycle_state = "ERROR_RETRYING"
+                    order.paused_reason = "LIVE_PRICE_UNAVAILABLE"
+                    order.last_evaluated_at = datetime.now(timezone.utc)
                 continue
-            was_pending_market_open = order.status == PENDING_MARKET_OPEN_STATUS
+            was_waiting = order.status in MARKET_OPEN_EXECUTABLE_STATUSES
             order.last_evaluated_at = datetime.now(timezone.utc)
             order.last_seen_ltp = price.current_price
-            filled, position, trade, _msg = self._try_fill_order(
-                account, order, price.current_price, require_market_open=True
-            )
-            if was_pending_market_open and filled.status in {"FILLED", "EXECUTED"}:
+            try:
+                filled, position, trade, _msg = self._try_fill_order(
+                    account, order, price.current_price, require_market_open=True
+                )
+            except Exception as fill_exc:
+                order.status = FAILED_ORDER_STATUS
+                order.lifecycle_state = "ERROR_RETRYING"
+                order.paused_reason = f"EXECUTION_ERROR:{str(fill_exc)[:80]}"
+                self.logger.exception(
+                    "ORDER_EXECUTION_FAILED | order_id=%s | symbol=%s | err=%s",
+                    order.id,
+                    order.symbol,
+                    fill_exc,
+                )
+                continue
+            if was_waiting and filled.status in {"FILLED", "EXECUTED"}:
                 try:
                     trading_logger.info(
                         "MARKET_OPEN_TRIGGER | account=%s | order_id=%s | symbol=%s | side=%s | qty=%s | "
@@ -1714,11 +2474,11 @@ class PaperTradingService:
 
     def execute_pending_market_open_orders_for_account(self, account_id: int | None = None) -> dict:
         """
-        Execute all PENDING_MARKET_OPEN orders for one account (or current user's account).
+        Execute all WAITING_FOR_MARKET / FAILED / READY_TO_EXECUTE orders for one account.
         Intended for market-open scheduler and dashboard refresh.
         """
         if not trading_hours.is_market_open():
-            return {"executed": 0, "rejected": 0, "still_pending": 0, "market_open": False}
+            return {"executed": 0, "rejected": 0, "still_pending": 0, "failed": 0, "market_open": False}
 
         account = (
             self.get_account_by_id(int(account_id), for_update=True)
@@ -1731,14 +2491,16 @@ class PaperTradingService:
             self.db.scalars(
                 select(PaperOrder).where(
                     PaperOrder.account_id == account.id,
-                    PaperOrder.status == PENDING_MARKET_OPEN_STATUS,
+                    PaperOrder.status.in_(tuple(MARKET_OPEN_EXECUTABLE_STATUSES)),
                 )
             )
         )
+        failed = sum(1 for o in remaining if o.status == FAILED_ORDER_STATUS)
         return {
             "executed": 0,  # detailed counts computed by global runner
             "rejected": 0,
             "still_pending": len(remaining),
+            "failed": failed,
             "market_open": True,
             "account_id": account.id,
         }
@@ -1746,7 +2508,10 @@ class PaperTradingService:
     @staticmethod
     def execute_all_pending_market_open_orders() -> dict:
         """
-        System-wide market-open sweep: load every PENDING_MARKET_OPEN order and execute.
+        System-wide market-open / retry sweep.
+
+        Loads every WAITING_FOR_MARKET, PENDING_MARKET_OPEN (legacy), READY_TO_EXECUTE,
+        and FAILED order and attempts execution when the market is open.
         Safe to call repeatedly (idempotent for already-filled orders).
         """
         from ..db.session import SessionLocal
@@ -1756,6 +2521,7 @@ class PaperTradingService:
             "processed": 0,
             "executed": 0,
             "rejected": 0,
+            "failed": 0,
             "still_pending": 0,
             "errors": 0,
         }
@@ -1764,7 +2530,7 @@ class PaperTradingService:
 
         try:
             trading_logger.info(
-                "MARKET_OPEN_TRIGGER | scope=ALL | status=%s | next_action=execute_pending",
+                "MARKET_OPEN_TRIGGER | scope=ALL | status=%s | next_action=execute_waiting_orders",
                 trading_hours.get_market_status().get("status"),
             )
         except Exception:
@@ -1773,35 +2539,66 @@ class PaperTradingService:
         with SessionLocal() as db:
             order_ids = list(
                 db.scalars(
-                    select(PaperOrder.id).where(PaperOrder.status == PENDING_MARKET_OPEN_STATUS)
+                    select(PaperOrder.id).where(
+                        PaperOrder.status.in_(tuple(MARKET_OPEN_EXECUTABLE_STATUSES))
+                    )
                 )
             )
         for oid in order_ids:
             try:
                 with SessionLocal() as db:
                     order = db.get(PaperOrder, oid)
-                    if not order or order.status != PENDING_MARKET_OPEN_STATUS:
+                    if not order or order.status not in MARKET_OPEN_EXECUTABLE_STATUSES:
                         continue
                     svc = PaperTradingService(db)  # system path
                     account = svc.get_account_by_id(int(order.account_id), for_update=True)
-                    snap = svc._price_snapshot(order.symbol)
-                    price = snap.current_price if snap else 0.0
-                    if price <= 0:
-                        summary["still_pending"] += 1
+                    try:
+                        snap = svc._price_snapshot(order.symbol)
+                        price = snap.current_price if snap else 0.0
+                    except Exception as price_exc:
+                        order.status = FAILED_ORDER_STATUS
+                        order.lifecycle_state = "ERROR_RETRYING"
+                        order.paused_reason = f"PRICE_FETCH_ERROR:{str(price_exc)[:80]}"
+                        order.last_evaluated_at = datetime.now(timezone.utc)
+                        db.commit()
+                        summary["failed"] += 1
                         summary["processed"] += 1
                         continue
-                    filled, position, trade, message = svc._try_fill_order(
-                        account, order, price, require_market_open=True
-                    )
+                    if price <= 0:
+                        order.status = FAILED_ORDER_STATUS
+                        order.lifecycle_state = "ERROR_RETRYING"
+                        order.paused_reason = "LIVE_PRICE_UNAVAILABLE"
+                        order.last_evaluated_at = datetime.now(timezone.utc)
+                        db.commit()
+                        summary["failed"] += 1
+                        summary["processed"] += 1
+                        continue
+                    try:
+                        filled, position, trade, message = svc._try_fill_order(
+                            account, order, price, require_market_open=True
+                        )
+                    except Exception as fill_exc:
+                        order.status = FAILED_ORDER_STATUS
+                        order.lifecycle_state = "ERROR_RETRYING"
+                        order.paused_reason = f"EXECUTION_ERROR:{str(fill_exc)[:80]}"
+                        order.last_evaluated_at = datetime.now(timezone.utc)
+                        db.commit()
+                        summary["failed"] += 1
+                        summary["processed"] += 1
+                        summary["errors"] += 1
+                        continue
                     summary["processed"] += 1
                     if filled.status in {"FILLED", "EXECUTED"}:
                         summary["executed"] += 1
                         try:
                             trading_logger.info(
-                                "MARKET_OPEN_TRIGGER | order_id=%s | account=%s | symbol=%s | status=EXECUTED | price=%s",
+                                "MARKET_OPEN_TRIGGER | order_id=%s | account=%s | symbol=%s | "
+                                "engine=%s | status=%s | price=%s",
                                 filled.id,
                                 account.id,
                                 filled.symbol,
+                                getattr(filled, "source_engine_id", None),
+                                filled.status,
                                 filled.filled_price,
                             )
                         except Exception:
@@ -1852,6 +2649,18 @@ class PaperTradingService:
                             "order",
                             filled.id,
                             dedupe_key=f"order-rejected-open:{filled.id}",
+                            commit=False,
+                        )
+                    elif filled.status == FAILED_ORDER_STATUS:
+                        summary["failed"] += 1
+                        svc.add_notification(
+                            account.id,
+                            f"Order for {filled.symbol} failed: {message}. Will retry automatically.",
+                            "warning",
+                            "ORDER_FAILED",
+                            "order",
+                            filled.id,
+                            dedupe_key=f"order-failed:{filled.id}:{getattr(filled, 'paused_reason', '')}",
                             commit=False,
                         )
                     else:
@@ -2109,10 +2918,11 @@ class PaperTradingService:
             source_signal=position.source_signal,
             source_score=position.source_score,
             source_confidence=position.source_confidence,
-            source_engine_id=getattr(position, "source_engine_id", None),
+            source_engine_id=self._engine_of(position),
             source_engine_version=getattr(position, "source_engine_version", None),
             source_recommendation_id=getattr(position, "source_recommendation_id", None),
             experiment_id=getattr(position, "experiment_id", None),
+            recommendation_engine=self._engine_of(position),
             price_source=snapshot.source if snapshot else None,
             price_fetched_at=snapshot.fetched_at if snapshot else None,
             is_price_stale=(snapshot.source != "FYERS_QUOTE") if snapshot else False,
@@ -2122,6 +2932,7 @@ class PaperTradingService:
 
     def _serialize_order(self, order: PaperOrder, snapshot: PriceSnapshot | None = None) -> PaperOrderResponse:
         filled_price = as_float(q_price(order.filled_price)) if order.filled_price is not None else None
+        eng = self._engine_of(order)
         return PaperOrderResponse(
             id=order.id,
             symbol=order.symbol,
@@ -2142,10 +2953,11 @@ class PaperTradingService:
             source_signal=order.source_signal,
             source_score=order.source_score,
             source_confidence=order.source_confidence,
-            source_engine_id=getattr(order, "source_engine_id", None),
+            source_engine_id=eng,
             source_engine_version=getattr(order, "source_engine_version", None),
             source_recommendation_id=getattr(order, "source_recommendation_id", None),
             experiment_id=getattr(order, "experiment_id", None),
+            recommendation_engine=eng,
             last_evaluated_at=order.last_evaluated_at,
             last_seen_ltp=as_float(q_price(order.last_seen_ltp)) if order.last_seen_ltp is not None else None,
             price_source=snapshot.source if snapshot else None,
@@ -2162,6 +2974,7 @@ class PaperTradingService:
 
     def _serialize_trade(self, trade: PaperTradeHistory) -> PaperTradeHistoryItem:
         holding_period = (trade.closed_at - trade.opened_at).total_seconds() / 3600
+        eng = self._engine_of(trade)
         return PaperTradeHistoryItem(
             id=trade.id,
             symbol=trade.symbol,
@@ -2174,6 +2987,11 @@ class PaperTradingService:
             source_signal=trade.source_signal,
             source_score=trade.source_score,
             source_confidence=trade.source_confidence,
+            source_engine_id=eng,
+            source_engine_version=getattr(trade, "source_engine_version", None),
+            source_recommendation_id=getattr(trade, "source_recommendation_id", None),
+            experiment_id=getattr(trade, "experiment_id", None),
+            recommendation_engine=eng,
             opened_at=trade.opened_at,
             closed_at=trade.closed_at,
             exit_reason=getattr(trade, "exit_reason", None),
@@ -2259,11 +3077,15 @@ class PaperTradingService:
         # all time
         return None, end, "All Time"
 
-    def get_analytics(self, period: str = "all") -> dict:
+    def get_analytics(self, period: str = "all", recommendation_engine: str | None = None) -> dict:
         """Full paper-trading analytics dashboard payload.
 
         Always returns JSON-safe floats (never Decimal). Empty-history accounts
         get zeroed defaults so the UI can render charts without erroring.
+
+        When ``recommendation_engine`` is set (Production|RE-001|RE-002), metrics
+        are filtered to that engine's trades/positions only. The response always
+        includes ``by_engine`` comparison blocks for all three engines.
         """
         import math
         from collections import defaultdict
@@ -2282,10 +3104,36 @@ class PaperTradingService:
                 return False
             return True
 
-        trades = [t for t in all_trades if in_range(t)]
+        trades_all_engines = [t for t in all_trades if in_range(t)]
         positions = self._position_models(account.id)
-        open_positions = [p for p in positions if (p.status or "").upper() == "OPEN"]
-        orders = self._order_models(account.id)
+        open_positions_all = [p for p in positions if (p.status or "").upper() == "OPEN"]
+        orders_all = self._order_models(account.id)
+
+        engine_filter = None
+        if recommendation_engine and str(recommendation_engine).strip().lower() not in {
+            "",
+            "all",
+            "*",
+        }:
+            engine_filter = normalize_recommendation_engine(recommendation_engine)
+
+        def _trade_engine(t: PaperTradeHistory) -> str:
+            return normalize_recommendation_engine(getattr(t, "source_engine_id", None))
+
+        def _pos_engine(p: PaperPosition) -> str:
+            return normalize_recommendation_engine(getattr(p, "source_engine_id", None))
+
+        def _order_engine(o: PaperOrder) -> str:
+            return normalize_recommendation_engine(getattr(o, "source_engine_id", None))
+
+        if engine_filter:
+            trades = [t for t in trades_all_engines if _trade_engine(t) == engine_filter]
+            open_positions = [p for p in open_positions_all if _pos_engine(p) == engine_filter]
+            orders = [o for o in orders_all if _order_engine(o) == engine_filter]
+        else:
+            trades = list(trades_all_engines)
+            open_positions = list(open_positions_all)
+            orders = list(orders_all)
 
         def fnum(v) -> float:
             try:
@@ -2295,6 +3143,69 @@ class PaperTradingService:
                     return float(v or 0)
                 except Exception:
                     return 0.0
+
+        def _engine_metrics(engine_trades: list[PaperTradeHistory], engine_open: list[PaperPosition]) -> dict:
+            """Independent metrics block for one recommendation engine."""
+            e_wins = [t for t in engine_trades if fnum(t.pnl) > 0]
+            e_losses = [t for t in engine_trades if fnum(t.pnl) < 0]
+            e_total = len(engine_trades)
+            e_pnl = round(sum(fnum(t.pnl) for t in engine_trades), 2)
+            e_win_rate = round((len(e_wins) / e_total) * 100.0, 2) if e_total else 0.0
+            e_returns = [fnum(t.pnl_percent) for t in engine_trades]
+            e_avg_return = round(sum(e_returns) / len(e_returns), 2) if e_returns else 0.0
+            e_hold = []
+            for t in engine_trades:
+                o = self._aware_dt(t.opened_at)
+                c = self._aware_dt(t.closed_at)
+                if o and c and c >= o:
+                    e_hold.append((c - o).total_seconds() / 60.0)
+            e_avg_hold = round(sum(e_hold) / len(e_hold), 2) if e_hold else 0.0
+            # Sharpe (simple daily-return proxy from trade returns)
+            e_sharpe = None
+            if len(e_returns) >= 2:
+                mean_r = sum(e_returns) / len(e_returns)
+                var = sum((r - mean_r) ** 2 for r in e_returns) / (len(e_returns) - 1)
+                std = math.sqrt(var) if var > 0 else 0.0
+                e_sharpe = round(mean_r / std, 3) if std > 1e-9 else None
+            # Drawdown on cumulative PnL curve
+            e_dd = 0.0
+            e_dd_pct = 0.0
+            peak = 0.0
+            cum = 0.0
+            chron = sorted(
+                engine_trades,
+                key=lambda t: self._aware_dt(t.closed_at) or datetime.min.replace(tzinfo=timezone.utc),
+            )
+            for t in chron:
+                cum += fnum(t.pnl)
+                peak = max(peak, cum)
+                dd = peak - cum
+                if dd > e_dd:
+                    e_dd = dd
+                    e_dd_pct = round((dd / peak) * 100.0, 2) if peak > 1e-9 else 0.0
+            e_unreal = round(sum(fnum(p.unrealized_pnl) for p in engine_open), 2)
+            return {
+                "total_trades": e_total,
+                "wins": len(e_wins),
+                "losses": len(e_losses),
+                "win_rate_pct": e_win_rate,
+                "average_return_pct": e_avg_return,
+                "total_pnl": e_pnl,
+                "sharpe_ratio": e_sharpe,
+                "max_drawdown": round(e_dd, 2),
+                "max_drawdown_pct": e_dd_pct,
+                "average_holding_minutes": e_avg_hold,
+                "open_positions_count": len(engine_open),
+                "unrealized_pnl": e_unreal,
+            }
+
+        from .recommendation_engine_ids import ALL_ENGINES
+
+        by_engine: dict[str, dict] = {}
+        for eng in ALL_ENGINES:
+            eng_trades = [t for t in trades_all_engines if _trade_engine(t) == eng]
+            eng_open = [p for p in open_positions_all if _pos_engine(p) == eng]
+            by_engine[eng] = _engine_metrics(eng_trades, eng_open)
 
         total_trades = len(trades)
         wins = [t for t in trades if fnum(t.pnl) > 0]
@@ -2559,6 +3470,8 @@ class PaperTradingService:
         result = {
             "period": period or "all",
             "range_label": range_label,
+            "recommendation_engine": engine_filter or "All",
+            "by_engine": by_engine,
             # Overview cards
             "total_trades": total_trades,
             "winning_trades": wins_count,

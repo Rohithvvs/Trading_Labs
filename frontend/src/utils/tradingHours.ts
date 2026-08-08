@@ -140,8 +140,13 @@ export function getMarketSession(now: Date = new Date()): MarketCheckResult {
 /** Human-readable order status for the Orders table. */
 export function formatOrderStatus(status: string | undefined | null): string {
   switch ((status || "").toUpperCase()) {
-    case "PENDING_MARKET_OPEN":
-      return "Pending Market Open";
+    case "WAITING_FOR_MARKET":
+    case "PENDING_MARKET_OPEN": // legacy
+      return "Waiting for Market";
+    case "READY_TO_EXECUTE":
+      return "Ready to Execute";
+    case "FAILED":
+      return "Failed";
     case "PENDING":
     case "OPEN":
       return "Pending";
@@ -160,10 +165,19 @@ export function formatOrderStatus(status: string | undefined | null): string {
 }
 
 export function isPendingMarketOpen(status: string | undefined | null): boolean {
-  return (status || "").toUpperCase() === "PENDING_MARKET_OPEN";
+  const s = (status || "").toUpperCase();
+  return s === "WAITING_FOR_MARKET" || s === "PENDING_MARKET_OPEN";
 }
 
 export function isOpenOrderStatus(status: string | undefined | null): boolean {
   const s = (status || "").toUpperCase();
-  return s === "PENDING" || s === "PENDING_MARKET_OPEN" || s === "OPEN" || s === "PARTIALLY_EXECUTED";
+  return (
+    s === "PENDING" ||
+    s === "WAITING_FOR_MARKET" ||
+    s === "PENDING_MARKET_OPEN" ||
+    s === "READY_TO_EXECUTE" ||
+    s === "FAILED" ||
+    s === "OPEN" ||
+    s === "PARTIALLY_EXECUTED"
+  );
 }

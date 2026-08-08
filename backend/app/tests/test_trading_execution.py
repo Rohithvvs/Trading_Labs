@@ -70,7 +70,7 @@ async def test_concurrent_duplicate_order_prevention():
         with TestingSessionLocal() as db:
             service = PaperTradingService(db)
             # Mock price snapshot since we don't have FYERS configured
-            with patch.object(service, "_price_snapshot") as mock_price:
+            with patch.object(service, "_price_for_execution") as mock_price:
                 from datetime import datetime
                 class DummyPrice:
                     symbol = "INFY-EQ"
@@ -136,7 +136,7 @@ async def test_order_rollback_on_failure():
         
         # Mock price to work, but mock flush to raise an exception 
         # to simulate partial DB failure after order creation but before commit
-        with patch.object(service, "_price_snapshot") as mock_price:
+        with patch.object(service, "_price_for_execution") as mock_price:
             from datetime import datetime
             class DummyPrice:
                 symbol = "TCS-EQ"
@@ -179,7 +179,7 @@ async def test_risk_management_limits():
             idempotency_key="BIG_RISK_123456789"
         )
         
-        with patch.object(service, "_price_snapshot") as mock_price:
+        with patch.object(service, "_price_for_execution") as mock_price:
             from datetime import datetime
             class DummyPrice:
                 symbol = "RELIANCE-EQ"

@@ -263,29 +263,52 @@ class FyersService:
 
         _check_fyers_response(response, "VALIDATE_TOKEN")
 
-    async def fetch_ltp(self, symbol: str) -> float | None:
+    async def fetch_ltp(
+        self,
+        symbol: str,
+        *,
+        allow_yfinance: bool = True,
+        pg_ttl_sec: float = 15.0,
+        allow_stale_pg_sec: float = 0.0,
+    ) -> float | None:
+        """Fetch last traded price with layered caches.
+
+        Args:
+            allow_yfinance: When False, skip the multi-second Yahoo fallback
+                (use on paper-order confirm hot path).
+            pg_ttl_sec: Max age for a "fresh" PG ltp_cache hit.
+            allow_stale_pg_sec: If > 0, after a miss/timeout path may still return
+                a PG row younger than this (confirm soft-degrade).
+        """
         cache_key = self._cache_symbol(symbol)
-        
+
         # Helper to check DB cache
-        async def _check_db():
+        async def _check_db(max_age_sec: float):
             async with AsyncSessionLocal() as db:
                 res = await db.execute(
                     text("SELECT ltp, updated_at FROM market_data.ltp_cache WHERE symbol = :s"),
-                    {"s": cache_key}
+                    {"s": cache_key},
                 )
                 row = res.mappings().first()
                 if row:
                     cached_ltp = float(row["ltp"]) if row["ltp"] is not None else None
-                    # Check TTL (15s)
+                    if cached_ltp is None or float(cached_ltp) <= 0:
+                        return False
                     updated_val = row["updated_at"]
                     if isinstance(updated_val, str):
                         from dateutil.parser import parse
+
                         updated_at = parse(updated_val).timestamp()
                     else:
                         updated_at = updated_val.timestamp()
-                    if time.time() - updated_at < 15.0:
+                    if time.time() - updated_at < max_age_sec:
                         try:
-                            fyers_logger.info("QUOTES CACHE_HIT | symbol=%s | ltp=%s | source=PG_CACHE", symbol, cached_ltp)
+                            fyers_logger.info(
+                                "QUOTES CACHE_HIT | symbol=%s | ltp=%s | source=PG_CACHE | max_age=%s",
+                                symbol,
+                                cached_ltp,
+                                max_age_sec,
+                            )
                         except Exception:
                             pass
                         FyersService._ltp_source_cache[cache_key] = "PG_CACHE"
@@ -293,18 +316,19 @@ class FyersService:
             return False
 
         # 1. Fast path: check DB cache without lock
-        cached = await _check_db()
+        cached = await _check_db(pg_ttl_sec)
         if cached is not False:
             return cached
 
         # 2. Acquire lock to prevent stampede
         import asyncio
+
         if cache_key not in FyersService._ltp_locks:
             FyersService._ltp_locks[cache_key] = asyncio.Lock()
-            
+
         async with FyersService._ltp_locks[cache_key]:
             # 3. Double-check cache inside lock
-            cached2 = await _check_db()
+            cached2 = await _check_db(pg_ttl_sec)
             if cached2 is not False:
                 return cached2
 
@@ -313,69 +337,107 @@ class FyersService:
                 ltp = await self._fetch_fyers_ltp(symbol)
                 if ltp is not None:
                     try:
-                        fyers_logger.info("QUOTES | symbol=%s | ltp=%s | source=FYERS_PRIMARY", symbol, ltp)
+                        fyers_logger.info(
+                            "QUOTES | symbol=%s | ltp=%s | source=FYERS_PRIMARY", symbol, ltp
+                        )
                     except Exception:
                         pass
                     self.logger.info("Fetched live quote from FYERS | symbol=%s", symbol)
-                    
+
                     # Update PostgreSQL Cache
                     async with AsyncSessionLocal() as db:
                         await db.execute(
-                            text(f"""
+                            text(
+                                """
                                 INSERT INTO market_data.ltp_cache (symbol, ltp, updated_at)
                                 VALUES (:s, :ltp, CURRENT_TIMESTAMP)
                                 ON CONFLICT (symbol) DO UPDATE SET ltp = EXCLUDED.ltp, updated_at = EXCLUDED.updated_at
-                            """),
-                            {"s": cache_key, "ltp": float(ltp)}
+                            """
+                            ),
+                            {"s": cache_key, "ltp": float(ltp)},
                         )
                         await db.commit()
                     FyersService._ltp_source_cache[cache_key] = "FYERS_PRIMARY"
                     return ltp
 
-            # 5. YFinance fallback when FYERS unavailable or fails
-            try:
-                import math
-                import yfinance as yf
-                clean = symbol.replace("NSE:", "").replace("BSE:", "").replace("-INDEX", "").replace("-EQ", "")
-                yf_sym = f"{clean}.NS" if not clean.endswith(".NS") else clean
-                ticker = yf.Ticker(yf_sym)
-                data = ticker.history(period="2d")
-                if not data.empty:
-                    raw_ltp = data["Close"].iloc[-1]
-                    if math.isnan(float(raw_ltp)):
-                        self.logger.warning("YFINANCE_LTP_NAN | symbol=%s | source=YFINANCE_FALLBACK", symbol)
-                        return None
-                    ltp = round(float(raw_ltp), 2)
-                    try:
-                        fyers_logger.info("QUOTES | symbol=%s | ltp=%s | source=YFINANCE_FALLBACK", symbol, ltp)
-                    except Exception:
-                        pass
-                    self.logger.info("Fetched LTP from yfinance fallback | symbol=%s | ltp=%s", symbol, ltp)
-                    async with AsyncSessionLocal() as db:
-                        await db.execute(
-                            text(f"""
-                                INSERT INTO market_data.ltp_cache (symbol, ltp, updated_at)
-                                VALUES (:s, :ltp, CURRENT_TIMESTAMP)
-                                ON CONFLICT (symbol) DO UPDATE SET ltp = EXCLUDED.ltp, updated_at = EXCLUDED.updated_at
-                            """),
-                            {"s": cache_key, "ltp": float(ltp)}
-                        )
-                        await db.commit()
-                    FyersService._ltp_source_cache[cache_key] = "YFINANCE_FALLBACK"
-                    return ltp
-            except Exception as yf_err:
-                self.logger.warning("YFINANCE_LTP_FALLBACK_FAILED | symbol=%s | error=%s", symbol, str(yf_err)[:120])
+            # 5. YFinance fallback when FYERS unavailable or fails (optional — slow)
+            if allow_yfinance:
+                try:
+                    import math
+                    import yfinance as yf
 
-            # 6. Store NULL / None in DB to prevent repeated API calls
-            async with AsyncSessionLocal() as db:
-                await db.execute(text(f"""
-                    INSERT INTO market_data.ltp_cache (symbol, ltp, updated_at)
-                    VALUES (:s, NULL, CURRENT_TIMESTAMP)
-                    ON CONFLICT (symbol) DO UPDATE SET ltp = EXCLUDED.ltp, updated_at = EXCLUDED.updated_at
-                """),
-                {"s": cache_key}
-                )
-                await db.commit()
+                    clean = (
+                        symbol.replace("NSE:", "")
+                        .replace("BSE:", "")
+                        .replace("-INDEX", "")
+                        .replace("-EQ", "")
+                    )
+                    yf_sym = f"{clean}.NS" if not clean.endswith(".NS") else clean
+                    ticker = yf.Ticker(yf_sym)
+                    data = ticker.history(period="2d")
+                    if not data.empty:
+                        raw_ltp = data["Close"].iloc[-1]
+                        if math.isnan(float(raw_ltp)):
+                            self.logger.warning(
+                                "YFINANCE_LTP_NAN | symbol=%s | source=YFINANCE_FALLBACK", symbol
+                            )
+                        else:
+                            ltp = round(float(raw_ltp), 2)
+                            try:
+                                fyers_logger.info(
+                                    "QUOTES | symbol=%s | ltp=%s | source=YFINANCE_FALLBACK",
+                                    symbol,
+                                    ltp,
+                                )
+                            except Exception:
+                                pass
+                            self.logger.info(
+                                "Fetched LTP from yfinance fallback | symbol=%s | ltp=%s",
+                                symbol,
+                                ltp,
+                            )
+                            async with AsyncSessionLocal() as db:
+                                await db.execute(
+                                    text(
+                                        """
+                                        INSERT INTO market_data.ltp_cache (symbol, ltp, updated_at)
+                                        VALUES (:s, :ltp, CURRENT_TIMESTAMP)
+                                        ON CONFLICT (symbol) DO UPDATE SET ltp = EXCLUDED.ltp, updated_at = EXCLUDED.updated_at
+                                    """
+                                    ),
+                                    {"s": cache_key, "ltp": float(ltp)},
+                                )
+                                await db.commit()
+                            FyersService._ltp_source_cache[cache_key] = "YFINANCE_FALLBACK"
+                            return ltp
+                except Exception as yf_err:
+                    self.logger.warning(
+                        "YFINANCE_LTP_FALLBACK_FAILED | symbol=%s | error=%s",
+                        symbol,
+                        str(yf_err)[:120],
+                    )
+
+            # 5b. Soft-stale PG row for confirm path (avoids blocking on cold FYERS)
+            if allow_stale_pg_sec and allow_stale_pg_sec > pg_ttl_sec:
+                stale = await _check_db(allow_stale_pg_sec)
+                if stale is not False:
+                    FyersService._ltp_source_cache[cache_key] = "PG_STALE"
+                    return stale
+
+            # 6. Store NULL / None in DB to prevent repeated API calls (only when we truly have no data)
+            if allow_yfinance:
+                async with AsyncSessionLocal() as db:
+                    await db.execute(
+                        text(
+                            """
+                        INSERT INTO market_data.ltp_cache (symbol, ltp, updated_at)
+                        VALUES (:s, NULL, CURRENT_TIMESTAMP)
+                        ON CONFLICT (symbol) DO UPDATE SET ltp = EXCLUDED.ltp, updated_at = EXCLUDED.updated_at
+                    """
+                        ),
+                        {"s": cache_key},
+                    )
+                    await db.commit()
             FyersService._ltp_source_cache[cache_key] = "NO_DATA"
             return None
 

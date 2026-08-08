@@ -45,18 +45,23 @@ def health_segment(
 
     row = q.one()
 
-    # Avg RS of BUYs when present — only BUY rows (bounded), real RS fields only.
+    # Avg RS of BUYs — small sample only (lab shell must stay fast; full RS analytics elsewhere).
     avg_rs: float | None = None
     try:
-        buy_q = db.query(RecommendationEngineDecision.evidence).filter(
-            RecommendationEngineDecision.engine_id == "RE-002",
-            RecommendationEngineDecision.created_at >= since,
-            func.upper(RecommendationEngineDecision.recommendation_state) == "BUY",
+        buy_q = (
+            db.query(RecommendationEngineDecision.evidence)
+            .filter(
+                RecommendationEngineDecision.engine_id == "RE-002",
+                RecommendationEngineDecision.created_at >= since,
+                func.upper(RecommendationEngineDecision.recommendation_state) == "BUY",
+            )
+            .order_by(RecommendationEngineDecision.created_at.desc())
+            .limit(50)
         )
         if experiment_id and hasattr(RecommendationEngineDecision, "experiment_id"):
             buy_q = buy_q.filter(RecommendationEngineDecision.experiment_id == experiment_id)
         rs_vals: list[float] = []
-        for (evidence,) in buy_q.limit(2000).all():
+        for (evidence,) in buy_q.all():
             if not isinstance(evidence, dict):
                 continue
             rs_block = evidence.get("rs") if isinstance(evidence.get("rs"), dict) else None

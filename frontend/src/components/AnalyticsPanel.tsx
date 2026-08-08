@@ -102,9 +102,14 @@ const tooltipStyle = {
   fontSize: 12,
 };
 
+type EngineFilter = "All" | "Production" | "RE-001" | "RE-002";
+
+const ENGINE_FILTERS: EngineFilter[] = ["All", "Production", "RE-001", "RE-002"];
+
 export function AnalyticsPanel() {
   const [period, setPeriod] = useState<AnalyticsPeriod>("all");
-  const cacheKey = `${CACHE_KEYS.paperAnalytics}:${period}`;
+  const [engineFilter, setEngineFilter] = useState<EngineFilter>("All");
+  const cacheKey = `${CACHE_KEYS.paperAnalytics}:${period}:${engineFilter}`;
   const [data, setData] = useState<any | null>(() => getCached(cacheKey));
   const [loading, setLoading] = useState(() => !getCached(cacheKey));
   const [err, setErr] = useState<string | null>(null);
@@ -115,7 +120,11 @@ export function AnalyticsPanel() {
       if (!data) setLoading(true);
       setErr(null);
       try {
-        const resp = await fetchAnalytics({ period, force });
+        const resp = await fetchAnalytics({
+          period,
+          force,
+          recommendation_engine: engineFilter === "All" ? null : engineFilter,
+        });
         setData(resp);
       } catch (e: any) {
         // Only surface error when we have nothing to show
@@ -124,14 +133,14 @@ export function AnalyticsPanel() {
         setLoading(false);
       }
     },
-    [period, data],
+    [period, engineFilter, data],
   );
 
   useEffect(() => {
-    setData(getCached(`${CACHE_KEYS.paperAnalytics}:${period}`));
+    setData(getCached(`${CACHE_KEYS.paperAnalytics}:${period}:${engineFilter}`));
     void load(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [period, retryKey]);
+  }, [period, engineFilter, retryKey]);
 
   const winLossData = useMemo(
     () => [
@@ -236,9 +245,75 @@ export function AnalyticsPanel() {
         </div>
         <div className="muted-copy" style={{ fontSize: "0.85rem" }}>
           {data.range_label || period}
+          {engineFilter !== "All" ? ` · ${engineFilter}` : ""}
           {loading ? " · refreshing…" : ""}
         </div>
       </div>
+
+      <div
+        style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 14, alignItems: "center" }}
+        role="group"
+        aria-label="Filter analytics by recommendation engine"
+        data-testid="analytics-engine-filter"
+      >
+        <span className="muted-copy" style={{ fontSize: "0.8rem", marginRight: 4 }}>
+          Engine
+        </span>
+        {ENGINE_FILTERS.map((eng) => (
+          <button
+            key={eng}
+            type="button"
+            className={engineFilter === eng ? "button primary-button" : "button ghost-button"}
+            onClick={() => setEngineFilter(eng)}
+            style={{ fontSize: "0.8rem", padding: "0.35rem 0.65rem" }}
+            data-testid={`analytics-engine-${eng}`}
+          >
+            {eng}
+          </button>
+        ))}
+      </div>
+
+      {/* Engine comparison cards */}
+      {data.by_engine ? (
+        <div style={{ display: "flex", gap: 12, marginBottom: 16, flexWrap: "wrap" }} data-testid="engine-comparison">
+          {(["Production", "RE-001", "RE-002"] as const).map((eng) => {
+            const block = data.by_engine?.[eng] || {};
+            const engPnl = Number(block.total_pnl ?? 0);
+            return (
+              <div
+                key={eng}
+                className="panel"
+                style={{ flex: "1 1 220px", minWidth: 200, padding: 12 }}
+                data-testid={`engine-metrics-${eng}`}
+              >
+                <div className="panel-header" style={{ marginBottom: 8 }}>
+                  <div>
+                    <p className="section-label">Recommendation Engine</p>
+                    <h2 style={{ fontSize: "1rem", margin: 0 }}>{eng}</h2>
+                  </div>
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, fontSize: "0.85rem" }}>
+                  <div><span className="muted-copy">Trades</span><div style={{ fontWeight: 700 }}>{block.total_trades ?? 0}</div></div>
+                  <div><span className="muted-copy">Win Rate</span><div style={{ fontWeight: 700 }}>{pct(block.win_rate_pct)}</div></div>
+                  <div><span className="muted-copy">Wins</span><div style={{ fontWeight: 700 }}>{block.wins ?? 0}</div></div>
+                  <div><span className="muted-copy">Losses</span><div style={{ fontWeight: 700 }}>{block.losses ?? 0}</div></div>
+                  <div><span className="muted-copy">Avg Return</span><div style={{ fontWeight: 700 }}>{pct(block.average_return_pct)}</div></div>
+                  <div>
+                    <span className="muted-copy">Total PnL</span>
+                    <div style={{ fontWeight: 700, color: engPnl >= 0 ? "var(--positive)" : "var(--negative)" }}>
+                      {money(engPnl)}
+                    </div>
+                  </div>
+                  <div><span className="muted-copy">Sharpe</span><div style={{ fontWeight: 700 }}>{block.sharpe_ratio ?? "—"}</div></div>
+                  <div><span className="muted-copy">Drawdown</span><div style={{ fontWeight: 700 }}>{money(block.max_drawdown)}</div></div>
+                  <div><span className="muted-copy">Avg Hold (m)</span><div style={{ fontWeight: 700 }}>{block.average_holding_minutes ?? 0}</div></div>
+                  <div><span className="muted-copy">Open</span><div style={{ fontWeight: 700 }}>{block.open_positions_count ?? 0}</div></div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
 
       {/* Overview cards */}
       <div style={{ display: "flex", gap: 12, marginBottom: 12, flexWrap: "wrap" }}>

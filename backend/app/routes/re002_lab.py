@@ -53,7 +53,13 @@ def _lab_access():
 def get_re002_registration_route(
     _=Depends(_lab_access()),
 ) -> Re002Registration:
-    return get_re002_registration()
+    from ..core.response_cache import cache_get, cache_set
+    hit = cache_get("re002_registration")
+    if hit is not None:
+        return hit
+    val = get_re002_registration()
+    cache_set("re002_registration", val, ttl_seconds=300.0)
+    return val
 
 
 @router.get("/re002/scans/recent", response_model=Re002RecentScansResponse)
@@ -64,6 +70,11 @@ def get_re002_recent_scans(
     _=Depends(_lab_access()),
     db: Session = Depends(get_sync_db),
 ) -> Re002RecentScansResponse:
+    from ..core.response_cache import cache_get, cache_set
+    cache_key = f"re002_recent_scans:{limit}:{min_decisions}:{prefer_cohorts}"
+    hit = cache_get(cache_key)
+    if hit is not None:
+        return hit
     items = [
         Re002ScanRunSummary(**row)
         for row in list_recent_scan_runs(
@@ -73,7 +84,9 @@ def get_re002_recent_scans(
             prefer_cohorts=prefer_cohorts,
         )
     ]
-    return Re002RecentScansResponse(items=items)
+    resp = Re002RecentScansResponse(items=items)
+    cache_set(cache_key, resp, ttl_seconds=30.0)
+    return resp
 
 
 @router.get("/re002/history", response_model=Re002HistoryResponse)
@@ -117,9 +130,14 @@ def get_re002_scan_comparison(
     _=Depends(_lab_access()),
     db: Session = Depends(get_sync_db),
 ) -> Re002ScanComparisonResponse:
+    from ..core.response_cache import cache_get, cache_set
     s = (scan_run_id or "").strip()
     if not s or not _SCAN_RUN_ID_RE.match(s):
         raise HTTPException(status_code=400, detail="Invalid scan_run_id")
+    cache_key = f"re002_scan_comparison:{s}"
+    hit = cache_get(cache_key)
+    if hit is not None:
+        return hit
     rows = scan_comparison(db, s)
     items = [
         Re002ComparisonRow(
@@ -136,7 +154,9 @@ def get_re002_scan_comparison(
         )
         for r in rows
     ]
-    return Re002ScanComparisonResponse(scan_run_id=s, items=items)
+    resp = Re002ScanComparisonResponse(scan_run_id=s, items=items)
+    cache_set(cache_key, resp, ttl_seconds=60.0)
+    return resp
 
 
 @router.get("/re002/decisions/{recommendation_id}")
@@ -176,9 +196,17 @@ def get_re002_health(
     _=Depends(_lab_access()),
     db: Session = Depends(get_sync_db),
 ) -> Re002HealthSegment:
+    from ..core.response_cache import cache_get, cache_set
+    cache_key = f"re002_health:{days}:{experiment_id or ''}"
+    hit = cache_get(cache_key)
+    if hit is not None:
+        return hit
     seg = health_segment(
         db,
         window_hours=days * 24,
         experiment_id=(experiment_id or "").strip() or None,
     )
-    return Re002HealthSegment(**seg)
+    resp = Re002HealthSegment(**seg)
+    cache_set(cache_key, resp, ttl_seconds=30.0)
+    return resp
+

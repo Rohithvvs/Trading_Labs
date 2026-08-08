@@ -1,11 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import {
   fetchPaperAccountSummary,
+  fetchPaperOrderById,
   fetchPaperQuote,
-  fetchPendingPaperOrders,
   placePaperOrder,
   prefillPaperTrade,
+  prefillPaperTradeLocal,
   updatePaperOrder,
   invalidatePaperCaches,
 } from "../api";
@@ -22,6 +23,16 @@ import type { PaperOrderTicketState, RecommendationPrefillRequest } from "../typ
 import { useToast, Button, Modal } from "../design-system";
 import { InfoTooltip } from "../components/InfoTooltip";
 import { TOOLTIPS } from "../constants/tooltips";
+import { CACHE_KEYS, getCached, getStaleCached } from "../utils/appCache";
+import { Skeleton } from "../components/Skeleton";
+import {
+  printRankedPerfReport,
+  recordCacheHit,
+  recordCacheMiss,
+  recordSample,
+  startPaperOrderPerf,
+  timeLane,
+} from "../utils/paperOrderPerf";
 
 const DEFAULT_TICKET: PaperOrderTicketState = {
   symbol: "INFY",
@@ -39,9 +50,17 @@ const DEFAULT_TICKET: PaperOrderTicketState = {
   sourceConfidence: null,
 };
 
-/** Hard ceiling so the page never stays on "Loading…" forever. */
-const BOOTSTRAP_TIMEOUT_MS = 12_000;
+/**
+ * Timeout strategy (replaces 12s bootstrap wall):
+ * - FAST: resolve UI lane quickly or fall through to partial state
+ * - BACKGROUND: keep fetching after fast timeout; apply when ready
+ * Never block the shell on a single slow request.
+ */
+const FAST_TIMEOUT_MS = 1_500;
+const BACKGROUND_TIMEOUT_MS = 6_000;
 const QUOTE_POLL_MS = 3_000;
+
+type LaneState = "idle" | "loading" | "ready" | "error" | "timeout";
 
 function formatInr(value?: number | null): string {
   if (value === undefined || value === null || Number.isNaN(value)) return "—";
@@ -58,7 +77,6 @@ function formatNum(value?: number | null, digits = 2): string {
 }
 
 function logPaperOrder(event: string, payload?: Record<string, unknown>) {
-  // Structured logs for navigation / load diagnostics (dev + prod console).
   console.info(`[paper-order] ${event}`, payload ?? {});
 }
 
@@ -75,6 +93,59 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
       (err) => {
         window.clearTimeout(timer);
         reject(err);
+      },
+    );
+  });
+}
+
+/**
+ * Race a request against a fast timeout. On timeout, continue the original
+ * promise in the background and invoke onLate when it completes.
+ * UI never waits longer than fastMs for this lane.
+ */
+function fetchWithFastTimeout<T>(
+  promise: Promise<T>,
+  fastMs: number,
+  label: string,
+  onLate?: (value: T | null, err?: unknown) => void,
+): Promise<{ value: T | null; late: boolean; error?: unknown }> {
+  let settled = false;
+  const tracked = promise.then(
+    (value) => {
+      if (settled) {
+        onLate?.(value);
+      }
+      return value;
+    },
+    (err) => {
+      if (settled) {
+        onLate?.(null, err);
+      }
+      throw err;
+    },
+  );
+
+  return new Promise((resolve) => {
+    const timer = window.setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      resolve({ value: null, late: true, error: new Error(`${label} fast-timeout ${fastMs}ms`) });
+      // Keep background work alive (tracked handlers fire onLate)
+      void tracked.catch(() => undefined);
+    }, fastMs);
+
+    tracked.then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timer);
+        resolve({ value, late: false });
+      },
+      (err) => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timer);
+        resolve({ value: null, late: false, error: err });
       },
     );
   });
@@ -116,9 +187,29 @@ export function PaperOrderPage() {
     ...DEFAULT_TICKET,
     symbol: initialSymbol || DEFAULT_TICKET.symbol,
     side: initialSide,
-    limitPrice: navState.prefill?.suggested_entry ?? navState.currentPrice ?? null,
-    stopLoss: navState.prefill?.suggested_stop ?? null,
-    target: navState.prefill?.suggested_targets?.[0] ?? null,
+    // Prefer LIMIT only when we have a positive entry; otherwise MARKET (uses live quote)
+    type:
+      navState.prefill?.suggested_entry != null && Number(navState.prefill.suggested_entry) > 0
+        ? "LIMIT"
+        : navState.currentPrice != null && Number(navState.currentPrice) > 0
+          ? "LIMIT"
+          : "MARKET",
+    limitPrice:
+      (navState.prefill?.suggested_entry != null && Number(navState.prefill.suggested_entry) > 0
+        ? Number(navState.prefill.suggested_entry)
+        : null) ??
+      (navState.currentPrice != null && Number(navState.currentPrice) > 0
+        ? Number(navState.currentPrice)
+        : null),
+    stopLoss:
+      navState.prefill?.suggested_stop != null && Number(navState.prefill.suggested_stop) > 0
+        ? Number(navState.prefill.suggested_stop)
+        : null,
+    target:
+      navState.prefill?.suggested_targets?.[0] != null &&
+      Number(navState.prefill.suggested_targets[0]) > 0
+        ? Number(navState.prefill.suggested_targets[0])
+        : null,
     sourceSignal:
       (navState.signal as string) ??
       String(navState.prefill?.recommendation_meta?.signal ?? "BUY"),
@@ -126,15 +217,36 @@ export function PaperOrderPage() {
     sourceConfidence:
       navState.confidence ??
       (Number(navState.prefill?.recommendation_meta?.confidence ?? 0) || null),
+    // Engine provenance — required so RE-001/RE-002 BUY tags survive Confirm
+    sourceEngineId: navState.prefill?.source_engine_id ?? null,
+    sourceEngineVersion: navState.prefill?.source_engine_version ?? null,
+    sourceRecommendationId: navState.prefill?.source_recommendation_id ?? null,
+    experimentId: navState.prefill?.experiment_id ?? null,
   });
 
+  // Hydrate capital from cache immediately so shell is interactive without waiting on network.
+  const cachedAccount = useMemo(
+    () => getCached<any>(CACHE_KEYS.paperAccount) ?? getStaleCached<any>(CACHE_KEYS.paperAccount),
+    [],
+  );
+  const seedCash = cachedAccount ? extractPaperAvailableCash(cachedAccount) : null;
+  const seedRisk = cachedAccount ? extractPaperMaxRiskPerTrade(cachedAccount) : 0.02;
+
   const [currentPrice, setCurrentPrice] = useState<number | null>(navState.currentPrice ?? null);
-  const [availableCash, setAvailableCash] = useState<number | null>(null);
+  const [availableCash, setAvailableCash] = useState<number | null>(seedCash);
   /** False until paper account capital has been applied (or hard-failed). */
-  const [accountLoaded, setAccountLoaded] = useState(false);
-  const [maxRiskPercent, setMaxRiskPercent] = useState(0.02);
-  const [quoteStatus, setQuoteStatus] = useState<"loading" | "live" | "degraded" | "error">("loading");
-  const [isLoading, setIsLoading] = useState(true);
+  const [accountLoaded, setAccountLoaded] = useState(seedCash != null);
+  const [maxRiskPercent, setMaxRiskPercent] = useState(seedRisk);
+  const [quoteStatus, setQuoteStatus] = useState<"loading" | "live" | "degraded" | "error">(
+    navState.currentPrice != null ? "degraded" : "loading",
+  );
+  /** Shell is always interactive; each card/lane has its own indicator. */
+  const [quoteLane, setQuoteLane] = useState<LaneState>(
+    navState.currentPrice != null ? "ready" : "loading",
+  );
+  const [accountLane, setAccountLane] = useState<LaneState>(seedCash != null ? "ready" : "loading");
+  const [recoLane, setRecoLane] = useState<LaneState>(navState.prefill ? "ready" : "idle");
+  const [orderLane, setOrderLane] = useState<LaneState>(orderIdFromUrl ? "loading" : "idle");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
@@ -153,6 +265,8 @@ export function PaperOrderPage() {
   /** Bumps on remount / retry so stale async work is ignored (Strict Mode safe). */
   const loadGenRef = useRef(0);
   const pollAbortRef = useRef<AbortController | null>(null);
+  /** Double-click / multi-submit guard — survives before React re-render. */
+  const confirmInFlightRef = useRef(false);
 
   const entryReference = useMemo(() => {
     if (ticket.type === "LIMIT" || ticket.type === "GTT" || ticket.type === "STOP_LIMIT") {
@@ -192,84 +306,267 @@ export function PaperOrderPage() {
     };
   }, [ticket, entryReference, availableCash, meta.riskReward]);
 
-  const loadQuoteAndAccount = useCallback(async (symbol: string, gen?: number) => {
-    const canon = toCanonicalSymbol(symbol) || "INFY";
-    const myGen = gen ?? loadGenRef.current;
-    logPaperOrder("api_request", { kind: "quote+account", symbol: canon, gen: myGen });
-    setQuoteStatus("loading");
-    const [quote, acct] = await Promise.all([
-      fetchPaperQuote(canon).catch((err) => {
+  const applyAccount = useCallback(
+    (acct: any | null, gen: number, symbol: string, status: LaneState = "ready") => {
+      if (gen !== loadGenRef.current) return;
+      if (acct) {
+        const cash = extractPaperAvailableCash(acct);
+        const riskPct = extractPaperMaxRiskPerTrade(acct);
+        setAvailableCash(cash);
+        setMaxRiskPercent(riskPct);
+        setAccountLoaded(true);
+        setAccountLane("ready");
+        logPaperCapital("paper-order", "account_loaded", acct, {
+          symbol,
+          gen,
+          resolved_available_cash: cash,
+        });
+        logPaperOrder("api_response", {
+          kind: "account",
+          available_cash: cash,
+          balance: acct.balance ?? acct.cash_balance ?? null,
+          available_funds: acct.available_funds ?? null,
+        });
+      } else {
+        // Keep seed cash if present; mark lane error only when no usable capital.
+        setAccountLoaded(true);
+        setAccountLane((prev) => (prev === "ready" ? "ready" : status === "timeout" ? "timeout" : "error"));
+        logPaperOrder("api_response", { kind: "account", available_cash: null, failed: true });
+      }
+    },
+    [],
+  );
+
+  const applyQuote = useCallback((quote: any | null, gen: number, symbol: string) => {
+    if (gen !== loadGenRef.current) return;
+    if (quote?.current_price != null && Number(quote.current_price) > 0) {
+      setCurrentPrice(Number(quote.current_price));
+      setQuoteStatus(quote.is_stale ? "degraded" : "live");
+      setQuoteLane("ready");
+      logPaperOrder("api_response", {
+        kind: "quote",
+        symbol,
+        price: Number(quote.current_price),
+        status: quote.is_stale ? "degraded" : "live",
+      });
+    } else {
+      setQuoteStatus((prev) => (prev === "degraded" || prev === "live" ? prev : "error"));
+      setQuoteLane((prev) => (prev === "ready" ? "ready" : "error"));
+      logPaperOrder("api_response", { kind: "quote", symbol, price: null });
+    }
+  }, []);
+
+  /**
+   * Independent quote + account lanes with fast timeout + background retry.
+   * Never blocks shell; late responses still apply when they arrive.
+   */
+  const loadQuoteAndAccount = useCallback(
+    async (symbol: string, gen?: number, opts?: { forceAccount?: boolean; forceQuote?: boolean }) => {
+      const canon = toCanonicalSymbol(symbol) || "INFY";
+      const myGen = gen ?? loadGenRef.current;
+      logPaperOrder("api_request", { kind: "quote+account", symbol: canon, gen: myGen });
+
+      // --- Quote cache seed ---
+      if (!opts?.forceQuote) {
+        const cachedQuote =
+          getCached<any>(CACHE_KEYS.paperQuote(canon)) ??
+          getStaleCached<any>(CACHE_KEYS.paperQuote(canon));
+        if (cachedQuote?.current_price != null && Number(cachedQuote.current_price) > 0) {
+          applyQuote(cachedQuote, myGen, canon);
+          recordCacheHit(myGen, "quote_cache", canon);
+        } else {
+          recordCacheMiss(myGen, "quote");
+          setQuoteLane((s) => (s === "ready" ? s : "loading"));
+          setQuoteStatus((s) => (s === "live" || s === "degraded" ? s : "loading"));
+        }
+      } else {
+        setQuoteLane("loading");
+        setQuoteStatus("loading");
+      }
+
+      // --- Account cache seed ---
+      if (!opts?.forceAccount) {
+        const cachedAcct =
+          getCached<any>(CACHE_KEYS.paperAccount) ?? getStaleCached<any>(CACHE_KEYS.paperAccount);
+        if (cachedAcct) {
+          applyAccount(cachedAcct, myGen, canon);
+          recordCacheHit(myGen, "account_cache");
+        } else {
+          recordCacheMiss(myGen, "account");
+          setAccountLane((s) => (s === "ready" ? s : "loading"));
+        }
+      } else {
+        setAccountLane("loading");
+      }
+
+      const quotePromise = fetchPaperQuote(canon, { force: opts?.forceQuote }).catch((err) => {
         logPaperOrder("api_failure", {
           kind: "quote",
           symbol: canon,
           message: err instanceof Error ? err.message : String(err),
         });
         return null;
-      }),
-      fetchPaperAccountSummary({ force: true }).catch((err) => {
+      });
+
+      const acctPromise = fetchPaperAccountSummary({ force: opts?.forceAccount }).catch((err) => {
         logPaperOrder("api_failure", {
           kind: "account",
           message: err instanceof Error ? err.message : String(err),
         });
         return null;
-      }),
-    ]);
-    if (myGen !== loadGenRef.current) return;
+      });
 
-    if (quote?.current_price != null && Number(quote.current_price) > 0) {
-      setCurrentPrice(Number(quote.current_price));
-      setQuoteStatus(quote.is_stale ? "degraded" : "live");
-      logPaperOrder("api_response", {
-        kind: "quote",
-        symbol: canon,
-        price: Number(quote.current_price),
-        status: quote.is_stale ? "degraded" : "live",
-      });
-    } else {
-      setQuoteStatus("error");
-      logPaperOrder("api_response", { kind: "quote", symbol: canon, price: null });
-    }
-    if (acct) {
-      const cash = extractPaperAvailableCash(acct);
-      const riskPct = extractPaperMaxRiskPerTrade(acct);
-      setAvailableCash(cash);
-      setMaxRiskPercent(riskPct);
-      setAccountLoaded(true);
-      logPaperCapital("paper-order", "account_loaded", acct, {
-        symbol: canon,
-        gen: myGen,
-        resolved_available_cash: cash,
-      });
-      logPaperOrder("api_response", {
-        kind: "account",
-        available_cash: cash,
-        balance: acct.balance ?? acct.cash_balance ?? null,
-        available_funds: acct.available_funds ?? null,
-      });
-    } else {
-      // Do not invent capital — leave cash null and mark load complete so UI can warn.
-      setAccountLoaded(true);
-      logPaperOrder("api_response", { kind: "account", available_cash: null, failed: true });
-    }
-  }, []);
+      // Fire both immediately; each lane has its own fast timeout + background completion.
+      const quoteLaneP = (async () => {
+        const started = performance.now();
+        const { value, late, error } = await fetchWithFastTimeout(
+          quotePromise,
+          FAST_TIMEOUT_MS,
+          "Quote",
+          (lateValue) => {
+            if (myGen !== loadGenRef.current) return;
+            if (lateValue) {
+              applyQuote(lateValue, myGen, canon);
+              recordSample(myGen, {
+                name: "quote_background",
+                category: "api",
+                durationMs: Math.round(performance.now() - started),
+                status: "ok",
+                detail: "late quote applied",
+              });
+            }
+          },
+        );
+        if (myGen !== loadGenRef.current) return;
+        const durationMs = Math.round(performance.now() - started);
+        if (value) {
+          applyQuote(value, myGen, canon);
+          recordSample(myGen, {
+            name: "quote_api",
+            category: "api",
+            durationMs,
+            status: "ok",
+          });
+        } else if (late) {
+          setQuoteLane((s) => (s === "ready" ? s : "timeout"));
+          recordSample(myGen, {
+            name: "quote_api",
+            category: "api",
+            durationMs: FAST_TIMEOUT_MS,
+            status: "timeout",
+            detail: "fast timeout; background retry active",
+          });
+          // Background hard ceiling — mark error if still nothing
+          void withTimeout(quotePromise, BACKGROUND_TIMEOUT_MS - FAST_TIMEOUT_MS, "Quote bg")
+            .then((q) => {
+              if (myGen !== loadGenRef.current) return;
+              if (q) applyQuote(q, myGen, canon);
+            })
+            .catch(() => {
+              if (myGen !== loadGenRef.current) return;
+              setQuoteLane((s) => (s === "ready" ? s : "error"));
+              setQuoteStatus((s) => (s === "live" || s === "degraded" ? s : "error"));
+            });
+        } else {
+          setQuoteLane((s) => (s === "ready" ? s : "error"));
+          recordSample(myGen, {
+            name: "quote_api",
+            category: "api",
+            durationMs,
+            status: "error",
+            detail: error instanceof Error ? error.message : String(error ?? ""),
+          });
+        }
+      })();
+
+      const acctLaneP = (async () => {
+        const started = performance.now();
+        const { value, late, error } = await fetchWithFastTimeout(
+          acctPromise,
+          FAST_TIMEOUT_MS,
+          "Paper account",
+          (lateValue) => {
+            if (myGen !== loadGenRef.current) return;
+            if (lateValue) {
+              applyAccount(lateValue, myGen, canon);
+              recordSample(myGen, {
+                name: "account_background",
+                category: "api",
+                durationMs: Math.round(performance.now() - started),
+                status: "ok",
+                detail: "late account applied",
+              });
+            }
+          },
+        );
+        if (myGen !== loadGenRef.current) return;
+        const durationMs = Math.round(performance.now() - started);
+        if (value) {
+          applyAccount(value, myGen, canon);
+          recordSample(myGen, {
+            name: "account_api",
+            category: "api",
+            durationMs,
+            status: "ok",
+          });
+        } else if (late) {
+          setAccountLane((s) => (s === "ready" ? s : "timeout"));
+          recordSample(myGen, {
+            name: "account_api",
+            category: "api",
+            durationMs: FAST_TIMEOUT_MS,
+            status: "timeout",
+            detail: "fast timeout; background retry active",
+          });
+          void withTimeout(acctPromise, BACKGROUND_TIMEOUT_MS - FAST_TIMEOUT_MS, "Account bg")
+            .then((a) => {
+              if (myGen !== loadGenRef.current) return;
+              if (a) applyAccount(a, myGen, canon);
+            })
+            .catch(() => {
+              if (myGen !== loadGenRef.current) return;
+              applyAccount(null, myGen, canon, "timeout");
+            });
+        } else {
+          applyAccount(null, myGen, canon, "error");
+          recordSample(myGen, {
+            name: "account_api",
+            category: "api",
+            durationMs,
+            status: "error",
+            detail: error instanceof Error ? error.message : String(error ?? ""),
+          });
+        }
+      })();
+
+      // Do not await background ceilings — only wait for the fast races so caller can finish.
+      await Promise.all([quoteLaneP, acctLaneP]);
+    },
+    [applyAccount, applyQuote],
+  );
 
   /**
-   * Load ticket data for the current route/nav state.
-   * `isActive` must stay true for the caller; Strict Mode / unmount sets it false
-   * so we never leave isLoading stuck after a cancelled run.
+   * Progressive bootstrap: paint shell from nav/cache immediately, then
+   * load independent lanes in parallel (quote | account | order | prefill refine).
+   * No 12s bootstrap wall — partial render always.
    */
   const runBootstrap = useCallback(
-    async (isActive: () => boolean, opts?: { forceSymbol?: string }) => {
+    async (isActive: () => boolean, opts?: { forceSymbol?: string; forceRefresh?: boolean }) => {
       const gen = ++loadGenRef.current;
+      startPaperOrderPerf(gen);
+      const symbolForLoad =
+        toCanonicalSymbol(opts?.forceSymbol || initialSymbol) || DEFAULT_TICKET.symbol;
+
       logPaperOrder("loading_start", {
         gen,
         path: location.pathname,
         search: location.search,
         hasNavState,
-        symbol: opts?.forceSymbol || initialSymbol || null,
+        symbol: symbolForLoad,
         side: initialSide,
         orderId: orderIdFromUrl,
         hasPrefill: Boolean(navState.prefill),
+        strategy: "progressive+fast-timeout",
       });
       if (!hasNavState && !searchParams.get("symbol") && !orderIdFromUrl) {
         logPaperOrder("missing_navigation_state", {
@@ -278,194 +575,310 @@ export function PaperOrderPage() {
         });
       }
 
-      setIsLoading(true);
-      setAccountLoaded(false);
-      setAvailableCash(null);
       setLoadError(null);
+      if (opts?.forceRefresh) {
+        setAccountLoaded(false);
+        setAvailableCash(null);
+        setAccountLane("loading");
+        setQuoteLane("loading");
+      }
       setPageError(null);
 
-      const symbolForLoad =
-        toCanonicalSymbol(opts?.forceSymbol || initialSymbol) || DEFAULT_TICKET.symbol;
-
       try {
-        await withTimeout(
-          (async () => {
-            if (orderIdFromUrl) {
-              logPaperOrder("api_request", { kind: "pending-orders", orderId: orderIdFromUrl });
-              const orders = await fetchPendingPaperOrders().catch((err) => {
-                logPaperOrder("api_failure", {
-                  kind: "pending-orders",
-                  message: err instanceof Error ? err.message : String(err),
-                });
-                return [];
+        // --- EDIT PATH: order-by-id ∥ quote+account ---
+        if (orderIdFromUrl) {
+          setOrderLane("loading");
+          logPaperOrder("api_request", { kind: "order-by-id", orderId: orderIdFromUrl });
+          const applyOrder = (orderResult: Awaited<ReturnType<typeof fetchPaperOrderById>>) => {
+            setOrderLane("ready");
+            setEditingOrderId(orderIdFromUrl);
+            const orderSym = toCanonicalSymbol(orderResult.symbol) || symbolForLoad;
+            setTicket({
+              symbol: orderSym,
+              side: orderResult.side,
+              type: orderResult.type,
+              productType: orderResult.product_type ?? "CNC",
+              qty: orderResult.qty,
+              limitPrice: orderResult.price ?? null,
+              stopPrice: orderResult.stop_price ?? null,
+              stopLoss: orderResult.stop_loss ?? null,
+              target: orderResult.target ?? null,
+              notes: orderResult.notes ?? "",
+              sourceSignal: orderResult.source_signal ?? null,
+              sourceScore: orderResult.source_score ?? null,
+              sourceConfidence: orderResult.source_confidence ?? null,
+            });
+            setMeta({
+              signal: orderResult.source_signal,
+              score: orderResult.source_score,
+              confidence: orderResult.source_confidence,
+              riskReward: null,
+            });
+            if (orderSym !== symbolForLoad) {
+              void loadQuoteAndAccount(orderSym, gen);
+            }
+          };
+
+          const orderStarted = performance.now();
+          const orderFetch = fetchPaperOrderById(orderIdFromUrl).catch((err) => {
+            logPaperOrder("api_failure", {
+              kind: "order-by-id",
+              message: err instanceof Error ? err.message : String(err),
+            });
+            return null;
+          });
+
+          await Promise.all([
+            fetchWithFastTimeout(orderFetch, FAST_TIMEOUT_MS, "Order load", (lateOrder) => {
+              if (!isActive() || gen !== loadGenRef.current || !lateOrder) return;
+              applyOrder(lateOrder);
+              recordSample(gen, {
+                name: "order_by_id_background",
+                category: "api",
+                durationMs: Math.round(performance.now() - orderStarted),
+                status: "ok",
               });
+            }).then((result) => {
               if (!isActive() || gen !== loadGenRef.current) return;
-
-              const order = orders.find((o: { id: number }) => o.id === orderIdFromUrl);
-              if (order) {
-                setEditingOrderId(orderIdFromUrl);
-                setTicket({
-                  symbol: toCanonicalSymbol(order.symbol),
-                  side: order.side,
-                  type: order.type,
-                  productType: order.product_type ?? "CNC",
-                  qty: order.qty,
-                  limitPrice: order.price ?? null,
-                  stopPrice: order.stop_price ?? null,
-                  stopLoss: order.stop_loss ?? null,
-                  target: order.target ?? null,
-                  notes: order.notes ?? "",
-                  sourceSignal: order.source_signal ?? null,
-                  sourceScore: order.source_score ?? null,
-                  sourceConfidence: order.source_confidence ?? null,
+              const durationMs = Math.round(performance.now() - orderStarted);
+              if (result.value) {
+                applyOrder(result.value);
+                recordSample(gen, {
+                  name: "order_by_id",
+                  category: "api",
+                  durationMs,
+                  status: "ok",
                 });
-                setMeta({
-                  signal: order.source_signal,
-                  score: order.source_score,
-                  confidence: order.source_confidence,
-                  riskReward: null,
+              } else if (result.late) {
+                setOrderLane("timeout");
+                recordSample(gen, {
+                  name: "order_by_id",
+                  category: "api",
+                  durationMs: FAST_TIMEOUT_MS,
+                  status: "timeout",
+                  detail: "fast timeout; background retry active",
                 });
-                await loadQuoteAndAccount(order.symbol, gen);
               } else {
-                logPaperOrder("loading_failure", {
-                  reason: "order_not_found",
-                  orderId: orderIdFromUrl,
-                });
+                setOrderLane("error");
                 setEditingOrderId(null);
-                setPageError(`Pending order #${orderIdFromUrl} was not found. Showing a blank ticket.`);
-                setTicket((t) => ({
-                  ...t,
-                  symbol: symbolForLoad,
-                  side: initialSide,
-                }));
-                await loadQuoteAndAccount(symbolForLoad, gen);
-              }
-              return;
-            }
-
-            const prefill: RecommendationPrefillRequest | null | undefined = navState.prefill;
-            if (prefill) {
-              try {
-                logPaperOrder("api_request", {
-                  kind: "prefill",
-                  symbol: prefill.symbol,
-                });
-                const result = await prefillPaperTrade(prefill);
-                if (!isActive() || gen !== loadGenRef.current) return;
-                logPaperOrder("api_response", {
-                  kind: "prefill",
-                  symbol: result.symbol,
-                  qty: result.qty,
-                  limit: result.limit_price,
-                });
-                setTicket({
-                  symbol: toCanonicalSymbol(result.symbol),
-                  side: result.side,
-                  type: result.type,
-                  productType: "CNC",
-                  qty: result.qty,
-                  limitPrice: result.limit_price ?? null,
-                  stopPrice: null,
-                  stopLoss: result.stop_loss ?? null,
-                  target: result.target ?? null,
-                  notes: result.note,
-                  sourceSignal: String(prefill.recommendation_meta?.signal ?? "BUY"),
-                  sourceScore: Number(prefill.recommendation_meta?.score ?? 0) || null,
-                  sourceConfidence: Number(prefill.recommendation_meta?.confidence ?? 0) || null,
-                });
-                setMeta({
-                  signal: String(prefill.recommendation_meta?.signal ?? "BUY"),
-                  score: Number(prefill.recommendation_meta?.score ?? 0) || null,
-                  confidence: Number(prefill.recommendation_meta?.confidence ?? 0) || null,
-                  riskReward: navState.riskReward ?? null,
-                });
-                await loadQuoteAndAccount(result.symbol, gen);
-              } catch (e) {
-                if (!isActive() || gen !== loadGenRef.current) return;
-                // Soft-fail: keep nav prefill fields so the page still works
-                logPaperOrder("loading_failure", {
-                  reason: "prefill_failed",
-                  message: e instanceof Error ? e.message : String(e),
-                });
-                setTicket((t) => ({
-                  ...t,
-                  symbol: toCanonicalSymbol(prefill.symbol) || t.symbol,
-                  limitPrice: prefill.suggested_entry ?? t.limitPrice,
-                  stopLoss: prefill.suggested_stop ?? t.stopLoss,
-                  target: prefill.suggested_targets?.[0] ?? t.target,
-                  notes: "Scanner recommendation (offline prefill)",
-                }));
-                if (prefill.suggested_entry) setCurrentPrice(prefill.suggested_entry);
-                setQuoteStatus("degraded");
                 setPageError(
-                  e instanceof Error
-                    ? `Scanner prefill unavailable: ${e.message}`
-                    : "Scanner data unavailable. Edit fields manually.",
+                  `Pending order #${orderIdFromUrl} was not found. Showing a blank ticket.`,
                 );
-                await loadQuoteAndAccount(prefill.symbol, gen);
+                setTicket((t) => ({ ...t, symbol: symbolForLoad, side: initialSide }));
+                recordSample(gen, {
+                  name: "order_by_id",
+                  category: "api",
+                  durationMs,
+                  status: "error",
+                });
               }
-              return;
-            }
+            }),
+            loadQuoteAndAccount(symbolForLoad, gen, {
+              forceAccount: opts?.forceRefresh,
+              forceQuote: opts?.forceRefresh,
+            }),
+          ]);
+          return;
+        }
 
-            // No prefill / no edit — load by symbol (URL query or nav state)
-            if (!symbolForLoad) {
-              setLoadError("Unable to load order details. No symbol was provided.");
-              setQuoteStatus("error");
-              return;
-            }
+        // --- PREFILL PATH: local instant + optional lab refine in background ---
+        const prefill: RecommendationPrefillRequest | null | undefined = navState.prefill;
+        if (prefill) {
+          const local = prefillPaperTradeLocal(prefill);
+          setRecoLane("ready");
+          recordSample(gen, {
+            name: "prefill_local",
+            category: "cache",
+            durationMs: 0,
+            status: "cache_hit",
+            cacheHit: true,
+            detail: "nav recommendation applied sync",
+          });
+          const posOrNull = (n: number | null | undefined) =>
+            n != null && Number(n) > 0 ? Number(n) : null;
+          const limit = posOrNull(local.limit_price) ?? posOrNull(prefill.suggested_entry);
+          setTicket({
+            symbol: toCanonicalSymbol(local.symbol) || symbolForLoad,
+            side: local.side,
+            type: limit != null ? local.type || "LIMIT" : "MARKET",
+            productType: "CNC",
+            qty: local.qty,
+            limitPrice: limit,
+            stopPrice: null,
+            stopLoss: posOrNull(local.stop_loss),
+            target: posOrNull(local.target),
+            notes: local.note,
+            sourceSignal: String(prefill.recommendation_meta?.signal ?? "BUY"),
+            sourceScore: Number(prefill.recommendation_meta?.score ?? 0) || null,
+            sourceConfidence: Number(prefill.recommendation_meta?.confidence ?? 0) || null,
+            sourceEngineId:
+              local.source_engine_id ?? prefill.source_engine_id ?? null,
+            sourceEngineVersion:
+              local.source_engine_version ?? prefill.source_engine_version ?? null,
+            sourceRecommendationId:
+              local.source_recommendation_id ?? prefill.source_recommendation_id ?? null,
+            experimentId: local.experiment_id ?? prefill.experiment_id ?? null,
+          });
+          setMeta({
+            signal: String(prefill.recommendation_meta?.signal ?? "BUY"),
+            score: Number(prefill.recommendation_meta?.score ?? 0) || null,
+            confidence: Number(prefill.recommendation_meta?.confidence ?? 0) || null,
+            riskReward: navState.riskReward ?? null,
+          });
+          if (limit != null) {
+            setCurrentPrice((p) => p ?? limit);
+            setQuoteStatus((s) => (s === "live" ? s : "degraded"));
+            setQuoteLane((s) => (s === "ready" ? s : "ready"));
+          }
 
-            setTicket((t) => ({
-              ...t,
-              symbol: symbolForLoad,
-              side: initialSide,
-              limitPrice: t.limitPrice ?? navState.currentPrice ?? null,
-              sourceSignal: (navState.signal as string) ?? t.sourceSignal ?? initialSide,
-              sourceScore: navState.score ?? t.sourceScore,
-              sourceConfidence: navState.confidence ?? t.sourceConfidence,
-            }));
-            setMeta((m) => ({
-              signal: navState.signal ?? m.signal ?? initialSide,
-              score: navState.score ?? m.score,
-              confidence: navState.confidence ?? m.confidence,
-              riskReward: navState.riskReward ?? m.riskReward,
-            }));
-            await loadQuoteAndAccount(symbolForLoad, gen);
-          })(),
-          BOOTSTRAP_TIMEOUT_MS,
-          "Order ticket bootstrap",
-        );
+          const needsLabRefine = Boolean(
+            prefill.source_recommendation_id ||
+              (prefill.source_engine_id &&
+                ["RE-001", "RE-002"].includes(String(prefill.source_engine_id).toUpperCase())),
+          );
+
+          const lanes: Promise<unknown>[] = [
+            loadQuoteAndAccount(local.symbol || symbolForLoad, gen, {
+              forceAccount: opts?.forceRefresh,
+              forceQuote: opts?.forceRefresh,
+            }),
+          ];
+          if (needsLabRefine) {
+            setRecoLane("loading");
+            logPaperOrder("api_request", { kind: "prefill", symbol: prefill.symbol });
+            lanes.push(
+              timeLane(
+                gen,
+                "prefill_lab",
+                "api",
+                () => prefillPaperTrade(prefill),
+                { timeoutMs: FAST_TIMEOUT_MS, label: "Prefill" },
+              ).then((result) => {
+                if (!isActive() || gen !== loadGenRef.current) return;
+                if (result.value) {
+                  const r = result.value;
+                  setRecoLane("ready");
+                  const lim =
+                    r.limit_price != null && Number(r.limit_price) > 0
+                      ? Number(r.limit_price)
+                      : null;
+                  setTicket((t) => ({
+                    ...t,
+                    symbol: toCanonicalSymbol(r.symbol) || t.symbol,
+                    side: r.side,
+                    type: lim != null ? r.type || t.type : t.type === "LIMIT" && t.limitPrice ? t.type : "MARKET",
+                    qty: r.qty,
+                    limitPrice: lim ?? t.limitPrice,
+                    stopLoss:
+                      r.stop_loss != null && Number(r.stop_loss) > 0
+                        ? Number(r.stop_loss)
+                        : t.stopLoss,
+                    target:
+                      r.target != null && Number(r.target) > 0 ? Number(r.target) : t.target,
+                    notes: r.note,
+                    sourceEngineId: r.source_engine_id ?? t.sourceEngineId,
+                    sourceEngineVersion: r.source_engine_version ?? t.sourceEngineVersion,
+                    sourceRecommendationId:
+                      r.source_recommendation_id ?? t.sourceRecommendationId,
+                    experimentId: r.experiment_id ?? t.experimentId,
+                  }));
+                } else {
+                  // Keep local prefill — form already usable
+                  setRecoLane("ready");
+                  logPaperOrder("loading_failure", {
+                    reason: "prefill_failed_or_timeout",
+                    message: result.error,
+                  });
+                  // Background refine if fast timed out
+                  if (result.timedOut) {
+                    void prefillPaperTrade(prefill)
+                      .then((r) => {
+                        if (!isActive() || gen !== loadGenRef.current) return;
+                        setTicket((t) => ({
+                          ...t,
+                          symbol: toCanonicalSymbol(r.symbol) || t.symbol,
+                          qty: r.qty,
+                          limitPrice:
+                            r.limit_price != null && Number(r.limit_price) > 0
+                              ? Number(r.limit_price)
+                              : t.limitPrice,
+                          stopLoss:
+                            r.stop_loss != null && Number(r.stop_loss) > 0
+                              ? Number(r.stop_loss)
+                              : t.stopLoss,
+                          target:
+                            r.target != null && Number(r.target) > 0
+                              ? Number(r.target)
+                              : t.target,
+                          notes: r.note,
+                          sourceEngineId: r.source_engine_id ?? t.sourceEngineId,
+                          sourceEngineVersion:
+                            r.source_engine_version ?? t.sourceEngineVersion,
+                          sourceRecommendationId:
+                            r.source_recommendation_id ?? t.sourceRecommendationId,
+                          experimentId: r.experiment_id ?? t.experimentId,
+                        }));
+                      })
+                      .catch(() => undefined);
+                  }
+                }
+              }),
+            );
+          }
+          await Promise.all(lanes);
+          return;
+        }
+
+        // --- SYMBOL PATH ---
+        if (!symbolForLoad) {
+          setLoadError("Unable to load order details. No symbol was provided.");
+          setQuoteStatus("error");
+          setQuoteLane("error");
+          return;
+        }
+
+        setTicket((t) => ({
+          ...t,
+          symbol: symbolForLoad,
+          side: initialSide,
+          limitPrice: t.limitPrice ?? navState.currentPrice ?? null,
+          sourceSignal: (navState.signal as string) ?? t.sourceSignal ?? initialSide,
+          sourceScore: navState.score ?? t.sourceScore,
+          sourceConfidence: navState.confidence ?? t.sourceConfidence,
+        }));
+        setMeta((m) => ({
+          signal: navState.signal ?? m.signal ?? initialSide,
+          score: navState.score ?? m.score,
+          confidence: navState.confidence ?? m.confidence,
+          riskReward: navState.riskReward ?? m.riskReward,
+        }));
+        await loadQuoteAndAccount(symbolForLoad, gen, {
+          forceAccount: opts?.forceRefresh,
+          forceQuote: opts?.forceRefresh,
+        });
       } catch (e) {
         if (!isActive() || gen !== loadGenRef.current) return;
         const msg = e instanceof Error ? e.message : "Unable to load order details.";
         logPaperOrder("loading_failure", { reason: "bootstrap_error", message: msg, gen });
-        setLoadError(msg);
-        // Soft recovery: still show form with whatever we have
-        setTicket((t) => ({
-          ...t,
-          symbol: symbolForLoad || t.symbol,
-          side: initialSide,
-          limitPrice: t.limitPrice ?? navState.currentPrice ?? null,
-        }));
         if (navState.currentPrice != null) {
           setCurrentPrice(navState.currentPrice);
           setQuoteStatus("degraded");
-        } else {
-          setQuoteStatus("error");
+          setQuoteLane("ready");
         }
+        // Soft: never blank the page for a single failure
+        setPageError(msg);
       } finally {
-        // Critical: only the active effect/retry may clear loading.
-        // Strict Mode cancels the first run; the second run always clears.
         if (isActive() && gen === loadGenRef.current) {
-          setIsLoading(false);
           logPaperOrder("loading_complete", {
             gen,
             symbol: symbolForLoad,
             hasPrefill: Boolean(navState.prefill),
           });
+          // Ranked report after fast races settle; late backgrounds may still apply after.
+          printRankedPerfReport(gen, { symbol: symbolForLoad });
         }
       }
     },
-    // Closures read latest nav/location; effect below re-runs on URL identity.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [
       initialSymbol,
@@ -480,8 +893,6 @@ export function PaperOrderPage() {
 
   // Initial load + re-load when URL identity changes.
   // Strict Mode safe: each effect instance has its own `active` flag.
-  // The previous anti-pattern (loadedRef early-return) skipped the remount
-  // run after cancelling the first — leaving isLoading stuck at true forever.
   useEffect(() => {
     let active = true;
     const isActive = () => active;
@@ -508,13 +919,16 @@ export function PaperOrderPage() {
   function handleRetry() {
     setLoadError(null);
     setPageError(null);
-    void runBootstrap(() => true, { forceSymbol: ticket.symbol || initialSymbol });
+    void runBootstrap(() => true, {
+      forceSymbol: ticket.symbol || initialSymbol,
+      forceRefresh: true,
+    });
   }
 
   // Live quote poll while on the page (cancelled on leave / symbol change)
   useEffect(() => {
     const sym = toCanonicalSymbol(ticket.symbol);
-    if (!sym || isLoading) return;
+    if (!sym) return;
 
     pollAbortRef.current?.abort();
     const ac = new AbortController();
@@ -522,7 +936,7 @@ export function PaperOrderPage() {
 
     const id = window.setInterval(() => {
       if (ac.signal.aborted) return;
-      void fetchPaperQuote(sym)
+      void fetchPaperQuote(sym, { force: true })
         .then((q) => {
           if (ac.signal.aborted) return;
           if (q?.current_price != null && Number(q.current_price) > 0) {
@@ -541,7 +955,7 @@ export function PaperOrderPage() {
       ac.abort();
       window.clearInterval(id);
     };
-  }, [ticket.symbol, isLoading]);
+  }, [ticket.symbol]);
 
   function handleBack() {
     if (window.history.length > 1) {
@@ -793,13 +1207,50 @@ export function PaperOrderPage() {
   }
 
   async function handleConfirmOrder() {
+    // Task 11: only one active confirmation — ignore double-clicks / re-entry
+    if (confirmInFlightRef.current || isSubmitting) {
+      logPaperOrder("confirm_ignored_duplicate", { reason: "in_flight" });
+      return;
+    }
+    confirmInFlightRef.current = true;
     setIsSubmitting(true);
     setPageError(null);
+    const t0 = performance.now();
+    // Coerce non-positive optional prices to null (backend gt=0 rejects 0)
+    const pos = (n: number | null | undefined) =>
+      n != null && Number(n) > 0 ? Number(n) : null;
+    const normalized: PaperOrderTicketState = {
+      ...ticket,
+      symbol: toCanonicalSymbol(ticket.symbol),
+      limitPrice: pos(ticket.limitPrice),
+      stopPrice: pos(ticket.stopPrice),
+      stopLoss: pos(ticket.stopLoss),
+      target: pos(ticket.target),
+      // Preserve engine tag — default Production only when truly unknown
+      sourceEngineId: ticket.sourceEngineId || navState.prefill?.source_engine_id || "Production",
+      sourceEngineVersion:
+        ticket.sourceEngineVersion ?? navState.prefill?.source_engine_version ?? null,
+      sourceRecommendationId:
+        ticket.sourceRecommendationId ?? navState.prefill?.source_recommendation_id ?? null,
+      experimentId: ticket.experimentId ?? navState.prefill?.experiment_id ?? null,
+    };
+    // Freeze idempotency key for this attempt (double-click reuses same key)
+    const attemptKey = idempotencyKey;
+
     try {
-      const normalized: PaperOrderTicketState = {
-        ...ticket,
-        symbol: toCanonicalSymbol(ticket.symbol),
-      };
+      let orderStatus: string | undefined;
+      let successTitle = "✓ Paper Order Placed Successfully";
+      let successDesc: string | undefined;
+
+      logPaperOrder("confirm_payload", {
+        symbol: normalized.symbol,
+        type: normalized.type,
+        limitPrice: normalized.limitPrice,
+        stopLoss: normalized.stopLoss,
+        target: normalized.target,
+        sourceEngineId: normalized.sourceEngineId,
+        sourceRecommendationId: normalized.sourceRecommendationId,
+      });
 
       if (editingOrderId) {
         await updatePaperOrder(editingOrderId, {
@@ -811,46 +1262,78 @@ export function PaperOrderPage() {
           type: normalized.type,
           product_type: normalized.productType,
         } as Partial<PaperOrderTicketState> & Record<string, unknown>);
-        toast.success("✓ Paper Order Updated Successfully");
+        successTitle = "✓ Paper Order Updated Successfully";
       } else {
-        const response = await placePaperOrder(normalized, idempotencyKey);
+        const response = await placePaperOrder(normalized, attemptKey);
+        // New key only after success — retries keep attemptKey for idempotency
         setIdempotencyKey(crypto.randomUUID());
-        const orderStatus = response.order?.status;
-        if (orderStatus === "PENDING_MARKET_OPEN") {
-          toast.success(
-            "Order accepted",
-            "The market is currently closed. Your order has been placed successfully and will be executed automatically when the market opens.",
-          );
+        orderStatus = response.order?.status ?? (response as { status?: string }).status;
+        if (orderStatus === "WAITING_FOR_MARKET" || orderStatus === "PENDING_MARKET_OPEN") {
+          successTitle = "Order accepted";
+          successDesc =
+            "The market is currently closed. Your order has been placed successfully and will be executed automatically when the market opens.";
         } else if (orderStatus === "FILLED" || orderStatus === "EXECUTED") {
-          toast.success(
-            `Your ${normalized.side} order for ${normalized.symbol} has been executed successfully.`,
-            response.position
-              ? "Position has been added to your portfolio."
-              : response.message || "Order filled.",
-          );
+          successTitle = `Your ${normalized.side} order for ${normalized.symbol} has been executed successfully.`;
+          successDesc = response.position
+            ? "Position has been added to your portfolio."
+            : response.message || "Order filled.";
         } else {
-          toast.success("✓ Paper Order Placed Successfully", response.message || undefined);
+          successDesc = response.message || undefined;
         }
       }
 
-      invalidatePaperCaches();
-      setConfirmOpen(false);
-
-      navigate("/paper", {
-        replace: false,
-        state: { orderJustPlaced: true, symbol: normalized.symbol },
+      const apiMs = Math.round(performance.now() - t0);
+      logPaperOrder("confirm_success", {
+        symbol: normalized.symbol,
+        api_ms: apiMs,
+        status: orderStatus ?? (editingOrderId ? "UPDATED" : "PLACED"),
+        // Targets: api <500ms, total perceived <1s
+        budget_ok: apiMs < 1000,
       });
-      window.dispatchEvent(
-        new CustomEvent("paper:order-success", {
-          detail: { symbol: normalized.symbol },
-        }),
-      );
+
+      // Close dialog + toast immediately (do not wait for desk / navigate)
+      const tUi = performance.now();
+      setConfirmOpen(false);
+      setIsSubmitting(false);
+      confirmInFlightRef.current = false;
+      toast.success(successTitle, successDesc);
+      logPaperOrder("confirm_ui_closed", {
+        symbol: normalized.symbol,
+        ui_ms: Math.round(performance.now() - tUi),
+        total_ms: Math.round(performance.now() - t0),
+      });
+
+      // Background: cache invalidation + desk refresh — never blocks dialog close
+      queueMicrotask(() => {
+        try {
+          invalidatePaperCaches();
+        } catch {
+          /* ignore */
+        }
+        window.dispatchEvent(
+          new CustomEvent("paper:order-success", {
+            detail: { symbol: normalized.symbol, apiMs },
+          }),
+        );
+      });
+
+      // Navigate after paint so toast/dialog teardown aren't delayed by route load
+      requestAnimationFrame(() => {
+        navigate("/paper", {
+          replace: false,
+          state: { orderJustPlaced: true, symbol: normalized.symbol },
+        });
+      });
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Failed to place order.";
+      logPaperOrder("confirm_failure", {
+        message: msg,
+        api_ms: Math.round(performance.now() - t0),
+      });
       setPageError(msg);
       toast.error("Order failed", msg);
-    } finally {
       setIsSubmitting(false);
+      confirmInFlightRef.current = false;
     }
   }
 
@@ -879,11 +1362,24 @@ export function PaperOrderPage() {
         ? "paper-order-badge paper-order-badge--sell"
         : "paper-order-badge";
 
-  const showHardLoadError = Boolean(loadError) && !isLoading;
-  const quoteUnavailable = quoteStatus === "error" && !isLoading;
+  const showHardLoadError = Boolean(loadError);
+  const quoteUnavailable = quoteStatus === "error" || quoteLane === "error";
+  const quoteLoading =
+    (quoteLane === "loading" || quoteLane === "timeout" || quoteStatus === "loading") &&
+    currentPrice == null;
+  const accountLoading = accountLane === "loading" || accountLane === "timeout";
+  const anyLanePending =
+    quoteLane === "loading" ||
+    quoteLane === "timeout" ||
+    accountLane === "loading" ||
+    accountLane === "timeout" ||
+    recoLane === "loading" ||
+    orderLane === "loading" ||
+    orderLane === "timeout";
 
   return (
     <main className="page-container page-container--wide paper-order-page" data-testid="paper-order-page">
+      {/* 1. Header — always immediate */}
       <header className="paper-order-page__header">
         <div className="paper-order-page__header-left">
           <button
@@ -903,26 +1399,15 @@ export function PaperOrderPage() {
         </div>
         <div className="paper-order-page__header-meta">
           <span className={signalClass}>{signalLabel}</span>
-          <span
-            className={`helper-chip ${quoteStatus === "live" ? "" : "is-risk"}`}
-            title={quoteStatus}
-          >
-            {quoteStatus === "live"
-              ? "Live Market Connected"
-              : quoteStatus === "loading"
-                ? "Connecting…"
-                : quoteStatus === "degraded"
-                  ? "Degraded quote"
-                  : "Quote unavailable"}
-          </span>
+          <LaneChip state={quoteLane} readyLabel={quoteStatus === "live" ? "Live quote" : "Quote"} loadingLabel="Loading Quote…" />
+          <LaneChip state={accountLane} readyLabel="Account" loadingLabel="Loading account…" />
+          {anyLanePending ? (
+            <span className="helper-chip paper-order-lane-chip" title="Background refresh">
+              Syncing…
+            </span>
+          ) : null}
         </div>
       </header>
-
-      {isLoading ? (
-        <section className="panel paper-order-page__loading" aria-busy="true">
-          <p className="muted-copy">Loading order ticket…</p>
-        </section>
-      ) : null}
 
       {showHardLoadError ? (
         <section className="panel error-state" role="alert" data-testid="paper-order-load-error">
@@ -958,61 +1443,67 @@ export function PaperOrderPage() {
         </div>
       ) : null}
 
-      {!isLoading ? (
-        <div className="paper-order-layout">
-          {/* Stock summary */}
-          <section className="panel paper-order-summary">
+      {/*
+        Progressive paint order (all non-blocking):
+        Stock → Buttons → Order Form → Recommendation → Risk → Account → Live Quote
+      */}
+      <div className="paper-order-layout">
+          {/* 2. Stock card */}
+          <section className="panel paper-order-summary" data-testid="paper-order-stock">
             <div className="paper-order-summary__top">
               <div>
                 <p className="section-label">Stock</p>
                 <h2 className="paper-order-summary__symbol">{ticket.symbol || "—"}</h2>
               </div>
-              <div className="paper-order-summary__price-block">
-                <p className="section-label">Current / Live</p>
+              {/* Live quote is progressive — never blocks form */}
+              <div className="paper-order-summary__price-block" data-testid="paper-order-live-quote">
+                <p className="section-label">
+                  Current / Live{" "}
+                  <LaneChip
+                    state={quoteLane}
+                    readyLabel={quoteStatus === "degraded" ? "Degraded" : "Live"}
+                    loadingLabel="…"
+                    compact
+                  />
+                </p>
                 <div className="paper-order-summary__price">
-                  {currentPrice != null ? `₹${currentPrice.toFixed(2)}` : "—"}
+                  {currentPrice != null ? (
+                    `₹${currentPrice.toFixed(2)}`
+                  ) : quoteLoading ? (
+                    <span className="paper-order-shimmer-inline" aria-busy="true">
+                      <Skeleton height={28} width={110} />
+                    </span>
+                  ) : (
+                    "—"
+                  )}
                 </div>
               </div>
             </div>
-            <div className="paper-order-summary__metrics">
-              <Metric label="Signal" value={signalLabel} />
-              <Metric
-                label="Score"
-                value={meta.score != null && meta.score !== 0 ? formatNum(Number(meta.score), 1) : "—"}
-              />
-              <Metric
-                label="Confidence"
-                value={
-                  meta.confidence != null && Number(meta.confidence) > 0
-                    ? Number(meta.confidence) <= 1
-                      ? `${Math.round(Number(meta.confidence) * 100)}%`
-                      : `${Math.round(Number(meta.confidence))}%`
-                    : "—"
-                }
-              />
-              <Metric
-                label="Risk / Reward"
-                value={risk.riskReward ? formatNum(risk.riskReward, 2) : "—"}
-              />
-            </div>
-            {navState.prefill ? (
-              <p className="helper-text" style={{ marginTop: 12 }}>
-                Scanner recommendation loaded
-                {navState.prefill.suggested_entry != null
-                  ? ` · suggested entry ${formatInr(navState.prefill.suggested_entry)}`
-                  : ""}
-                {ticket.qty ? ` · suggested qty ${ticket.qty}` : ""}.
-              </p>
-            ) : !hasNavState && searchParams.get("symbol") ? (
-              <p className="helper-text" style={{ marginTop: 12 }}>
-                Loaded from symbol (scanner data not in navigation state).
-              </p>
-            ) : null}
           </section>
 
-          {/* Order details form */}
-          <section className="panel paper-order-form">
-            <h3 className="paper-order-section-title">Order Details</h3>
+          {/* 3. Actions (buttons) — sticky, always interactive */}
+          <div className="paper-order-page__actions paper-order-page__actions--inline" data-testid="paper-order-actions-top">
+            <Button variant="ghost" onClick={handleBack} disabled={isSubmitting}>
+              Cancel
+            </Button>
+            <Button
+              variant="primary"
+              onClick={handlePlaceClick}
+              disabled={isSubmitting}
+              data-testid="paper-order-place-top"
+            >
+              Place Paper Order
+            </Button>
+          </div>
+
+          {/* 4. Order form — editable immediately */}
+          <section className="panel paper-order-form" data-testid="paper-order-form">
+            <div className="paper-order-section-title-row">
+              <h3 className="paper-order-section-title">Order Details</h3>
+              {orderLane === "loading" || orderLane === "timeout" ? (
+                <span className="paper-order-lane-hint">Loading order…</span>
+              ) : null}
+            </div>
             <div className="paper-ticket-grid">
               <label className="filter-field">
                 <span>
@@ -1027,6 +1518,7 @@ export function PaperOrderPage() {
                     setTicket({ ...ticket, symbol: sym });
                   }}
                   onBlur={() => {
+                    // Quote only on symbol change — account is cached and stable
                     if (ticket.symbol) void loadQuoteAndAccount(ticket.symbol);
                   }}
                 />
@@ -1234,21 +1726,72 @@ export function PaperOrderPage() {
             </label>
           </section>
 
-          {/* Risk summary */}
-          <section className="panel paper-order-risk">
+          {/* 5. Recommendation card — independent */}
+          <section className="panel paper-order-reco" data-testid="paper-order-recommendation">
+            <div className="paper-order-section-title-row">
+              <h3 className="paper-order-section-title">Recommendation</h3>
+              <LaneChip
+                state={recoLane === "idle" ? "ready" : recoLane}
+                readyLabel={navState.prefill ? "Scanner" : "Manual"}
+                loadingLabel="Refining…"
+                compact
+              />
+            </div>
+            {recoLane === "loading" && !navState.prefill ? (
+              <div className="paper-order-shimmer-card" aria-busy="true">
+                <Skeleton height={14} width="40%" />
+                <Skeleton height={36} width="100%" />
+                <Skeleton height={14} width="70%" />
+              </div>
+            ) : (
+              <div className="paper-order-summary__metrics">
+                <Metric label="Signal" value={signalLabel} />
+                <Metric
+                  label="Score"
+                  value={
+                    meta.score != null && meta.score !== 0 ? formatNum(Number(meta.score), 1) : "—"
+                  }
+                />
+                <Metric
+                  label="Confidence"
+                  value={
+                    meta.confidence != null && Number(meta.confidence) > 0
+                      ? Number(meta.confidence) <= 1
+                        ? `${Math.round(Number(meta.confidence) * 100)}%`
+                        : `${Math.round(Number(meta.confidence))}%`
+                      : "—"
+                  }
+                />
+                <Metric
+                  label="Risk / Reward"
+                  value={risk.riskReward ? formatNum(risk.riskReward, 2) : "—"}
+                />
+              </div>
+            )}
+            {navState.prefill ? (
+              <p className="helper-text" style={{ marginTop: 12 }}>
+                Scanner recommendation loaded
+                {navState.prefill.suggested_entry != null
+                  ? ` · suggested entry ${formatInr(navState.prefill.suggested_entry)}`
+                  : ""}
+                {ticket.qty ? ` · suggested qty ${ticket.qty}` : ""}.
+              </p>
+            ) : !hasNavState && searchParams.get("symbol") ? (
+              <p className="helper-text" style={{ marginTop: 12 }}>
+                Loaded from symbol (scanner data not in navigation state).
+              </p>
+            ) : (
+              <p className="helper-text" style={{ marginTop: 12 }}>
+                Manual ticket — enter levels below or apply helpers.
+              </p>
+            )}
+          </section>
+
+          {/* 6. Risk summary — client-side, always ready from form state */}
+          <section className="panel paper-order-risk" data-testid="paper-order-risk">
             <h3 className="paper-order-section-title">Risk Summary</h3>
             <div className="paper-order-risk__grid">
               <Metric label="Estimated Cost" value={formatInr(risk.estimatedCost)} />
-              <Metric
-                label="Available Cash"
-                value={
-                  !accountLoaded
-                    ? "Loading…"
-                    : availableCash == null
-                      ? "Unavailable"
-                      : formatInr(availableCash)
-                }
-              />
               <Metric label="Risk Amount" value={formatInr(risk.riskAmount)} />
               <Metric label="Potential Profit" value={formatInr(risk.potentialProfit)} />
               <Metric label="Potential Loss" value={formatInr(risk.potentialLoss)} />
@@ -1256,11 +1799,6 @@ export function PaperOrderPage() {
               <Metric label="Charges" value={formatInr(risk.charges)} />
               <Metric label="Risk % of Account" value={`${risk.riskPercent.toFixed(2)}%`} />
             </div>
-            {fieldErrors.cash ? (
-              <div className="warning-box" style={{ marginTop: 12 }} data-testid="paper-order-cash-error">
-                <p>{fieldErrors.cash}</p>
-              </div>
-            ) : null}
             {fieldErrors.risk ? (
               <div className="warning-box" style={{ marginTop: 12 }} data-testid="paper-order-risk-error">
                 <p>{fieldErrors.risk}</p>
@@ -1271,8 +1809,48 @@ export function PaperOrderPage() {
               least 1:2 risk-reward. Paper trading only — no real capital is used.
             </p>
           </section>
-        </div>
-      ) : null}
+
+          {/* 7. Account balance — independent skeleton lane */}
+          <section className="panel paper-order-account" data-testid="paper-order-account">
+            <div className="paper-order-section-title-row">
+              <h3 className="paper-order-section-title">Account Balance</h3>
+              <LaneChip
+                state={accountLane}
+                readyLabel="Ready"
+                loadingLabel="Loading paper account…"
+                compact
+              />
+            </div>
+            {accountLoading && availableCash == null ? (
+              <div className="paper-order-shimmer-card" aria-busy="true">
+                <Skeleton height={48} width="55%" />
+                <Skeleton height={14} width="35%" />
+              </div>
+            ) : (
+              <div className="paper-order-risk__grid">
+                <Metric
+                  label="Available Cash"
+                  value={
+                    !accountLoaded
+                      ? "Loading…"
+                      : availableCash == null
+                        ? "Unavailable"
+                        : formatInr(availableCash)
+                  }
+                />
+                <Metric
+                  label="Max Risk / Trade"
+                  value={`${(maxRiskPercent * 100).toFixed(1)}%`}
+                />
+              </div>
+            )}
+            {fieldErrors.cash ? (
+              <div className="warning-box" style={{ marginTop: 12 }} data-testid="paper-order-cash-error">
+                <p>{fieldErrors.cash}</p>
+              </div>
+            ) : null}
+          </section>
+      </div>
 
       {pageError || Object.keys(fieldErrors).length > 0 ? (
         <div
@@ -1309,7 +1887,7 @@ export function PaperOrderPage() {
         <Button
           variant="primary"
           onClick={handlePlaceClick}
-          disabled={isLoading || isSubmitting}
+          disabled={isSubmitting}
           data-testid="paper-order-place"
         >
           Place Paper Order
@@ -1392,13 +1970,46 @@ export function PaperOrderPage() {
   );
 }
 
-function Metric({ label, value }: { label: string; value: string }) {
+const Metric = memo(function Metric({ label, value }: { label: string; value: string }) {
   return (
     <div className="metric-tile">
       <span>{label}</span>
       <strong>{value}</strong>
     </div>
   );
-}
+});
+
+const LaneChip = memo(function LaneChip({
+  state,
+  readyLabel,
+  loadingLabel,
+  compact = false,
+}: {
+  state: LaneState;
+  readyLabel: string;
+  loadingLabel: string;
+  compact?: boolean;
+}) {
+  if (state === "idle") return null;
+  let text = readyLabel;
+  let cls = "helper-chip paper-order-lane-chip";
+  if (state === "loading") {
+    text = loadingLabel;
+    cls += " paper-order-lane-chip--loading";
+  } else if (state === "timeout") {
+    text = compact ? "…" : "Retrying…";
+    cls += " is-risk paper-order-lane-chip--loading";
+  } else if (state === "error") {
+    text = compact ? "!" : "Unavailable";
+    cls += " is-risk";
+  } else if (state === "ready") {
+    cls += " paper-order-lane-chip--ready";
+  }
+  return (
+    <span className={cls} title={state} data-lane={state}>
+      {text}
+    </span>
+  );
+});
 
 export default PaperOrderPage;

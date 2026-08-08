@@ -391,6 +391,7 @@ class ScreenerService:
         from .market_data_service import MarketDataService
         from ..config import settings as app_settings
         md_service = MarketDataService()
+        required_history = self.technical_service.get_required_candle_count(AnalysisMode.swing)
 
         # Phase 3: Use DataFrames as canonical representation instead of OHLCVPoint lists
         # This eliminates precombined_datasets (238 MB) and candles_dict (228 MB)
@@ -405,7 +406,6 @@ class ScreenerService:
             3) Worker-pool FYERS calls ONLY for missing/stale symbols (true incremental)
             4) Batch upsert deltas + one bulk reload for API symbols
             """
-            required_history = self.technical_service.get_required_candle_count(AnalysisMode.swing)
             max_workers = max(1, min(int(getattr(app_settings, "max_concurrent_requests", 25) or 25), 50))
             phase_t0 = time.perf_counter()
             _progress(f"Fetching Historical OHLCV Data... (meta {total_requested})", 40)
@@ -456,12 +456,18 @@ class ScreenerService:
 
             # --- Fast path: bulk load complete/fresh histories from DB ---
             # Also pre-load any partial history for needs_fetch so incremental merge is local.
+            # CRITICAL: only load the last N bars needed for indicators (not multi-year history).
+            # Full-table load was ~120s of the 240s screener phase for 755 symbols.
             preload_symbols = list(dict.fromkeys(cache_hit_symbols + [s for s in needs_fetch if meta.get(s, (0, None))[0] > 0]))
+            history_bar_limit = max(required_history + 20, MINIMUM_SWING_CANDLES + 20)
             if preload_symbols:
                 load_t0 = time.perf_counter()
                 _progress(f"Loading candle cache from DB... ({len(preload_symbols)} symbols)", 42)
                 loaded = await md_service.load_histories_batch(
-                    preload_symbols, "1D", stored_symbol_map=stored_map
+                    preload_symbols,
+                    "1D",
+                    stored_symbol_map=stored_map,
+                    max_bars=history_bar_limit,
                 )
                 demoted = 0
                 for symbol in cache_hit_symbols:
@@ -698,42 +704,35 @@ class ScreenerService:
         total_candles_in_frames = sum(len(df) for df in symbol_frames.values())
         self.logger.debug("MEMORY_AUDIT stage=symbol_frames_loaded rss_mb=%.1f symbols=%s candles=%s", get_rss_mb(), len(symbol_frames), total_candles_in_frames)
 
-        # Forward-fill gaps in memory — use a single global business-day index for ALL symbols
-        # instead of creating 755 separate pd.date_range calls (was major CPU tax).
+        # Per-symbol prep ONLY — do NOT reindex every symbol onto a multi-year global
+        # business-day calendar (that exploded 755 symbols into millions of rows and
+        # burned ~50s in indicators + tens of seconds of RAM/CPU).
+        # Keep each series compact: sort → light ffill on own index → tail(required+buffer).
         _progress("Building indicator frame...", 55)
         ffill_t0 = time.perf_counter()
         frame_parts = []
-        _all_mins = []
-        _all_maxs = []
-        for df in symbol_frames.values():
-            idx = df.index
-            _all_mins.append(idx.min())
-            _all_maxs.append(idx.max())
-        global_min = min(_all_mins)
-        global_max = max(_all_maxs)
-        full_index = pd.date_range(start=global_min, end=global_max, freq='B')
-        for symbol, df in symbol_frames.items():
+        bar_cap = max(required_history + 20, MINIMUM_SWING_CANDLES + 20)
+        for symbol, df in list(symbol_frames.items()):
+            if df is None or df.empty:
+                continue
             df = df.sort_index()
-            df = df.reindex(full_index)
-            df = df.ffill()
-            # Back-fill any remaining NaN at the start (symbol had no data for earliest dates)
-            df = df.bfill()
-            # Final safety: fill any remaining NaN with 0 to prevent int(NaN) crashes
-            df = df.fillna(0)
-            
+            # In-place gap fill on the symbol's own timestamps only.
+            df = df.ffill().bfill().fillna(0)
+            if len(df) > bar_cap:
+                df = df.iloc[-bar_cap:]
+            symbol_frames[symbol] = df
             sym_df = df.copy()
             sym_df["symbol"] = symbol
             sym_df.index.name = "timestamp"
             sym_df = sym_df.reset_index().set_index(["timestamp", "symbol"])
             frame_parts.append(sym_df)
-            symbol_frames[symbol] = df
         stage_timings["ffill_ms"] = (time.perf_counter() - ffill_t0) * 1000
 
         if not frame_parts:
             self.logger.debug("MEMORY_AUDIT stage=no_valid_frames rss_mb=%.1f", get_rss_mb())
             return results
 
-        # Build the single canonical multi-index frame
+        # Build the single canonical multi-index frame (already size-capped per symbol)
         combined_frame = pd.concat(frame_parts)
         combined_frame.sort_index(inplace=True)
         # Release intermediate frame_parts immediately

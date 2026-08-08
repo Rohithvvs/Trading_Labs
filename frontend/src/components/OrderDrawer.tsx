@@ -426,41 +426,64 @@ export function OrderDrawer({
           product_type: normalizedTicket.productType,
         };
         await updatePaperOrder(editingOrderId, payload as any);
-        toast.success("✓ Paper Order Updated Successfully");
-        invalidatePaperCaches();
-        await Promise.all([
-          fetchPendingPaperOrders().catch(() => null),
-          fetchPositions().catch(() => null),
-          fetchPaperAccountSummary().catch(() => null),
-        ]);
         setEditingOrderId(null);
+        setIsBusy(false);
         closeOrderDrawer();
-        navigate("/paper");
-        window.dispatchEvent(new CustomEvent("paper:order-success"));
-        onOrderPlaced?.();
-        onOrderSuccess?.();
+        toast.success("✓ Paper Order Updated Successfully");
+        queueMicrotask(() => {
+          try {
+            invalidatePaperCaches();
+          } catch {
+            /* ignore */
+          }
+          void Promise.all([
+            fetchPendingPaperOrders().catch(() => null),
+            fetchPositions().catch(() => null),
+            fetchPaperAccountSummary({ force: true }).catch(() => null),
+          ]);
+          window.dispatchEvent(new CustomEvent("paper:order-success"));
+          onOrderPlaced?.();
+          onOrderSuccess?.();
+        });
+        requestAnimationFrame(() => navigate("/paper"));
         return;
       }
 
-      await placePaperOrder(normalizedTicket, idempotencyKey);
+      const t0 = performance.now();
+      const placeResp = await placePaperOrder(normalizedTicket, idempotencyKey);
+      const apiMs = Math.round(performance.now() - t0);
       setIdempotencyKey(crypto.randomUUID());
 
-      toast.success("✓ Paper Order Placed Successfully");
-
-      invalidatePaperCaches();
-      await Promise.all([
-        fetchPendingPaperOrders().catch(() => null),
-        fetchPositions().catch(() => null),
-        fetchPaperAccountSummary().catch(() => null),
-        fetchPaperTrades().catch(() => null),
-      ]);
-
+      // Close drawer + toast immediately — never block on desk refreshes
+      setIsBusy(false);
       closeOrderDrawer();
-      // Paper Desk → Positions tab
-      navigate("/paper");
-      window.dispatchEvent(new CustomEvent("paper:order-success"));
-      onOrderSuccess?.();
-      onOrderPlaced?.();
+      toast.success("✓ Paper Order Placed Successfully", placeResp.message || undefined);
+
+      // Background: cache invalidation + lightweight desk refresh
+      queueMicrotask(() => {
+        try {
+          invalidatePaperCaches();
+        } catch {
+          /* ignore */
+        }
+        window.dispatchEvent(
+          new CustomEvent("paper:order-success", {
+            detail: { symbol: normalizedTicket.symbol, apiMs },
+          }),
+        );
+        void Promise.all([
+          fetchPendingPaperOrders().catch(() => null),
+          fetchPositions().catch(() => null),
+          fetchPaperAccountSummary({ force: true }).catch(() => null),
+        ]);
+        onOrderSuccess?.();
+        onOrderPlaced?.();
+      });
+
+      requestAnimationFrame(() => {
+        navigate("/paper");
+      });
+      return;
     } catch (requestError) {
       const msg = requestError instanceof Error ? requestError.message : "Failed to place order.";
       setError(msg);

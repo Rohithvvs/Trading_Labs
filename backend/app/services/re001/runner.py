@@ -69,6 +69,20 @@ def _persist_safe(
             row = persist_decision(db, decision, mode=mode)
             if row is not None:
                 incr("persist_ok")
+                # Auto paper trade on BUY — fail-open, never blocks lab path
+                try:
+                    state = str(getattr(decision, "recommendation_state", "") or "").upper()
+                    if state == "BUY":
+                        from ..auto_paper_trading_service import maybe_auto_paper_from_lab_decision
+
+                        maybe_auto_paper_from_lab_decision(db, decision)
+                except Exception as auto_exc:
+                    logger.warning(
+                        "RE-001 auto paper hook failed (ignored) | symbol=%s | err=%s",
+                        getattr(decision, "symbol", None),
+                        auto_exc,
+                        exc_info=True,
+                    )
             else:
                 incr("persist_fail")
         finally:
@@ -162,8 +176,6 @@ async def run_re001_isolated_async(
             reason="re001_timeout",
             message=f"RE-001 evaluation timed out after {timeout_s:.2f}s",
         )
-        _persist_safe(decision, mode=mode, db_session_factory=db_session_factory)
-        return decision
     except Exception as exc:
         incr("error")
         logger.warning(
@@ -179,8 +191,6 @@ async def run_re001_isolated_async(
             reason="re001_error",
             message=f"RE-001 evaluation error: {exc}",
         )
-        _persist_safe(decision, mode=mode, db_session_factory=db_session_factory)
-        return decision
     finally:
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
         logger.info(
@@ -196,7 +206,17 @@ async def run_re001_isolated_async(
     if decision is None:
         return None
 
-    _persist_safe(decision, mode=mode, db_session_factory=db_session_factory)
+    # Persist off the critical path — DB write + auto-paper was adding 5–10s after
+    # evaluation timeout and blocking shortlist analysis concurrency.
+    try:
+        asyncio.get_running_loop().run_in_executor(
+            None,
+            lambda d=decision, m=mode, f=db_session_factory: _persist_safe(
+                d, mode=m, db_session_factory=f
+            ),
+        )
+    except Exception:
+        _persist_safe(decision, mode=mode, db_session_factory=db_session_factory)
     return decision
 
 

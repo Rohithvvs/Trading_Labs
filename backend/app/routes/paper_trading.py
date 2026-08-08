@@ -75,8 +75,8 @@ def get_account(service: PaperTradingService = Depends(get_service)) -> PaperTra
 def get_account_summary(service: PaperTradingService = Depends(get_service)):
     """Return paper capital fields shared by Paper Desk, Order page, and widgets.
 
-    Single source of truth for available cash. Derived from the same
-    ``dashboard.account`` summary used by ``GET /paper-trading/dashboard``.
+    Single source of truth for available cash. Fast path uses DB-only account
+    math (no live price fan-out / full dashboard). Payload shape is unchanged.
 
     Always includes both naming conventions so consumers never desync:
     - Capital: available_cash, available_funds, balance, cash_balance, equity
@@ -84,93 +84,21 @@ def get_account_summary(service: PaperTradingService = Depends(get_service)):
     - Risk: max_risk_per_trade, reserved_cash
     """
     logger = logging.getLogger("app.paper_trading")
-    dashboard = service.get_dashboard()
-    account = dashboard.account
-
-    invested_value = float(account.total_invested)
-    unrealized_pnl = float(account.unrealized_pnl)
-    realized_pnl = float(account.realized_pnl)
-    balance = float(account.balance)
-    # Prefer reserved-aware available_cash (matches order validation / dashboard strip).
-    available_cash = float(account.available_cash)
-    equity = float(account.equity)
-    starting_balance = float(account.starting_balance)
-    reserved_cash = float(account.reserved_cash)
-    max_risk_per_trade = float(account.max_risk_per_trade)
-
-    # Equity-like total capital; available_funds aliases available_cash so Desk + Order match.
-    total_capital = round(float(account.equity), 2) if equity else round(balance + invested_value, 2)
-    available_funds = round(available_cash, 2)
-    total_pnl = round(unrealized_pnl + realized_pnl, 2)
-
-    # Compute today's realized P&L in IST timezone
-    from datetime import datetime, timezone, timedelta
-    try:
-        from zoneinfo import ZoneInfo
-        ist = ZoneInfo("Asia/Kolkata")
-    except Exception:
-        # Fallback to fixed offset if zoneinfo is unavailable
-        ist = timezone(timedelta(hours=5, minutes=30))
-
-    now_ist = datetime.now(ist)
-    start_ist = datetime(now_ist.year, now_ist.month, now_ist.day, 0, 0, 0, tzinfo=ist)
-    start_utc = start_ist.astimezone(timezone.utc)
-    end_utc = (start_ist + timedelta(days=1)).astimezone(timezone.utc)
-
-    daily_pnl = 0.0
-    for trade in dashboard.trades:
-        closed_at = getattr(trade, "closed_at", None)
-        if not closed_at:
-            continue
-        if closed_at.tzinfo is None:
-            closed_utc = closed_at.replace(tzinfo=timezone.utc)
-        else:
-            closed_utc = closed_at.astimezone(timezone.utc)
-        if start_utc <= closed_utc < end_utc:
-            daily_pnl += float(getattr(trade, "pnl", 0.0))
-
-    daily_pnl = round(daily_pnl, 2)
-    daily_pnl_pct = round((daily_pnl / total_capital) * 100, 2) if total_capital else 0.0
-
-    payload = {
-        # Identity / full account capital (same semantics as dashboard.account)
-        "account_id": account.account_id,
-        "account_name": account.account_name,
-        "base_currency": account.base_currency,
-        "starting_balance": starting_balance,
-        "balance": balance,
-        "cash_balance": balance,
-        "equity": equity,
-        "realized_pnl": realized_pnl,
-        "unrealized_pnl": unrealized_pnl,
-        "total_invested": invested_value,
-        "reserved_cash": reserved_cash,
-        "available_cash": available_cash,
-        "open_positions_count": account.open_positions_count,
-        "open_orders_count": account.open_orders_count,
-        "max_risk_per_trade": max_risk_per_trade,
-        "updated_at": account.updated_at,
-        # Widget / alias fields (kept for Paper Desk widgets)
-        "total_capital": total_capital,
-        "available_funds": available_funds,
-        "invested_value": invested_value,
-        "total_pnl": total_pnl,
-        "daily_pnl": daily_pnl,
-        "daily_pnl_pct": daily_pnl_pct,
-    }
-
+    started = time.perf_counter()
+    payload = service.get_account_summary_fast()
+    latency_ms = int((time.perf_counter() - started) * 1000)
     logger.info(
         "PAPER_ACCOUNT_SUMMARY | account_id=%s available_cash=%s balance=%s "
-        "available_funds=%s equity=%s reserved_cash=%s invested=%s",
-        account.account_id,
-        available_cash,
-        balance,
-        available_funds,
-        equity,
-        reserved_cash,
-        invested_value,
+        "available_funds=%s equity=%s reserved_cash=%s invested=%s latency_ms=%s",
+        payload.get("account_id"),
+        payload.get("available_cash"),
+        payload.get("balance"),
+        payload.get("available_funds"),
+        payload.get("equity"),
+        payload.get("reserved_cash"),
+        payload.get("invested_value"),
+        latency_ms,
     )
-
     return JSONResponse(content=sanitize_for_json(payload))
 
 
@@ -203,7 +131,19 @@ def place_order(
     service: PaperTradingService = Depends(get_service),
 ) -> PaperOrderActionResponse:
     logger = logging.getLogger("app.paper_trading")
-    logger.info("ORDER_REQUEST_RECEIVED | symbol=%s side=%s type=%s", payload.symbol, payload.side, payload.type)
+    started = time.perf_counter()
+    service_ms = 0
+    logger.info(
+        "ORDER_REQUEST_RECEIVED | symbol=%s side=%s type=%s engine=%s rec_id=%s limit=%s stop_loss=%s target=%s",
+        payload.symbol,
+        payload.side,
+        payload.type,
+        getattr(payload, "recommendation_engine", None) or getattr(payload, "source_engine_id", None),
+        getattr(payload, "source_recommendation_id", None),
+        getattr(payload, "limit_price", None),
+        getattr(payload, "stop_loss", None),
+        getattr(payload, "target", None),
+    )
     try:
         key = payload.idempotency_key or idempotency_key or x_idempotency_key
         if not key and settings.app_env == "test":
@@ -213,9 +153,28 @@ def place_order(
             raise HTTPException(status_code=400, detail="Idempotency-Key header or idempotency_key body field is required.")
         logger.info("ORDER_IDEMPOTENCY_PRESENT | symbol=%s", payload.symbol)
         payload.idempotency_key = key.strip()
-        logger.info("ORDER_SUBMISSION_STARTED | symbol=%s side=%s type=%s", payload.symbol, payload.side, payload.type)
+        logger.info(
+            "ORDER_SUBMISSION_STARTED | symbol=%s side=%s type=%s engine=%s",
+            payload.symbol,
+            payload.side,
+            payload.type,
+            getattr(payload, "recommendation_engine", None) or getattr(payload, "source_engine_id", None),
+        )
+        t_svc = time.perf_counter()
         response = service.place_order(payload)
-        logger.info("ORDER_SUBMISSION_SUCCESS | symbol=%s order_id=%s", payload.symbol, getattr(response, 'order_id', None))
+        service_ms = int((time.perf_counter() - t_svc) * 1000)
+        order_id = None
+        order_status = None
+        if response.order is not None:
+            order_id = getattr(response.order, "id", None)
+            order_status = getattr(response.order, "status", None)
+        logger.info(
+            "ORDER_SUBMISSION_SUCCESS | symbol=%s order_id=%s status=%s service_ms=%s",
+            payload.symbol,
+            order_id,
+            order_status,
+            service_ms,
+        )
     except HTTPException:
         logger.warning("ORDER_SUBMISSION_FAILED | symbol=%s reason=HTTPException", payload.symbol)
         raise
@@ -227,7 +186,71 @@ def place_order(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(exc)) from exc
-    return JSONResponse(content=sanitize_for_json(response.model_dump(mode="json")))
+    t_ser = time.perf_counter()
+    # Lean confirm payload: order id/status + cash/buying power + affected position.
+    # Does not embed full portfolio / trade history / workspace.
+    acct = response.account
+    order = response.order
+    pos = response.position
+    lean = {
+        "order_id": order.id if order is not None else None,
+        "status": order.status if order is not None else None,
+        "message": response.message,
+        "available_cash": getattr(acct, "available_cash", None),
+        "available_funds": getattr(acct, "available_cash", None),
+        "buying_power": getattr(acct, "available_cash", None),
+        "balance": getattr(acct, "balance", None),
+        "cash_balance": getattr(acct, "balance", None),
+        # Compatibility wrappers for existing FE/types (minimal fields)
+        "account": {
+            "account_id": acct.account_id,
+            "account_name": acct.account_name,
+            "base_currency": acct.base_currency,
+            "starting_balance": acct.starting_balance,
+            "balance": acct.balance,
+            "equity": acct.equity,
+            "realized_pnl": acct.realized_pnl,
+            "unrealized_pnl": acct.unrealized_pnl,
+            "total_invested": acct.total_invested,
+            "reserved_cash": acct.reserved_cash,
+            "available_cash": acct.available_cash,
+            "open_positions_count": acct.open_positions_count,
+            "open_orders_count": acct.open_orders_count,
+            "max_risk_per_trade": acct.max_risk_per_trade,
+            "updated_at": acct.updated_at,
+        },
+        "order": order.model_dump(mode="json", exclude_none=True) if order is not None else None,
+        "position": pos.model_dump(mode="json", exclude_none=True) if pos is not None else None,
+        "trade": None,
+    }
+    body = sanitize_for_json(lean)
+    ser_ms = int((time.perf_counter() - t_ser) * 1000)
+    total_ms = int((time.perf_counter() - started) * 1000)
+    slow = []
+    if service_ms > 50:
+        slow.append(f"service={service_ms}ms")
+    if ser_ms > 50:
+        slow.append(f"serialize={ser_ms}ms")
+    if total_ms > 50:
+        slow.append(f"total={total_ms}ms")
+    logger.info(
+        "ORDER_HTTP_TIMING | symbol=%s | total_ms=%s | service_ms=%s | serialize_ms=%s | "
+        "validation_ms=n/a | network_ms=client | slow_gt_50ms=%s | payload_keys=%s",
+        payload.symbol,
+        total_ms,
+        service_ms,
+        ser_ms,
+        slow or "none",
+        list(lean.keys()),
+    )
+    return JSONResponse(
+        content=body,
+        headers={
+            "X-Order-Place-Ms": str(total_ms),
+            "X-Order-Service-Ms": str(service_ms),
+            "X-Order-Serialize-Ms": str(ser_ms),
+        },
+    )
 
 
 @router.post("/engine/start", response_model=MarketEngineStatusResponse)
@@ -369,6 +392,15 @@ def list_pending_orders(service: PaperTradingService = Depends(get_service)):
 def list_order_history(service: PaperTradingService = Depends(get_service)):
     orders = service.get_order_history()
     return JSONResponse(content=sanitize_for_json([item.model_dump(mode="json") for item in orders]))
+
+
+@router.get("/orders/{order_id}", response_model=PaperOrderResponse)
+def get_order(order_id: int, service: PaperTradingService = Depends(get_service)):
+    """Single order by id — used by Order page edit mode (no full pending list / price fan-out)."""
+    order = service.get_order_by_id(order_id)
+    if order is None:
+        raise HTTPException(status_code=404, detail=f"Order {order_id} not found.")
+    return JSONResponse(content=sanitize_for_json(order.model_dump(mode="json")))
 
 
 @router.get("/trades", response_model=list[PaperTradeHistoryItem])
@@ -657,13 +689,20 @@ def get_analytics(
         default="all",
         description="today|week|month|last_month|last_3_months|last_6_months|last_year|all",
     ),
+    recommendation_engine: str | None = Query(
+        default=None,
+        description="Filter metrics by recommendation engine: All|Production|RE-001|RE-002",
+    ),
     service: PaperTradingService = Depends(get_service),
     _feat=Depends(require_feature_sync("portfolio_analytics")),
 ):
-    """Paper trading analytics. Calculated from closed trades; returns empty defaults when no trades exist."""
+    """Paper trading analytics. Calculated from closed trades; returns empty defaults when no trades exist.
+
+    Always includes ``by_engine`` comparison blocks for Production, RE-001, RE-002.
+    """
     logger = logging.getLogger("app.http.paper_trading")
     try:
-        data = service.get_analytics(period=period)
+        data = service.get_analytics(period=period, recommendation_engine=recommendation_engine)
     except ValueError as exc:
         logger.exception("Analytics ValueError: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -710,20 +749,30 @@ def get_daily_analytics(
     start_date: str | None = Query(default=None, description="YYYY-MM-DD for custom"),
     end_date: str | None = Query(default=None, description="YYYY-MM-DD for custom"),
     include_ai: bool = Query(default=True),
+    force: bool = Query(default=False),
     service: PaperTradingService = Depends(get_service),
     _feat=Depends(require_feature_sync("portfolio_analytics")),
 ):
     """
     User-scoped Daily Analytics dashboard payload.
     Always filtered by authenticated user's paper account.
+    Cached server-side for <50ms repeat response performance.
     """
+    from ..core.response_cache import cache_get, cache_set
     from ..services.daily_analytics_service import DailyAnalyticsService
     from ..utils import assert_json_serializable
+
+    cache_key = f"daily_analytics:{service.user_id}:{period}:{start_date or ''}:{end_date or ''}:{include_ai}"
+    if not force:
+        cached_data = cache_get(cache_key)
+        if cached_data is not None:
+            return JSONResponse(content=cached_data)
 
     das = DailyAnalyticsService(service.db, user_id=service.user_id)
     try:
         data = das.build(period=period, start_date=start_date, end_date=end_date, include_ai=include_ai)
         safe = assert_json_serializable(sanitize_for_json(data), root_name="daily_analytics")
+        cache_set(cache_key, safe, ttl_seconds=60.0)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
@@ -750,6 +799,7 @@ def put_daily_journal(
     service: PaperTradingService = Depends(get_service),
 ):
     """Auto-save journal fields for the authenticated user's paper account only."""
+    from ..core.response_cache import cache_invalidate
     from ..services.daily_analytics_service import DailyAnalyticsService
     das = DailyAnalyticsService(service.db, user_id=service.user_id)
     try:
@@ -760,6 +810,7 @@ def put_daily_journal(
             lessons=payload.get("lessons"),
             tomorrow_plan=payload.get("tomorrow_plan"),
         )
+        cache_invalidate(f"daily_analytics:{service.user_id}")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return JSONResponse(content=sanitize_for_json(data))
