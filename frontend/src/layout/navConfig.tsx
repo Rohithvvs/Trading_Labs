@@ -61,7 +61,8 @@ export const RETAIL_NAV: NavItem[] = [
     match: "/recommendation-lab",
     testId: "nav-recommendation-lab",
     featureKey: "recommendation_lab",
-    icon: icon("M4 6h16 M4 12h10 M4 18h14"),
+    // Beaker / flask mark for institutional lab feel
+    icon: icon("M9 3h6 M10 3v6.5L4.5 19a2 2 0 0 0 1.7 3h12a2 2 0 0 0 1.7-3L14 9.5V3"),
   },
   {
     id: "profile",

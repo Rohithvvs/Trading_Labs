@@ -1162,6 +1162,48 @@ abbr {
   border-color: color-mix(in srgb, var(--negative) 40%, transparent);
 }
 
+/* Recommendation engine badges (Paper Desk) */
+.engine-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  padding: 0.28rem 0.62rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+.engine-badge--production {
+  background: color-mix(in srgb, #3b82f6 18%, transparent);
+  color: #60a5fa;
+  border-color: color-mix(in srgb, #3b82f6 45%, transparent);
+}
+.engine-badge--re001 {
+  background: color-mix(in srgb, #a855f7 18%, transparent);
+  color: #c084fc;
+  border-color: color-mix(in srgb, #a855f7 45%, transparent);
+}
+.engine-badge--re002 {
+  background: color-mix(in srgb, #14b8a6 18%, transparent);
+  color: #2dd4bf;
+  border-color: color-mix(in srgb, #14b8a6 45%, transparent);
+}
+.engine-filter-bar {
+  display: inline-flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.engine-filter-bar .button.is-active,
+.engine-filter-bar .button.ghost-button.is-active {
+  background: color-mix(in srgb, var(--accent, #2b6cff) 22%, transparent);
+  border-color: color-mix(in srgb, var(--accent, #2b6cff) 50%, transparent);
+  color: var(--text, #e8eefc);
+  font-weight: 700;
+}
+
 /* ── Scan Results Cards (mobile) ── */
 .candidate-cards {
   display: none;
@@ -5842,6 +5884,33 @@ button.markets-symbol-row:hover,
   padding-top: 2px;
 }
 
+/* Engine selector — third row under Favorites / Scan Results */
+.scanner-engine-tabs {
+  display: flex;
+  gap: 8px;
+  flex-wrap: nowrap;
+  align-items: center;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 4px 0 2px;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+}
+
+.scanner-engine-tabs .button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+@media (max-width: 640px) {
+  .scanner-engine-tabs {
+    flex-wrap: wrap;
+  }
+}
+
 @media (max-width: 480px) {
   .scanner-result-tabs {
     flex-direction: column;
@@ -5850,6 +5919,13 @@ button.markets-symbol-row:hover,
     width: 100%;
     min-height: 48px;
     justify-content: center;
+  }
+  .scanner-engine-tabs {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+  }
+  .scanner-engine-tabs .button {
+    min-height: 44px;
   }
 }
 
@@ -8081,21 +8157,96 @@ body {
 }
 
 @media (min-width: 960px) {
+  /* Progressive card grid: stock → actions → form | reco → risk | account */
   .paper-order-layout {
     grid-template-columns: 1.1fr 1fr;
     grid-template-areas:
       "summary summary"
-      "form risk";
+      "actions actions"
+      "form reco"
+      "risk account";
   }
   .paper-order-summary { grid-area: summary; }
+  .paper-order-page__actions--inline { grid-area: actions; }
   .paper-order-form { grid-area: form; }
+  .paper-order-reco { grid-area: reco; }
   .paper-order-risk { grid-area: risk; }
+  .paper-order-account { grid-area: account; }
 }
 
 .paper-order-section-title {
   margin: 0 0 14px;
   font-size: 1.05rem;
   font-weight: 650;
+}
+
+.paper-order-section-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.paper-order-section-title-row .paper-order-section-title {
+  margin: 0;
+}
+
+.paper-order-lane-hint {
+  font-size: 0.75rem;
+  color: var(--text-muted, #8b949e);
+}
+
+.paper-order-lane-chip {
+  font-size: 0.72rem;
+}
+
+.paper-order-lane-chip--loading {
+  position: relative;
+  overflow: hidden;
+}
+
+.paper-order-lane-chip--loading::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.12) 50%,
+    transparent 100%
+  );
+  animation: paper-order-shimmer 1.2s ease-in-out infinite;
+}
+
+.paper-order-lane-chip--ready {
+  opacity: 0.9;
+}
+
+.paper-order-shimmer-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 72px;
+}
+
+.paper-order-shimmer-inline {
+  display: inline-block;
+  vertical-align: middle;
+}
+
+.paper-order-page__actions--inline {
+  position: static;
+  margin-top: 0;
+  padding: 0;
+  background: none;
+  border-top: none;
+  justify-content: flex-end;
+}
+
+@keyframes paper-order-shimmer {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
 }
 
 .paper-order-summary__top {

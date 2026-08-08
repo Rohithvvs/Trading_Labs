@@ -84,7 +84,13 @@ def _require_symbol(symbol: str) -> str:
 def get_registration(
     _=Depends(_lab_access()),
 ) -> Re001Registration:
-    return get_re001_registration()
+    from ..core.response_cache import cache_get, cache_set
+    hit = cache_get("re001_registration")
+    if hit is not None:
+        return hit
+    val = get_re001_registration()
+    cache_set("re001_registration", val, ttl_seconds=300.0)
+    return val
 
 
 @router.get("/scans/recent", response_model=Re001RecentScansResponse)
@@ -103,6 +109,11 @@ def get_recent_scans(
     _=Depends(_lab_access()),
     db: Session = Depends(get_sync_db),
 ) -> Re001RecentScansResponse:
+    from ..core.response_cache import cache_get, cache_set
+    cache_key = f"re001_recent_scans:{limit}:{min_decisions}:{prefer_cohorts}"
+    hit = cache_get(cache_key)
+    if hit is not None:
+        return hit
     items = [
         Re001ScanRunSummary(**row)
         for row in list_recent_scan_runs(
@@ -112,7 +123,9 @@ def get_recent_scans(
             prefer_cohorts=prefer_cohorts,
         )
     ]
-    return Re001RecentScansResponse(items=items)
+    resp = Re001RecentScansResponse(items=items)
+    cache_set(cache_key, resp, ttl_seconds=30.0)
+    return resp
 
 
 @router.get("/scans/{scan_run_id}/comparison", response_model=Re001ScanComparisonResponse)
@@ -121,7 +134,12 @@ def get_scan_comparison(
     _=Depends(_lab_access()),
     db: Session = Depends(get_sync_db),
 ) -> Re001ScanComparisonResponse:
+    from ..core.response_cache import cache_get, cache_set
     scan_run_id = _require_scan_run_id(scan_run_id)
+    cache_key = f"re001_scan_comparison:{scan_run_id}"
+    hit = cache_get(cache_key)
+    if hit is not None:
+        return hit
     rows = query_scan_comparison(db, scan_run_id)
     items = [
         Re001ComparisonRow(
@@ -137,7 +155,9 @@ def get_scan_comparison(
         )
         for r in rows
     ]
-    return Re001ScanComparisonResponse(scan_run_id=scan_run_id, items=items)
+    resp = Re001ScanComparisonResponse(scan_run_id=scan_run_id, items=items)
+    cache_set(cache_key, resp, ttl_seconds=60.0)
+    return resp
 
 
 @router.get("/decisions/{recommendation_id}")
@@ -172,6 +192,13 @@ def get_re001_health(
     _=Depends(_lab_access()),
     db: Session = Depends(get_sync_db),
 ) -> Re001HealthSegment:
+    from ..core.response_cache import cache_get, cache_set
+    cache_key = f"re001_health:{days}"
+    hit = cache_get(cache_key)
+    if hit is not None:
+        return hit
     seg = re001_health_segment(db, days=days)
     seg.runtime_counters = re001_metrics_snapshot()
+    cache_set(cache_key, seg, ttl_seconds=30.0)
     return seg
+

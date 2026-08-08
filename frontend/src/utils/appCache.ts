@@ -279,6 +279,8 @@ export const CACHE_KEYS = {
   paperDashboard: "paper_dashboard",
   paperDashboardSymbol: (sym: string) => `paper_dashboard:${sym}`,
   paperAccount: "paper_account_summary",
+  paperQuote: (sym: string) => `paper_quote:${sym}`,
+  paperOrder: (id: number) => `paper_order:${id}`,
   paperAnalytics: "paper_analytics",
   paperDailyAnalytics: (period: string) => `paper_daily_analytics:${period}`,
   paperDailyJournal: (date: string) => `paper_daily_journal:${date}`,

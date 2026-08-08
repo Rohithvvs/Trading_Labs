@@ -65,6 +65,71 @@ import type {
 } from "../types";
 import { fetchPaperTradingEngineStatus } from "../api";
 
+/** Canonical recommendation engine label for Paper Desk (Production | RE-001 | RE-002). */
+export function resolveRecommendationEngine(
+  row: {
+    recommendation_engine?: string | null;
+    source_engine_id?: string | null;
+  } | null | undefined,
+): string {
+  const raw = (row?.recommendation_engine || row?.source_engine_id || "Production").trim();
+  const upper = raw.toUpperCase();
+  if (upper === "PRODUCTION" || upper === "PROD" || upper === "BASELINE") return "Production";
+  if (upper === "RE-001" || upper === "RE001") return "RE-001";
+  if (upper === "RE-002" || upper === "RE002") return "RE-002";
+  return raw || "Production";
+}
+
+export function EngineBadge({ engine }: { engine?: string | null }) {
+  const label = resolveRecommendationEngine({ recommendation_engine: engine, source_engine_id: engine });
+  const cls =
+    label === "RE-001"
+      ? "engine-badge engine-badge--re001"
+      : label === "RE-002"
+        ? "engine-badge engine-badge--re002"
+        : "engine-badge engine-badge--production";
+  return (
+    <span className={cls} data-testid="recommendation-engine-badge" title={`Recommendation Engine: ${label}`}>
+      {label}
+    </span>
+  );
+}
+
+type EngineFilter = "All" | "Production" | "RE-001" | "RE-002";
+
+function EngineFilterBar({
+  value,
+  onChange,
+}: {
+  value: EngineFilter;
+  onChange: (v: EngineFilter) => void;
+}) {
+  const options: EngineFilter[] = ["All", "Production", "RE-001", "RE-002"];
+  return (
+    <div className="engine-filter-bar" role="group" aria-label="Filter by recommendation engine" data-testid="engine-filter-bar">
+      {options.map((opt) => (
+        <button
+          key={opt}
+          type="button"
+          className={`button ghost-button small-button ${value === opt ? "is-active" : ""}`}
+          data-testid={`engine-filter-${opt}`}
+          onClick={() => onChange(opt)}
+        >
+          {opt}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function matchesEngineFilter(
+  row: { recommendation_engine?: string | null; source_engine_id?: string | null },
+  filter: EngineFilter,
+): boolean {
+  if (filter === "All") return true;
+  return resolveRecommendationEngine(row) === filter;
+}
+
 function TradeDetailsModal({ trade, onClose }: { trade: PaperTradeHistoryItem | null; onClose: () => void }) {
   if (!trade) return null;
   return (
@@ -232,9 +297,23 @@ export function PaperTradingPage({
     side: urlSide === "SELL" ? "SELL" : "BUY",
   });
   const [listTab, setListTab] = useState<PaperPanelTab>(() => readPaperTabFromUrl());
+  const [engineFilter, setEngineFilter] = useState<EngineFilter>("All");
   const { canAccess } = useFeaturePermissions();
   const canAccessWatchlist = canAccess("watchlist");
   const canAccessPortfolioAnalytics = canAccess("portfolio_analytics");
+
+  const filteredPositions = useMemo(
+    () => (dashboard?.positions ?? []).filter((p) => matchesEngineFilter(p, engineFilter)),
+    [dashboard?.positions, engineFilter],
+  );
+  const filteredOrders = useMemo(
+    () => (dashboard?.open_orders ?? []).filter((o) => matchesEngineFilter(o, engineFilter)),
+    [dashboard?.open_orders, engineFilter],
+  );
+  const filteredTrades = useMemo(
+    () => (dashboard?.trades ?? []).filter((t) => matchesEngineFilter(t, engineFilter)),
+    [dashboard?.trades, engineFilter],
+  );
   const [resetBalance, setResetBalance] = useState(1000000);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -257,6 +336,8 @@ export function PaperTradingPage({
   );
   const [editingOrderId, setEditingOrderId] = useState<number | null>(null);
   const [idempotencyKey, setIdempotencyKey] = useState<string>(() => crypto.randomUUID());
+  /** Guard double place from Desk ticket (before isBusy re-render). */
+  const placeInFlightRef = useRef(false);
   const [engineStatus, setEngineStatus] = useState<MarketEngineStatus | null>(
     () => getCached(CACHE_KEYS.marketEngineStatus),
   );
@@ -881,9 +962,12 @@ export function PaperTradingPage({
   }
 
   async function handlePlaceOrder() {
+    if (placeInFlightRef.current || isBusy) return;
+    placeInFlightRef.current = true;
     setIsBusy(true);
     setError(null);
     setStatusMessage(null);
+    const attemptKey = idempotencyKey;
     try {
       if (editingOrderId) {
         const payload: any = {
@@ -898,11 +982,12 @@ export function PaperTradingPage({
         const response = await updatePaperOrder(editingOrderId, payload as any);
         setStatusMessage(response.message);
         setEditingOrderId(null);
-        await loadPositions(ticket.symbol);
+        // Background refresh — don't block success UX
+        void loadPositions(ticket.symbol);
       } else {
-        const response = await placePaperOrder(ticket, idempotencyKey);
-        const st = response.order?.status;
-        if (st === "PENDING_MARKET_OPEN") {
+        const response = await placePaperOrder(ticket, attemptKey);
+        const st = response.order?.status ?? (response as { status?: string }).status;
+        if (st === "WAITING_FOR_MARKET" || st === "PENDING_MARKET_OPEN") {
           setStatusMessage(
             response.message ||
               "Order accepted. Market is closed — will execute at next market open.",
@@ -916,17 +1001,15 @@ export function PaperTradingPage({
           setStatusMessage(response.message);
         }
         setIdempotencyKey(crypto.randomUUID());
-        await Promise.all([
+        // Async portfolio refresh after success (non-blocking)
+        void Promise.all([
           loadPendingOrders(ticket.symbol),
           loadPositions(ticket.symbol),
           loadTradeHistory(ticket.symbol),
+          fetchPaperAccountSummary({ force: true })
+            .then((acct) => setAccountSummary(acct))
+            .catch((e) => console.warn("Failed to refresh account after placing order", e)),
         ]);
-        try {
-          const acct = await fetchPaperAccountSummary();
-          setAccountSummary(acct);
-        } catch (e) {
-          console.warn('Failed to refresh account after placing order', e);
-        }
         // Reset form: keep symbol and current price, clear everything else
         setSelectedSymbol(ticket.symbol);
         setTicket({
@@ -940,6 +1023,7 @@ export function PaperTradingPage({
       setError(requestError instanceof Error ? requestError.message : "Failed to place order.");
     } finally {
       setIsBusy(false);
+      placeInFlightRef.current = false;
     }
   }
 
@@ -1075,6 +1159,14 @@ export function PaperTradingPage({
       side: "SELL",
       type: "MARKET",
       qty: position.qty,
+      // Sell must target the same recommendation engine as the open position
+      sourceEngineId: resolveRecommendationEngine(position),
+      sourceEngineVersion: position.source_engine_version ?? null,
+      sourceRecommendationId: position.source_recommendation_id ?? null,
+      experimentId: position.experiment_id ?? null,
+      sourceSignal: position.source_signal ?? null,
+      sourceScore: position.source_score ?? null,
+      sourceConfidence: position.source_confidence ?? null,
     }));
     setSelectedSymbol(position.symbol);
     setListTab("orders");
@@ -1302,24 +1394,36 @@ export function PaperTradingPage({
           ))}
         </div>
 
+        {listTab === "positions" || listTab === "orders" || listTab === "history" ? (
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10, gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <EngineFilterBar value={engineFilter} onChange={setEngineFilter} />
+            {listTab === "positions" ? (
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <button type="button" className="button ghost-button" onClick={() => void handleSquareOffAll()} disabled={isBusy || !(dashboard?.positions?.length)}>
+                  Square Off ALL
+                </button>
+                <InfoTooltip content={TOOLTIPS.PAPER_TRADING.SQUARE_OFF_ALL} />
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
         {listTab === "positions" ? (
           <>
-            <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8, gap: 8, alignItems: 'center' }}>
-              <button type="button" className="button ghost-button" onClick={() => void handleSquareOffAll()} disabled={isBusy || !(dashboard?.positions?.length)}>
-                Square Off ALL
-              </button>
-              <InfoTooltip content={TOOLTIPS.PAPER_TRADING.SQUARE_OFF_ALL} />
-            </div>
             {dashboard === null ? (
               <TableSkeleton rows={5} cols={6} />
-            ) : (dashboard.positions?.length ?? 0) === 0 ? (
+            ) : filteredPositions.length === 0 ? (
               <div className="ds-empty" role="status">
                 <h3 className="ds-empty__title">No open positions</h3>
-                <p className="ds-empty__desc">Place a BUY order to open your first paper position.</p>
+                <p className="ds-empty__desc">
+                  {engineFilter === "All"
+                    ? "Place a BUY order to open your first paper position."
+                    : `No open positions for ${engineFilter}.`}
+                </p>
               </div>
             ) : (
               <PositionsTable
-                positions={dashboard.positions}
+                positions={filteredPositions}
                 selectedSymbol={selectedSymbol}
                 onSelect={(symbol) => {
                   setSelectedSymbol(symbol);
@@ -1335,14 +1439,18 @@ export function PaperTradingPage({
         {listTab === "orders" ? (
           dashboard === null ? (
             <TableSkeleton rows={5} cols={6} />
-          ) : (dashboard.open_orders?.length ?? 0) === 0 ? (
+          ) : filteredOrders.length === 0 ? (
             <div className="ds-empty" role="status">
               <h3 className="ds-empty__title">No open orders</h3>
-              <p className="ds-empty__desc">Use the order ticket to place a limit or market order.</p>
+              <p className="ds-empty__desc">
+                {engineFilter === "All"
+                  ? "Use the order ticket to place a limit or market order."
+                  : `No open orders for ${engineFilter}.`}
+              </p>
             </div>
           ) : (
             <OrdersTable
-              orders={dashboard.open_orders}
+              orders={filteredOrders}
               selectedSymbol={selectedSymbol}
               onSelect={(symbol) => {
                 setSelectedSymbol(symbol);
@@ -1357,13 +1465,17 @@ export function PaperTradingPage({
         {listTab === "history" ? (
           dashboard === null ? (
             <TableSkeleton rows={5} cols={6} />
-          ) : (dashboard.trades?.length ?? 0) === 0 ? (
+          ) : filteredTrades.length === 0 ? (
             <div className="ds-empty" role="status">
               <h3 className="ds-empty__title">No trade history</h3>
-              <p className="ds-empty__desc">Closed trades will appear here after you exit positions.</p>
+              <p className="ds-empty__desc">
+                {engineFilter === "All"
+                  ? "Closed trades will appear here after you exit positions."
+                  : `No closed trades for ${engineFilter}.`}
+              </p>
             </div>
           ) : (
-            <HistoryTable trades={dashboard.trades} selectedTrade={selectedTrade} setSelectedTrade={setSelectedTrade} />
+            <HistoryTable trades={filteredTrades} selectedTrade={selectedTrade} setSelectedTrade={setSelectedTrade} />
           )
         ) : null}
 
@@ -2014,6 +2126,8 @@ function PositionCard({ position, selectedSymbol, onSelect, onClose, onExit }: {
         </span>
       </div>
       <div className="paper-card__body">
+        <div className="paper-card__field"><span className="paper-card__field-label">Engine</span><span className="paper-card__field-value"><EngineBadge engine={resolveRecommendationEngine(position)} /></span></div>
+        <div className="paper-card__field"><span className="paper-card__field-label">Signal</span><span className="paper-card__field-value">{position.source_signal ?? "--"}</span></div>
         <div className="paper-card__field"><span className="paper-card__field-label">Qty</span><span className="paper-card__field-value">{position.qty}</span></div>
         <div className="paper-card__field"><span className="paper-card__field-label">Avg</span><span className="paper-card__field-value">{position.avg_entry_price.toFixed(2)}</span></div>
         <div className="paper-card__field"><span className="paper-card__field-label">Current</span><span className="paper-card__field-value">{position.current_price?.toFixed(2) ?? "--"}</span></div>
@@ -2021,6 +2135,7 @@ function PositionCard({ position, selectedSymbol, onSelect, onClose, onExit }: {
         <div className="paper-card__field"><span className="paper-card__field-label">Target</span><span className="paper-card__field-value">{position.target?.toFixed(2) ?? "--"}</span></div>
         <div className="paper-card__field"><span className="paper-card__field-label">R:R</span><span className="paper-card__field-value">{position.risk_reward_ratio?.toFixed(2) ?? "--"}</span></div>
         <div className="paper-card__field"><span className="paper-card__field-label">Status</span><span className="paper-card__field-value">{formatLifecycle(position.lifecycle_state, position.paused_reason)}</span></div>
+        <div className="paper-card__field"><span className="paper-card__field-label">Open</span><span className="paper-card__field-value">{position.created_at ? new Date(position.created_at).toLocaleString() : "--"}</span></div>
       </div>
       <div className="paper-card__actions">
         <button type="button" className="button ghost-button" onClick={() => onExit(position)}>Exit</button>
@@ -2054,15 +2169,18 @@ const PositionsTable = memo(function PositionsTable({
         <thead>
           <tr>
             <th>Symbol</th>
+            <th>Recommendation Engine</th>
+            <th>Signal Source</th>
             <th>Qty</th>
             <th>Avg entry <InfoTooltip content={TOOLTIPS.PAPER_TRADING.AVG_ENTRY} /></th>
             <th>Current <InfoTooltip content={TOOLTIPS.PAPER_TRADING.CURRENT_PRICE} /></th>
             <th>Unrealized <InfoTooltip content={TOOLTIPS.PAPER_TRADING.UNREALIZED_COL} /></th>
-            <th>% P&L <InfoTooltip content={TOOLTIPS.PAPER_TRADING.PERCENT_PNL} /></th>
+            <th>% P&L / Return <InfoTooltip content={TOOLTIPS.PAPER_TRADING.PERCENT_PNL} /></th>
             <th>Stop <InfoTooltip content={TOOLTIPS.PAPER_TRADING.STOP_COL} /></th>
             <th>Target <InfoTooltip content={TOOLTIPS.PAPER_TRADING.TARGET_COL} /></th>
             <th>R:R <InfoTooltip content={TOOLTIPS.PAPER_TRADING.RR_COL} /></th>
-            <th>Monitoring</th>
+            <th>Status</th>
+            <th>Open Time</th>
             <th>Action</th>
           </tr>
         </thead>
@@ -2070,6 +2188,12 @@ const PositionsTable = memo(function PositionsTable({
           {positions.map((position) => (
             <tr key={position.id} className={selectedSymbol === position.symbol ? "is-selected" : ""} data-testid="position-row">
               <td><button type="button" className="text-button" onClick={() => onSelect(position.symbol)}>{position.symbol}</button></td>
+              <td><EngineBadge engine={resolveRecommendationEngine(position)} /></td>
+              <td>
+                {position.source_signal
+                  ? <span className={`signal-badge signal-${String(position.source_signal).toLowerCase()}`}>{position.source_signal}</span>
+                  : "--"}
+              </td>
               <td>{position.qty}</td>
               <td className="number-cell">{position.avg_entry_price.toFixed(2)}</td>
               <td className="number-cell">{position.current_price?.toFixed(2) ?? "--"}</td>
@@ -2079,6 +2203,7 @@ const PositionsTable = memo(function PositionsTable({
               <td className="number-cell">{position.target?.toFixed(2) ?? "--"}</td>
               <td className="number-cell">{position.risk_reward_ratio?.toFixed(2) ?? "--"}</td>
               <td>{formatLifecycle(position.lifecycle_state, position.paused_reason)}</td>
+              <td>{position.created_at ? new Date(position.created_at).toLocaleString() : "--"}</td>
               <td style={{ display: 'flex', gap: 8 }}>
                 <button type="button" className="button ghost-button small-button" onClick={() => onExit(position)}>Exit</button>
                 <button type="button" className="button ghost-button small-button" onClick={() => onClose(position.id)}>Square Off</button>
@@ -2097,6 +2222,20 @@ const PositionsTable = memo(function PositionsTable({
   );
 });
 
+function orderStatusClass(status: string): string {
+  if (
+    status === "PENDING" ||
+    status === "WAITING_FOR_MARKET" ||
+    status === "PENDING_MARKET_OPEN" ||
+    status === "READY_TO_EXECUTE" ||
+    status === "OPEN"
+  ) {
+    return "is-neutral";
+  }
+  if (status === "FILLED" || status === "EXECUTED") return "is-positive";
+  return "is-risk"; // FAILED | REJECTED | CANCELLED
+}
+
 function OrderCard({ order, selectedSymbol, onSelect, onEdit, onDelete }: {
   order: PaperOrder;
   selectedSymbol: string;
@@ -2105,35 +2244,34 @@ function OrderCard({ order, selectedSymbol, onSelect, onEdit, onDelete }: {
   onDelete: (orderId: number) => void;
 }) {
   const pendingMarket = isPendingMarketOpen(order.status);
-  const statusClass =
-    order.status === "PENDING" || pendingMarket || order.status === "OPEN"
-      ? "is-neutral"
-      : order.status === "FILLED" || order.status === "EXECUTED"
-        ? "is-positive"
-        : "is-risk";
+  const statusClass = orderStatusClass(order.status);
+  const remarks =
+    order.paused_reason ||
+    order.notes ||
+    (pendingMarket ? "Waiting for market open — no position yet" : null);
   return (
-    <div className={`paper-card ${selectedSymbol === order.symbol ? "is-selected" : ""}`}>
+    <div className={`paper-card ${selectedSymbol === order.symbol ? "is-selected" : ""}`} data-testid="order-card">
       <div className="paper-card__header">
         <button type="button" className="paper-card__symbol" onClick={() => onSelect(order.symbol)}>{order.symbol}</button>
         <span className={`status-tag ${statusClass}`}>{formatOrderStatus(order.status)}</span>
       </div>
       <div className="paper-card__body">
-        <div className="paper-card__field"><span className="paper-card__field-label">Side</span><span className="paper-card__field-value">{order.side}</span></div>
+        <div className="paper-card__field"><span className="paper-card__field-label">Order ID</span><span className="paper-card__field-value">{order.id}</span></div>
+        <div className="paper-card__field"><span className="paper-card__field-label">Engine</span><span className="paper-card__field-value"><EngineBadge engine={resolveRecommendationEngine(order)} /></span></div>
+        <div className="paper-card__field"><span className="paper-card__field-label">Signal</span><span className="paper-card__field-value">{order.source_signal ? <span className={`signal-badge signal-${String(order.source_signal).toLowerCase()}`}>{order.source_signal}</span> : order.side}</span></div>
         <div className="paper-card__field"><span className="paper-card__field-label">Type</span><span className="paper-card__field-value">{order.type}</span></div>
         <div className="paper-card__field"><span className="paper-card__field-label">Qty</span><span className="paper-card__field-value">{order.qty}</span></div>
-        <div className="paper-card__field"><span className="paper-card__field-label">Requested Price</span><span className="paper-card__field-value">{order.price?.toFixed(2) ?? order.requested_entry_price?.toFixed(2) ?? "--"}</span></div>
+        <div className="paper-card__field"><span className="paper-card__field-label">Order Price</span><span className="paper-card__field-value">{order.price?.toFixed(2) ?? order.requested_entry_price?.toFixed(2) ?? "--"}</span></div>
+        <div className="paper-card__field"><span className="paper-card__field-label">Current Price</span><span className="paper-card__field-value">{order.last_seen_ltp?.toFixed(2) ?? "--"}</span></div>
         <div className="paper-card__field"><span className="paper-card__field-label">Status</span><span className="paper-card__field-value">{formatOrderStatus(order.status)}</span></div>
-        <div className="paper-card__field"><span className="paper-card__field-label">Order Time</span><span className="paper-card__field-value">{new Date(order.created_at).toLocaleString()}</span></div>
-        {pendingMarket && (
+        <div className="paper-card__field"><span className="paper-card__field-label">Created</span><span className="paper-card__field-value">{new Date(order.created_at).toLocaleString()}</span></div>
+        <div className="paper-card__field"><span className="paper-card__field-label">Execution</span><span className="paper-card__field-value">{order.filled_at || order.executed_at ? new Date(order.filled_at || order.executed_at || "").toLocaleString() : pendingMarket ? (order.scheduled_execution ? new Date(order.scheduled_execution).toLocaleString() : "Next Market Open") : "--"}</span></div>
+        {remarks ? (
           <div className="paper-card__field">
-            <span className="paper-card__field-label">Expected Execution</span>
-            <span className="paper-card__field-value">
-              {order.scheduled_execution
-                ? new Date(order.scheduled_execution).toLocaleString()
-                : "Next Market Open"}
-            </span>
+            <span className="paper-card__field-label">Remarks</span>
+            <span className="paper-card__field-value" title={remarks}>{remarks.length > 80 ? `${remarks.slice(0, 80)}…` : remarks}</span>
           </div>
-        )}
+        ) : null}
       </div>
       <div className="paper-card__actions">
         <button type="button" className="button ghost-button" onClick={() => onEdit(order)}>Edit</button>
@@ -2161,8 +2299,9 @@ const OrdersTable = memo(function OrdersTable({
       <div className="empty-state">
         <h2>No pending orders</h2>
         <p>
-          After-hours MARKET orders stay here as Pending Market Open until the next session.
-          Limit and stop orders stay here until their simulated trigger is reached.
+          Auto paper BUY orders appear here first. When the market is closed they stay as
+          Waiting for Market until the next session. Limit and stop orders stay here until
+          their simulated trigger is reached.
         </p>
       </div>
     );
@@ -2171,44 +2310,61 @@ const OrdersTable = memo(function OrdersTable({
   return (
     <>
       <div className="table-scroll paper-data-table">
-        <table className="candidate-table">
+        <table className="candidate-table" data-testid="orders-table">
           <thead>
             <tr>
+              <th>Order ID</th>
               <th>Symbol</th>
-              <th>Side</th>
-              <th>Type</th>
-              <th>Qty</th>
-              <th>Requested Price</th>
-              <th>Order Time</th>
-              <th>Status</th>
-              <th>Expected Execution</th>
+              <th>Recommendation Engine</th>
+              <th>Signal</th>
+              <th>Order Type</th>
+              <th>Quantity</th>
+              <th>Order Price</th>
+              <th>Current Price</th>
+              <th>Order Status</th>
+              <th>Created Time</th>
+              <th>Execution Time</th>
+              <th>Remarks</th>
               <th>Action</th>
             </tr>
           </thead>
           <tbody>
             {orders.map((order) => {
               const pendingMarket = isPendingMarketOpen(order.status);
-              const statusClass =
-                order.status === "PENDING" || pendingMarket || order.status === "OPEN"
-                  ? "is-neutral"
-                  : order.status === "FILLED" || order.status === "EXECUTED"
-                    ? "is-positive"
-                    : "is-risk";
+              const statusClass = orderStatusClass(order.status);
+              const remarks =
+                order.paused_reason ||
+                order.notes ||
+                (pendingMarket ? "Waiting for market open" : "") ||
+                (order.status === "FAILED" ? "Execution failed — will retry" : "") ||
+                "--";
+              const executionTime =
+                order.filled_at || order.executed_at
+                  ? new Date(order.filled_at || order.executed_at || "").toLocaleString()
+                  : pendingMarket
+                    ? order.scheduled_execution
+                      ? new Date(order.scheduled_execution).toLocaleString()
+                      : "Next Market Open"
+                    : "--";
               return (
-              <tr key={order.id} className={selectedSymbol === order.symbol ? "is-selected" : ""}>
+              <tr key={order.id} className={selectedSymbol === order.symbol ? "is-selected" : ""} data-testid="order-row">
+                <td className="number-cell">{order.id}</td>
                 <td><button type="button" className="text-button" onClick={() => onSelect(order.symbol)}>{order.symbol}</button></td>
-                <td>{order.side}</td>
-                <td>{order.type}</td>
-                <td>{order.qty}</td>
-                <td className="number-cell">{order.price?.toFixed(2) ?? order.requested_entry_price?.toFixed(2) ?? "--"}</td>
-                <td>{new Date(order.created_at).toLocaleString()}</td>
-                <td><span className={`status-tag ${statusClass}`}>{formatOrderStatus(order.status)}</span></td>
+                <td><EngineBadge engine={resolveRecommendationEngine(order)} /></td>
                 <td>
-                  {pendingMarket
-                    ? (order.scheduled_execution
-                        ? new Date(order.scheduled_execution).toLocaleString()
-                        : "Next Market Open")
-                    : formatLifecycle(order.lifecycle_state, order.paused_reason)}
+                  {order.source_signal
+                    ? <span className={`signal-badge signal-${String(order.source_signal).toLowerCase()}`}>{order.source_signal}</span>
+                    : order.side}
+                </td>
+                <td>{order.type}</td>
+                <td className="number-cell">{order.qty}</td>
+                <td className="number-cell">{order.price?.toFixed(2) ?? order.requested_entry_price?.toFixed(2) ?? "--"}</td>
+                <td className="number-cell">{order.last_seen_ltp?.toFixed(2) ?? "--"}</td>
+                <td><span className={`status-tag ${statusClass}`}>{formatOrderStatus(order.status)}</span></td>
+                <td>{new Date(order.created_at).toLocaleString()}</td>
+                <td>{executionTime}</td>
+                <td title={remarks} style={{ maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {remarks}
                 </td>
                 <td style={{ display: 'flex', gap: 8 }}>
                   <button type="button" className="button ghost-button small-button" onClick={() => onEdit(order)}>Edit</button>
@@ -2231,7 +2387,8 @@ const OrdersTable = memo(function OrdersTable({
 
 function formatLifecycle(state?: string | null, pausedReason?: string | null) {
   if (!state) return "--";
-  if (state === "PENDING_MARKET_OPEN") return "Pending Market Open";
+  if (state === "WAITING_FOR_MARKET" || state === "PENDING_MARKET_OPEN") return "Waiting for Market";
+  if (state === "READY_TO_EXECUTE") return "Ready to Execute";
   if (pausedReason) return `${state} (${pausedReason})`;
   return state.replace(/_/g, " ");
 }
@@ -2246,6 +2403,7 @@ function HistoryCard({ trade, onSelect }: { trade: PaperTradeHistoryItem; onSele
         </span>
       </div>
       <div className="paper-card__body">
+        <div className="paper-card__field"><span className="paper-card__field-label">Engine</span><span className="paper-card__field-value"><EngineBadge engine={resolveRecommendationEngine(trade)} /></span></div>
         <div className="paper-card__field"><span className="paper-card__field-label">Qty</span><span className="paper-card__field-value">{trade.qty}</span></div>
         <div className="paper-card__field"><span className="paper-card__field-label">Entry</span><span className="paper-card__field-value">{trade.entry_price.toFixed(2)}</span></div>
         <div className="paper-card__field"><span className="paper-card__field-label">Exit</span><span className="paper-card__field-value">{trade.exit_price.toFixed(2)}</span></div>
@@ -2269,6 +2427,7 @@ const HistoryTable = memo(function HistoryTable({ trades, selectedTrade, setSele
           <thead>
             <tr>
               <th>Symbol</th>
+              <th>Recommendation Engine</th>
               <th>Qty</th>
               <th>Entry</th>
               <th>Exit</th>
@@ -2286,6 +2445,7 @@ const HistoryTable = memo(function HistoryTable({ trades, selectedTrade, setSele
             {trades.map((trade) => (
               <tr key={trade.id} data-testid="history-row" onClick={() => setSelectedTrade(trade)} style={{ cursor: 'pointer' }}>
                 <td>{trade.symbol}</td>
+                <td><EngineBadge engine={resolveRecommendationEngine(trade)} /></td>
                 <td>{trade.qty}</td>
                 <td className="number-cell">{trade.entry_price.toFixed(2)}</td>
                 <td className="number-cell">{trade.exit_price.toFixed(2)}</td>

@@ -12,6 +12,7 @@ import pytest
 from sqlalchemy import select
 
 from app.db.session import SessionLocal
+from app.models.auth import User
 from app.models.paper_trading import (
     DEFAULT_PAPER_STARTING_BALANCE,
     PaperOrder,
@@ -23,6 +24,24 @@ from app.services.paper_trading_service import PaperTradingService
 from app.services.trading_hours_service import TradingHoursService, trading_hours
 
 IST = ZoneInfo("Asia/Kolkata")
+
+
+def _seed_user(db) -> uuid.UUID:
+    """Insert a real users row so paper_trading_accounts.user_id FK succeeds."""
+    uid = uuid.uuid4()
+    db.add(
+        User(
+            id=uid,
+            email=f"paper-mkt-{uid.hex[:10]}@test.local",
+            full_name="Paper Market Hours Test",
+            password_hash="not-a-real-hash",
+            is_active=True,
+            is_email_verified=True,
+            role="trader",
+        )
+    )
+    db.commit()
+    return uid
 
 
 def _svc(db, user_id) -> PaperTradingService:
@@ -38,7 +57,8 @@ def _mock_price(service: PaperTradingService, price: float = 250.0):
     snap.supertrend = None
     snap.source = "TEST_MOCK"
     snap.fetched_at = datetime.now(IST)
-    return patch.object(service, "_price_snapshot", return_value=snap)
+    # place_order uses _price_for_execution (not full _price_snapshot)
+    return patch.object(service, "_price_for_execution", return_value=snap)
 
 
 def _market_open_mock():
@@ -95,9 +115,9 @@ def test_trading_hours_weekend_and_session():
 
 
 def test_market_open_buy_executes_immediately_creates_position():
-    user = uuid.uuid4()
     mock_th = _market_open_mock()
     with SessionLocal() as db:
+        user = _seed_user(db)
         service = _svc(db, user)
         payload = PaperOrderCreateRequest(
             symbol="BHARATFORG",
@@ -121,9 +141,9 @@ def test_market_open_buy_executes_immediately_creates_position():
 
 
 def test_market_closed_buy_stays_pending_no_position():
-    user = uuid.uuid4()
     mock_th = _market_closed_mock()
     with SessionLocal() as db:
+        user = _seed_user(db)
         service = _svc(db, user)
         account = service._get_or_create_account()
         cash_before = float(account.cash_balance)
@@ -140,7 +160,7 @@ def test_market_closed_buy_stays_pending_no_position():
                     resp = service.place_order(payload)
 
         assert resp.order is not None
-        assert resp.order.status == "PENDING_MARKET_OPEN"
+        assert resp.order.status in {"WAITING_FOR_MARKET", "PENDING_MARKET_OPEN"}
         assert resp.position is None
         assert "market is currently closed" in (resp.message or "").lower()
 
@@ -157,21 +177,21 @@ def test_market_closed_buy_stays_pending_no_position():
         db.refresh(account)
         assert float(account.cash_balance) == cash_before
 
-        pending = service.get_pending_orders()
-        # get_pending_orders may try refresh; keep market closed
+        # Do not call get_pending_orders unmocked — it may refresh/fill when the
+        # live market is open and wipe WAITING_FOR_MARKET rows mid-assertion.
         with patch("app.services.paper_trading_service.trading_hours", mock_th):
             pending = [
                 o
                 for o in service._order_models(account.id)
-                if o.status == "PENDING_MARKET_OPEN"
+                if o.status in {"WAITING_FOR_MARKET", "PENDING_MARKET_OPEN"}
             ]
         assert len(pending) >= 1
         assert pending[0].scheduled_execution is not None
 
 
 def test_market_open_executes_pending_market_open_order():
-    user = uuid.uuid4()
     with SessionLocal() as db:
+        user = _seed_user(db)
         service = _svc(db, user)
         account = service._get_or_create_account()
         order = PaperOrder(
@@ -182,10 +202,11 @@ def test_market_open_executes_pending_market_open_order():
             qty=Decimal("3"),
             order_price=Decimal("400"),
             requested_entry_price=Decimal("400"),
-            status="PENDING_MARKET_OPEN",
-            lifecycle_state="PENDING_MARKET_OPEN",
+            status="WAITING_FOR_MARKET",
+            lifecycle_state="WAITING_FOR_MARKET",
             market_session="CLOSED",
             scheduled_execution=datetime(2026, 5, 26, 9, 15, tzinfo=IST),
+            source_engine_id="Production",
             idempotency_key=f"pending-exec-{uuid.uuid4()}",
         )
         db.add(order)
@@ -209,9 +230,9 @@ def test_market_open_executes_pending_market_open_order():
 
 
 def test_cancel_pending_market_open_order():
-    user = uuid.uuid4()
     mock_th = _market_closed_mock()
     with SessionLocal() as db:
+        user = _seed_user(db)
         service = _svc(db, user)
         payload = PaperOrderCreateRequest(
             symbol="INFY",
@@ -232,8 +253,8 @@ def test_cancel_pending_market_open_order():
 
 
 def test_try_fill_blocked_when_market_closed():
-    user = uuid.uuid4()
     with SessionLocal() as db:
+        user = _seed_user(db)
         service = _svc(db, user)
         account = service._get_or_create_account()
         order = PaperOrder(

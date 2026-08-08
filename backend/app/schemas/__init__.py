@@ -49,6 +49,16 @@ from .re001 import (
     Re001ScanComparisonResponse,
     TradeGuidance,
 )
+from .re002 import (
+    Re002ComparisonRow,
+    Re002DecisionObject,
+    Re002HealthSegment,
+    Re002HistoryResponse,
+    Re002RecentScansResponse,
+    Re002Registration,
+    Re002ScanComparisonResponse,
+    Re002ScanRunSummary,
+)
 
 __all__ = [
     "AnalysisMode",
@@ -91,6 +101,14 @@ __all__ = [
     "Re001HealthSegment",
     "Re001Registration",
     "Re001ScanComparisonResponse",
+    "Re002ComparisonRow",
+    "Re002DecisionObject",
+    "Re002HealthSegment",
+    "Re002HistoryResponse",
+    "Re002RecentScansResponse",
+    "Re002Registration",
+    "Re002ScanComparisonResponse",
+    "Re002ScanRunSummary",
     "TradeGuidance",
     "SectorOverlayResult",
     "MarketRegimeResult",

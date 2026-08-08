@@ -210,6 +210,19 @@ async def job_intraday_heartbeat():
     try:
         from .services.market_engine_service import market_engine
         await market_engine.heartbeat()
+        # Retry WAITING_FOR_MARKET / FAILED auto paper orders during the session
+        # (covers missed 09:15 sweep and price-unavailable failures).
+        try:
+            from .services.paper_trading_service import PaperTradingService
+            from .services.trading_hours_service import trading_hours
+
+            if trading_hours.is_market_open():
+                summary = await asyncio.to_thread(
+                    PaperTradingService.execute_all_pending_market_open_orders
+                )
+                logger.info("MARKET_OPEN_RETRY | heartbeat_summary=%s", summary)
+        except Exception as retry_exc:
+            logger.warning("MARKET_OPEN_RETRY | heartbeat failed: %s", retry_exc)
         logger_service.log_info(
             message="15-minute market data trigger completed successfully.",
             source="JOB",
@@ -227,10 +240,10 @@ async def job_intraday_heartbeat():
 
 
 async def job_execute_pending_market_open_orders():
-    """At market open, execute all PENDING_MARKET_OPEN paper orders across accounts."""
+    """At market open, execute all WAITING_FOR_MARKET / FAILED paper orders across accounts."""
     from .services.logger_service import logger_service
     logger_service.log_info(
-        message="Pending market-open order execution triggered.",
+        message="Waiting-for-market order execution triggered.",
         source="JOB",
         module="Scheduler",
         endpoint="job_execute_pending_market_open_orders",
@@ -240,7 +253,7 @@ async def job_execute_pending_market_open_orders():
 
         summary = await asyncio.to_thread(PaperTradingService.execute_all_pending_market_open_orders)
         logger_service.log_info(
-            message=f"Pending market-open execution complete: {summary}",
+            message=f"Waiting-for-market execution complete: {summary}",
             source="JOB",
             module="Scheduler",
             endpoint="job_execute_pending_market_open_orders",
@@ -1094,12 +1107,12 @@ async def diagnostics_rate_monitor_middleware(request: Request, call_next):
 async def nightly_candle_sync():
     logger.info("NIGHTLY SYNC started")
     from .services.fyers_service import FyersService
-    fyers = FyersService()
-    symbols = get_all_cached_symbols()
-    stale = [s for s in symbols if not is_cache_fresh(s)]
-    logger.info("NIGHTLY SYNC stale_symbols=%s total=%s", len(stale), len(symbols))
-    import asyncio
     from .schemas import AnalysisMode
+    fyers = FyersService()
+    symbols = await get_all_cached_symbols()
+    freshness = await asyncio.gather(*[is_cache_fresh(s) for s in symbols])
+    stale = [s for s, fresh in zip(symbols, freshness) if not fresh]
+    logger.info("NIGHTLY SYNC stale_symbols=%s total=%s", len(stale), len(symbols))
     sem = asyncio.Semaphore(10)
 
     async def _sync_symbol(symbol: str):
@@ -1216,7 +1229,7 @@ async def automated_screening_job():
                     last_scan_ts = None
                     minutes_since = 0.0
                     last_scan_res = "NONE"
-                cache_entries = len(get_all_cached_symbols())
+                cache_entries = len(await get_all_cached_symbols())
                 log_scan_environment(
                     ctx=scan_ctx,
                     token_loaded=bool(token),

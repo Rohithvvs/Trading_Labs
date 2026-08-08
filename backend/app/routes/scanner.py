@@ -23,6 +23,50 @@ CACHE_KEY_SCANNER_LATEST = "scanner:latest:v1"
 ENDPOINT_SCANNER_LATEST = "/scanner/latest"
 
 
+@router.get("/results")
+async def get_scanner_results_by_engine(
+    engine: str = Query(
+        default="Production",
+        description="Recommendation engine: Production | RE-001 | RE-002 (also production/re001/re002)",
+    ),
+    force: bool = Query(default=False, description="Force refresh production cache path"),
+    _: User = Depends(require_feature("advanced_scanner")),
+):
+    """Scanner results filtered to a single recommendation engine.
+
+    - Production: latest completed production scan (analysis / ScreenerResponse shape)
+    - RE-001 / RE-002: latest multi-symbol lab decision cohort mapped to the same shape
+
+    Does not duplicate stored data — projects existing scans / decisions.
+    """
+    from ..db.session import SessionLocal
+    from ..services.scanner_engine_results import (
+        get_scanner_results_for_engine,
+        normalize_scanner_engine,
+    )
+
+    eng = normalize_scanner_engine(engine)
+    try:
+        if eng == "Production":
+            payload = await get_scanner_results_for_engine(None, eng, force=force)
+        else:
+            with SessionLocal() as db:
+                payload = await get_scanner_results_for_engine(db, eng, force=force)
+        return payload
+    except Exception as exc:
+        logger.exception("GET /scanner/results failed | engine=%s | err=%s", eng, exc)
+        return {
+            "available": False,
+            "recommendation_engine": eng,
+            "message": f"Failed to load scanner results for {eng}",
+            "shortlisted_symbols": [],
+            "buy_candidate_symbols": [],
+            "watch_candidate_symbols": [],
+            "all_analyzed_stocks": [],
+            "scanned_symbols": 0,
+        }
+
+
 @router.get("/latest")
 async def get_latest_completed_scan(
     request: Request,

@@ -93,7 +93,7 @@ def _mock_price(service: PaperTradingService, price: float = 100.0):
         source = "TEST_MOCK"
         fetched_at = datetime.now(timezone.utc)
 
-    return patch.object(service, "_price_snapshot", return_value=Dummy())
+    return patch.object(service, "_price_for_execution", return_value=Dummy())
 
 
 def _place_buy(service: PaperTradingService, **kwargs):

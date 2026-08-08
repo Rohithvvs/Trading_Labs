@@ -512,16 +512,26 @@ class MarketDataService:
         symbols: list[str],
         timeframe: str,
         stored_symbol_map: dict[str, str] | None = None,
+        max_bars: int | None = None,
     ) -> dict[str, pd.DataFrame]:
         """
-        Load full daily histories for many symbols with chunked IN queries.
-        Avoids per-symbol session open/close during large scans.
+        Load daily histories for many symbols with chunked IN queries.
+
+        Performance (scanner path):
+        - ``max_bars`` limits each symbol to its most recent N bars (SMA200 needs ~240).
+          Full multi-year histories were the dominant scan cost (~120s for 755 symbols).
+        - Chunks load concurrently (bounded) instead of strictly sequential.
 
         If stored_symbol_map is provided, loads by DB symbol and returns frames keyed
         by the original universe symbol.
         """
         if not symbols:
             return {}
+
+        # Swing indicators need ~240 bars; keep a small buffer for ffill / gaps.
+        bar_limit = int(max_bars) if max_bars and max_bars > 0 else None
+        if bar_limit is not None:
+            bar_limit = max(60, min(bar_limit, 2000))
 
         stored_symbol_map = stored_symbol_map or {s: s for s in symbols}
         # universe -> db symbol (only those that map)
@@ -532,42 +542,87 @@ class MarketDataService:
 
         db_symbols = list(db_to_universe.keys())
         frames: dict[str, pd.DataFrame] = {symbol: pd.DataFrame() for symbol in symbols}
-        chunk_size = 80
-        for i in range(0, len(db_symbols), chunk_size):
-            chunk = db_symbols[i : i + chunk_size]
-            query = (
-                select(
-                    HistoricalCandle.symbol,
-                    HistoricalCandle.timestamp.label("date"),
-                    HistoricalCandle.open,
-                    HistoricalCandle.high,
-                    HistoricalCandle.low,
-                    HistoricalCandle.close,
-                    HistoricalCandle.volume,
-                )
-                .where(
-                    HistoricalCandle.symbol.in_(chunk),
-                    HistoricalCandle.resolution == timeframe,
-                )
-                .order_by(HistoricalCandle.symbol.asc(), HistoricalCandle.timestamp.asc())
-            )
-            async with AsyncSessionLocal() as db:
-                result = await db.execute(query)
-                rows = result.all()
+        # Larger chunks + parallel load: fewer round-trips over Neon latency.
+        # Sequential 80-symbol chunks over Neon were ~12s each × 10 ≈ 120s.
+        chunk_size = 150 if bar_limit else 100
+        chunks = [db_symbols[i : i + chunk_size] for i in range(0, len(db_symbols), chunk_size)]
+        load_sem = asyncio.Semaphore(6)
 
-            by_db: dict[str, list[dict]] = {symbol: [] for symbol in chunk}
-            for row in rows:
-                by_db[row.symbol].append(
-                    {
-                        "date": row.date,
-                        "open": row.open,
-                        "high": row.high,
-                        "low": row.low,
-                        "close": row.close,
-                        "volume": row.volume,
-                    }
-                )
+        async def _load_chunk(chunk: list[str]) -> dict[str, list[dict]]:
+            async with load_sem:
+                if bar_limit is not None:
+                    # Keep only the latest N bars per symbol (SMA200 needs ~240).
+                    rn = func.row_number().over(
+                        partition_by=HistoricalCandle.symbol,
+                        order_by=HistoricalCandle.timestamp.desc(),
+                    ).label("rn")
+                    ranked = (
+                        select(
+                            HistoricalCandle.symbol.label("symbol"),
+                            HistoricalCandle.timestamp.label("date"),
+                            HistoricalCandle.open.label("open"),
+                            HistoricalCandle.high.label("high"),
+                            HistoricalCandle.low.label("low"),
+                            HistoricalCandle.close.label("close"),
+                            HistoricalCandle.volume.label("volume"),
+                            rn,
+                        )
+                        .where(
+                            HistoricalCandle.symbol.in_(chunk),
+                            HistoricalCandle.resolution == timeframe,
+                        )
+                        .subquery()
+                    )
+                    query = (
+                        select(
+                            ranked.c.symbol,
+                            ranked.c.date,
+                            ranked.c.open,
+                            ranked.c.high,
+                            ranked.c.low,
+                            ranked.c.close,
+                            ranked.c.volume,
+                        )
+                        .where(ranked.c.rn <= bar_limit)
+                        .order_by(ranked.c.symbol.asc(), ranked.c.date.asc())
+                    )
+                else:
+                    query = (
+                        select(
+                            HistoricalCandle.symbol,
+                            HistoricalCandle.timestamp.label("date"),
+                            HistoricalCandle.open,
+                            HistoricalCandle.high,
+                            HistoricalCandle.low,
+                            HistoricalCandle.close,
+                            HistoricalCandle.volume,
+                        )
+                        .where(
+                            HistoricalCandle.symbol.in_(chunk),
+                            HistoricalCandle.resolution == timeframe,
+                        )
+                        .order_by(HistoricalCandle.symbol.asc(), HistoricalCandle.timestamp.asc())
+                    )
+                async with AsyncSessionLocal() as db:
+                    result = await db.execute(query)
+                    rows = result.all()
 
+                by_db: dict[str, list[dict]] = {symbol: [] for symbol in chunk}
+                for row in rows:
+                    by_db[row.symbol].append(
+                        {
+                            "date": row.date,
+                            "open": row.open,
+                            "high": row.high,
+                            "low": row.low,
+                            "close": row.close,
+                            "volume": row.volume,
+                        }
+                    )
+                return by_db
+
+        chunk_results = await asyncio.gather(*(_load_chunk(c) for c in chunks))
+        for by_db in chunk_results:
             for db_symbol, symbol_rows in by_db.items():
                 if not symbol_rows:
                     continue
@@ -577,7 +632,9 @@ class MarketDataService:
                 for col in ("open", "high", "low", "close"):
                     df[col] = df[col].astype(float)
                 if "volume" in df.columns:
-                    df["volume"] = df["volume"].apply(lambda v: safe_int(v, symbol=db_symbol, field="volume"))
+                    df["volume"] = df["volume"].apply(
+                        lambda v, s=db_symbol: safe_int(v, symbol=s, field="volume")
+                    )
                 for universe_symbol in db_to_universe.get(db_symbol, [db_symbol]):
                     frames[universe_symbol] = df
         return frames

@@ -154,13 +154,16 @@ export async function runPresetScreener(
   });
   
   // Client-side connect timeout — never leave UI at "Connecting data feed..." forever.
+  // Backend must open the SSE stream before lock/DB work (headers within this budget).
   const CONNECT_TIMEOUT_MS = 30_000;
+  const connectStartedAt = performance.now();
   const connectTimer = setTimeout(() => {
     /* resolved via race below */
   }, CONNECT_TIMEOUT_MS);
 
   let response: Response;
   try {
+    console.info("[scanner] connect start", { url: "/analysis/screener/full", timeoutMs: CONNECT_TIMEOUT_MS });
     const fetchPromise = fetchWithDiagnostics("/analysis/screener/full", {
       method: "POST",
       headers: {
@@ -184,6 +187,12 @@ export async function runPresetScreener(
   } finally {
     clearTimeout(connectTimer);
   }
+
+  console.info("[scanner] headers received", {
+    status: response.status,
+    contentType: response.headers.get("content-type"),
+    connectMs: Math.round(performance.now() - connectStartedAt),
+  });
 
   // Headers received — leave pure "Connecting..." state immediately.
   onProgress?.({
@@ -291,6 +300,13 @@ export async function runPresetScreener(
           }
         } else if (eventType === "result") {
           if (data.status === "error") {
+            // Lock denial is delivered over SSE (stream opens before lock acquire).
+            if (data.code === "scan_in_progress") {
+              throw Object.assign(
+                new Error(data.message || "SCAN_IN_PROGRESS"),
+                { scanInProgress: true },
+              );
+            }
             throw new Error(data.message || "Scanner encountered an internal error");
           } else if (data.status === "complete") {
             payload = data.result;
@@ -370,48 +386,88 @@ export async function fetchPaperAccountSummary(opts?: { force?: boolean }): Prom
       });
       return payload;
     },
-    { force: opts?.force, swr: !opts?.force, softTimeoutMs: 3000 },
+    // Account capital is stable between orders; SWR + longer soft timeout keeps Order page interactive.
+    {
+      force: opts?.force,
+      swr: !opts?.force,
+      softTimeoutMs: 2500,
+      ttlMs: 60 * 1000,
+    },
   );
 }
 
-export async function fetchPaperQuote(symbol: string): Promise<PaperQuoteResponse> {
+export async function fetchPaperQuote(
+  symbol: string,
+  opts?: { force?: boolean },
+): Promise<PaperQuoteResponse> {
+  const canon = symbol.trim().toUpperCase();
+  return cachedFetch(
+    CACHE_KEYS.paperQuote(canon),
+    async () => {
+      const response = await fetchWithDiagnostics(
+        `/paper-trading/symbols/${encodeURIComponent(canon)}/quote`,
+        undefined,
+        "Paper quote",
+      );
+      if (!response.ok) {
+        let detail: unknown = null;
+        let message = "";
+        try {
+          detail = await response.json();
+          if (detail && typeof detail === "object") {
+            const d = detail as Record<string, unknown>;
+            const nested = d.detail;
+            if (nested && typeof nested === "object") {
+              message = String(
+                (nested as Record<string, unknown>).reason ??
+                  (nested as Record<string, unknown>).message ??
+                  "",
+              );
+            } else if (typeof nested === "string") {
+              message = nested;
+            } else {
+              message = String(d.reason ?? d.message ?? "");
+            }
+          }
+        } catch {
+          try {
+            message = await response.text();
+          } catch {
+            message = "";
+          }
+        }
+        const err = new Error(message || "Failed to load live paper trading quote") as Error & {
+          status?: number;
+          detail?: unknown;
+        };
+        err.status = response.status;
+        err.detail = detail;
+        throw err;
+      }
+      return response.json() as Promise<PaperQuoteResponse>;
+    },
+    // Short TTL: poller revalidates; SWR avoids blank quote on navigation.
+    {
+      force: opts?.force,
+      swr: !opts?.force,
+      softTimeoutMs: 2000,
+      ttlMs: 3 * 1000,
+    },
+  );
+}
+
+/** Single order by id (edit mode) — avoids full pending list + price fan-out. */
+export async function fetchPaperOrderById(orderId: number): Promise<PaperOrder> {
   const response = await fetchWithDiagnostics(
-    `/paper-trading/symbols/${encodeURIComponent(symbol)}/quote`,
+    `/paper-trading/orders/${orderId}`,
     undefined,
-    "Paper quote",
+    "Paper order by id",
   );
   if (!response.ok) {
-    let detail: unknown = null;
-    let message = "";
-    try {
-      detail = await response.json();
-      if (detail && typeof detail === "object") {
-        const d = detail as Record<string, unknown>;
-        const nested = d.detail;
-        if (nested && typeof nested === "object") {
-          message = String((nested as Record<string, unknown>).reason ?? (nested as Record<string, unknown>).message ?? "");
-        } else if (typeof nested === "string") {
-          message = nested;
-        } else {
-          message = String(d.reason ?? d.message ?? "");
-        }
-      }
-    } catch {
-      try {
-        message = await response.text();
-      } catch {
-        message = "";
-      }
-    }
-    const err = new Error(message || "Failed to load live paper trading quote") as Error & {
-      status?: number;
-      detail?: unknown;
-    };
-    err.status = response.status;
-    err.detail = detail;
-    throw err;
+    const message = await response.text();
+    throw new Error(message || `Failed to load order #${orderId}`);
   }
-  return response.json() as Promise<PaperQuoteResponse>;
+  return response.json() as Promise<PaperOrder>;
 }
 
 export async function resetPaperTradingAccount(startingBalance: number): Promise<PaperTradingDashboardResponse> {
@@ -435,30 +491,79 @@ export async function placePaperOrder(ticket: PaperOrderTicketState, idempotency
     "Idempotency-Key": idempotencyKey || crypto.randomUUID()
   };
 
+  // Backend Field(gt=0) rejects 0; treat non-positive as omitted
+  const posOrOmit = (n: number | null | undefined): number | null =>
+    n != null && Number(n) > 0 ? Number(n) : null;
+  const engine = ticket.sourceEngineId?.trim() || null;
+
+  const t0 = typeof performance !== "undefined" ? performance.now() : Date.now();
+  const requestBody = {
+    symbol: ticket.symbol,
+    side: ticket.side,
+    type: ticket.type,
+    product_type: ticket.productType ?? "CNC",
+    qty: ticket.qty,
+    limit_price: posOrOmit(ticket.limitPrice),
+    stop_price: posOrOmit(ticket.stopPrice),
+    stop_loss: posOrOmit(ticket.stopLoss),
+    target: posOrOmit(ticket.target),
+    notes: ticket.notes,
+    source_signal: ticket.sourceSignal,
+    source_score: ticket.sourceScore,
+    source_confidence: ticket.sourceConfidence,
+    source_engine_id: engine,
+    source_engine_version: ticket.sourceEngineVersion ?? null,
+    source_recommendation_id: ticket.sourceRecommendationId ?? null,
+    experiment_id: ticket.experimentId ?? null,
+    recommendation_engine: engine,
+  };
+  if (typeof console !== "undefined" && console.info) {
+    console.info("[paper-order] place_request", {
+      symbol: requestBody.symbol,
+      type: requestBody.type,
+      source_engine_id: requestBody.source_engine_id,
+      source_recommendation_id: requestBody.source_recommendation_id,
+      limit_price: requestBody.limit_price,
+      stop_loss: requestBody.stop_loss,
+      target: requestBody.target,
+    });
+  }
   const response = await fetchWithDiagnostics("/paper-trading/orders", {
     method: "POST",
     headers,
-    body: JSON.stringify({
-      symbol: ticket.symbol,
-      side: ticket.side,
-      type: ticket.type,
-      product_type: ticket.productType ?? "CNC",
-      qty: ticket.qty,
-      limit_price: ticket.limitPrice,
-      stop_price: ticket.stopPrice,
-      stop_loss: ticket.stopLoss,
-      target: ticket.target,
-      notes: ticket.notes,
-      source_signal: ticket.sourceSignal,
-      source_score: ticket.sourceScore,
-      source_confidence: ticket.sourceConfidence,
-    }),
+    body: JSON.stringify(requestBody),
   }, "Paper order");
+  const networkMs = Math.round(
+    (typeof performance !== "undefined" ? performance.now() : Date.now()) - t0,
+  );
   if (!response.ok) {
     const message = await response.text();
     throw new Error(message || "Failed to place paper order");
   }
-  return response.json() as Promise<PaperOrderActionResponse>;
+  const tParse = typeof performance !== "undefined" ? performance.now() : Date.now();
+  const paperOrderResponse = (await response.json()) as PaperOrderActionResponse;
+  const parseMs = Math.round(
+    (typeof performance !== "undefined" ? performance.now() : Date.now()) - tParse,
+  );
+  // Server phase headers (set by POST /paper-trading/orders)
+  const placeMs = response.headers.get("X-Order-Place-Ms");
+  const serviceMs = response.headers.get("X-Order-Service-Ms");
+  const serializeMs = response.headers.get("X-Order-Serialize-Ms");
+  if (typeof console !== "undefined" && console.info) {
+    console.info("[paper-order] place_timing", {
+      symbol: ticket.symbol,
+      network_ms: networkMs,
+      parse_ms: parseMs,
+      server_total_ms: placeMs != null ? Number(placeMs) : null,
+      server_service_ms: serviceMs != null ? Number(serviceMs) : null,
+      server_serialize_ms: serializeMs != null ? Number(serializeMs) : null,
+      order_id:
+        (paperOrderResponse as { order_id?: number }).order_id ?? paperOrderResponse.order?.id,
+      status:
+        (paperOrderResponse as { status?: string }).status ?? paperOrderResponse.order?.status,
+    });
+  }
+  return paperOrderResponse;
 }
 
 export async function startMarketEngine(): Promise<MarketEngineStatus> {
@@ -552,6 +657,39 @@ export async function prefillPaperTrade(payload: RecommendationPrefillRequest): 
   return response.json() as Promise<RecommendationPrefillResponse>;
 }
 
+/**
+ * Client-side prefill from scanner nav state — zero network.
+ * Server prefill only needed for lab engine trade_guidance enrichment.
+ */
+export function prefillPaperTradeLocal(
+  payload: RecommendationPrefillRequest,
+): RecommendationPrefillResponse {
+  const symbol = (payload.symbol || "").trim().toUpperCase().replace(/-EQ$/, "");
+  const pos = (n: number | null | undefined) =>
+    n != null && Number(n) > 0 ? Number(n) : null;
+  const targets = (payload.suggested_targets || [])
+    .map((t) => pos(t as number))
+    .filter((t): t is number => t != null);
+  const limit = pos(payload.suggested_entry ?? null);
+  const engine = payload.source_engine_id
+    ? `Imported from ${payload.source_engine_id} v${payload.source_engine_version || "n/a"} | rec_id=${payload.source_recommendation_id || "n/a"} | `
+    : "Imported from system recommendation | ";
+  return {
+    symbol,
+    side: "BUY",
+    type: limit != null ? "LIMIT" : "MARKET",
+    qty: 1,
+    limit_price: limit,
+    stop_loss: pos(payload.suggested_stop ?? null),
+    target: targets[0] ?? null,
+    note: `${engine}signal=${payload.recommendation_meta?.signal ?? "BUY"} | score=${payload.recommendation_meta?.score ?? "n/a"} | confidence=${payload.recommendation_meta?.confidence ?? "n/a"}`,
+    source_engine_id: payload.source_engine_id ?? null,
+    source_engine_version: payload.source_engine_version ?? null,
+    source_recommendation_id: payload.source_recommendation_id ?? null,
+    experiment_id: payload.experiment_id ?? null,
+  };
+}
+
 export async function fetchSymbolDetail(symbol: string): Promise<SymbolDetail> {
   const response = await fetchWithDiagnostics(`/analysis/symbol/${encodeURIComponent(symbol)}/detail`, undefined, `Symbol detail ${symbol}`);
   if (!response.ok) {
@@ -634,13 +772,63 @@ export async function deletePaperOrder(orderId: number): Promise<PaperOrderActio
   return response.json() as Promise<PaperOrderActionResponse>;
 }
 
+/** Canonical scanner engine labels used by the engine selector. */
+export type ScannerEngineId = "Production" | "RE-001" | "RE-002";
+
 /**
- * Load the newest completed scan for the Scanner page.
+ * Load scanner results for one recommendation engine.
+ * Production → latest production scan; RE-001/RE-002 → lab decision cohort.
+ */
+export async function loadScannerResultsByEngine(
+  engine: ScannerEngineId = "Production",
+  opts?: { force?: boolean },
+): Promise<(ScreenerResponse & { available?: boolean; recommendation_engine?: string; message?: string }) | null> {
+  const force = Boolean(opts?.force);
+  const cacheKey = `${CACHE_KEYS.latestScan}:engine:${engine}`;
+  return cachedFetch(
+    cacheKey,
+    async () => {
+      const qs = new URLSearchParams({ engine });
+      if (force) qs.set("force", "true");
+      const response = await fetchWithDiagnostics(
+        `/scanner/results?${qs.toString()}`,
+        force
+          ? { headers: { "Cache-Control": "no-cache", Accept: "application/json" } }
+          : undefined,
+        `Load scanner results (${engine})`,
+      );
+      if (!response.ok) {
+        return null;
+      }
+      const data = await response.json() as ({ available?: boolean } & ScreenerResponse);
+      if (data.available === false) {
+        return data as ScreenerResponse & { available: boolean };
+      }
+      return data as ScreenerResponse & { available?: boolean };
+    },
+    { force, swr: !force, softTimeoutMs: force ? 15_000 : 3000, ttlMs: 2 * 60 * 1000 },
+  );
+}
+
+/**
+ * Load the newest completed scan for the Scanner page (Production engine).
  * On page reload/navigation, pass `{ force: true }` so sessionStorage SWR
  * cannot restore an older scan over the backend's latest.
  */
 export async function loadLatestScan(opts?: { force?: boolean }): Promise<ScreenerResponse | null> {
   const force = Boolean(opts?.force);
+  // Prefer engine-aware endpoint so Production path stays aligned with RE engines
+  try {
+    const byEngine = await loadScannerResultsByEngine("Production", { force });
+    if (byEngine && byEngine.available !== false) {
+      return byEngine as ScreenerResponse;
+    }
+    if (byEngine && byEngine.available === false) {
+      return null;
+    }
+  } catch {
+    // Fall through to legacy analysis path
+  }
   return cachedFetch(
     CACHE_KEYS.latestScan,
     async () => {
@@ -699,6 +887,9 @@ export async function getLatestScan(opts?: { force?: boolean }): Promise<any> {
 export function invalidateLatestScanCaches(): void {
   invalidateCache(CACHE_KEYS.latestScan);
   invalidateCache(`${CACHE_KEYS.latestScan}:scanner`);
+  invalidateCache(`${CACHE_KEYS.latestScan}:engine:Production`);
+  invalidateCache(`${CACHE_KEYS.latestScan}:engine:RE-001`);
+  invalidateCache(`${CACHE_KEYS.latestScan}:engine:RE-002`);
 }
 
 /**
@@ -766,13 +957,21 @@ export async function loadTodayCandidates(): Promise<any[]> {
   return response.json() as Promise<any[]>;
 }
 
-export async function fetchAnalytics(opts?: { force?: boolean; period?: string }): Promise<any> {
+export async function fetchAnalytics(opts?: {
+  force?: boolean;
+  period?: string;
+  recommendation_engine?: string | null;
+}): Promise<any> {
   const period = opts?.period || "all";
-  const cacheKey = `${CACHE_KEYS.paperAnalytics}:${period}`;
+  const engine = (opts?.recommendation_engine || "All").trim() || "All";
+  const cacheKey = `${CACHE_KEYS.paperAnalytics}:${period}:${engine}`;
   return cachedFetch(
     cacheKey,
     async () => {
       const qs = new URLSearchParams({ period });
+      if (engine && engine.toLowerCase() !== "all") {
+        qs.set("recommendation_engine", engine);
+      }
       const response = await fetchWithDiagnostics(
         `/paper-trading/analytics?${qs.toString()}`,
         undefined,
@@ -1615,7 +1814,7 @@ export async function resetPassword(token: string, password: string, confirmPass
 /** RE-001 recent scan runs (stable scan_run_id list) */
 export async function fetchRe001RecentScans(
   limit = 20,
-  opts?: { minDecisions?: number; preferCohorts?: boolean },
+  opts?: { minDecisions?: number; preferCohorts?: boolean; force?: boolean },
 ): Promise<{
   items: Array<{
     scan_run_id: string;
@@ -1625,24 +1824,29 @@ export async function fetchRe001RecentScans(
 }> {
   const minDecisions = opts?.minDecisions ?? 1;
   const preferCohorts = opts?.preferCohorts ?? true;
-  const qs = new URLSearchParams({
-    limit: String(limit),
-    min_decisions: String(minDecisions),
-    prefer_cohorts: preferCohorts ? "true" : "false",
-  });
-  const response = await fetchWithDiagnostics(
-    `/api/v1/recommendation-lab/scans/recent?${qs.toString()}`,
-    { method: "GET" },
-    "RE-001 recent scans",
+  const key = `re001_recent_scans:${limit}:${minDecisions}:${preferCohorts}`;
+  return cachedFetch(
+    key,
+    async () => {
+      const qs = new URLSearchParams({
+        limit: String(limit),
+        min_decisions: String(minDecisions),
+        prefer_cohorts: preferCohorts ? "true" : "false",
+      });
+      const response = await fetchWithDiagnostics(
+        `/api/v1/recommendation-lab/scans/recent?${qs.toString()}`,
+        { method: "GET" },
+        "RE-001 recent scans",
+      );
+      if (!response.ok) throw mapHttpError(response.status, response.url);
+      return response.json();
+    },
+    { force: opts?.force, swr: !opts?.force, ttlMs: 2 * 60 * 1000, softTimeoutMs: 3000 },
   );
-  if (!response.ok) {
-    throw mapHttpError(response.status, response.url);
-  }
-  return response.json();
 }
 
 /** RE-001 Recommendation Lab — comparison for a completed scan_run_id */
-export async function fetchRe001ScanComparison(scanRunId: string): Promise<{
+export async function fetchRe001ScanComparison(scanRunId: string, force = false): Promise<{
   scan_run_id: string;
   items: Array<{
     symbol: string;
@@ -1656,15 +1860,20 @@ export async function fetchRe001ScanComparison(scanRunId: string): Promise<{
     is_mismatch?: boolean | null;
   }>;
 }> {
-  const response = await fetchWithDiagnostics(
-    `/api/v1/recommendation-lab/scans/${encodeURIComponent(scanRunId)}/comparison`,
-    { method: "GET" },
-    "RE-001 lab scan comparison",
+  const key = `re001_scan_comparison:${scanRunId}`;
+  return cachedFetch(
+    key,
+    async () => {
+      const response = await fetchWithDiagnostics(
+        `/api/v1/recommendation-lab/scans/${encodeURIComponent(scanRunId)}/comparison`,
+        { method: "GET" },
+        "RE-001 lab scan comparison",
+      );
+      if (!response.ok) throw mapHttpError(response.status, response.url);
+      return response.json();
+    },
+    { force, swr: !force, ttlMs: 5 * 60 * 1000, softTimeoutMs: 3000 },
   );
-  if (!response.ok) {
-    throw mapHttpError(response.status, response.url);
-  }
-  return response.json();
 }
 
 /** RE-001 latest decision for a symbol */
@@ -1681,21 +1890,176 @@ export async function fetchRe001SymbolLatest(symbol: string): Promise<Record<str
 }
 
 /** RE-001 engine registration / stage */
-export async function fetchRe001Registration(): Promise<{
+export async function fetchRe001Registration(force = false): Promise<{
   engine_id: string;
   name: string;
   engine_version: string;
   stage: string;
   enabled: boolean;
 }> {
+  return cachedFetch(
+    "re001_registration",
+    async () => {
+      const response = await fetchWithDiagnostics(
+        "/api/v1/recommendation-lab/registration",
+        { method: "GET" },
+        "RE-001 registration",
+      );
+      if (!response.ok) throw mapHttpError(response.status, response.url);
+      return response.json();
+    },
+    { force, swr: !force, ttlMs: 10 * 60 * 1000, softTimeoutMs: 2500 },
+  );
+}
+
+/** RE-002 latest decision for a symbol */
+export async function fetchRe002SymbolLatest(symbol: string): Promise<Record<string, unknown>> {
   const response = await fetchWithDiagnostics(
-    "/api/v1/recommendation-lab/registration",
+    `/api/v1/recommendation-lab/re002/symbols/${encodeURIComponent(symbol)}/latest`,
     { method: "GET" },
-    "RE-001 registration",
+    "RE-002 lab symbol latest",
   );
   if (!response.ok) {
     throw mapHttpError(response.status, response.url);
   }
   return response.json();
+}
+
+/** RE-002 recent scan cohorts (independent of RE-001) */
+export async function fetchRe002RecentScans(
+  limit = 20,
+  opts?: { minDecisions?: number; preferCohorts?: boolean; force?: boolean },
+): Promise<{
+  items: Array<{
+    scan_run_id: string;
+    decision_count: number;
+    latest_created_at?: string | null;
+  }>;
+}> {
+  const key = `re002_recent_scans:${limit}:${opts?.minDecisions ?? 1}:${opts?.preferCohorts ?? true}`;
+  return cachedFetch(
+    key,
+    async () => {
+      const params = new URLSearchParams({
+        limit: String(limit),
+        min_decisions: String(opts?.minDecisions ?? 1),
+        prefer_cohorts: String(opts?.preferCohorts ?? true),
+      });
+      const response = await fetchWithDiagnostics(
+        `/api/v1/recommendation-lab/re002/scans/recent?${params}`,
+        { method: "GET" },
+        "RE-002 recent scans",
+      );
+      if (!response.ok) throw mapHttpError(response.status, response.url);
+      return response.json();
+    },
+    { force: opts?.force, swr: !opts?.force, ttlMs: 2 * 60 * 1000, softTimeoutMs: 3000 },
+  );
+}
+
+/** RE-002 paged decision history */
+export async function fetchRe002History(params?: {
+  experiment_id?: string;
+  symbol?: string;
+  state?: string;
+  limit?: number;
+  offset?: number;
+}): Promise<{
+  engine_id: string;
+  total: number;
+  limit: number;
+  offset: number;
+  items: Array<Record<string, unknown>>;
+}> {
+  const q = new URLSearchParams();
+  if (params?.experiment_id) q.set("experiment_id", params.experiment_id);
+  if (params?.symbol) q.set("symbol", params.symbol);
+  if (params?.state) q.set("state", params.state);
+  if (params?.limit != null) q.set("limit", String(params.limit));
+  if (params?.offset != null) q.set("offset", String(params.offset));
+  const response = await fetchWithDiagnostics(
+    `/api/v1/recommendation-lab/re002/history?${q}`,
+    { method: "GET" },
+    "RE-002 history",
+  );
+  if (!response.ok) {
+    throw mapHttpError(response.status, response.url);
+  }
+  return response.json();
+}
+
+/** RE-002 scan comparison */
+export async function fetchRe002ScanComparison(scanRunId: string, force = false): Promise<{
+  scan_run_id: string;
+  items: Array<{
+    symbol: string;
+    recommendation_id: string;
+    production_action?: string | null;
+    production_score?: number | null;
+    re002_state: string;
+    confidence_score: number;
+    strategy_name?: string | null;
+    strategy_family?: string | null;
+    is_mismatch?: boolean | null;
+    experiment_id?: string | null;
+  }>;
+}> {
+  const key = `re002_scan_comparison:${scanRunId}`;
+  return cachedFetch(
+    key,
+    async () => {
+      const response = await fetchWithDiagnostics(
+        `/api/v1/recommendation-lab/re002/scans/${encodeURIComponent(scanRunId)}/comparison`,
+        { method: "GET" },
+        "RE-002 lab scan comparison",
+      );
+      if (!response.ok) throw mapHttpError(response.status, response.url);
+      return response.json();
+    },
+    { force, swr: !force, ttlMs: 5 * 60 * 1000, softTimeoutMs: 3000 },
+  );
+}
+
+/** RE-002 engine registration / stage */
+export async function fetchRe002Registration(force = false): Promise<{
+  engine_id: string;
+  name: string;
+  engine_version: string;
+  stage: string;
+  enabled: boolean;
+  experiment_id?: string | null;
+  active?: boolean;
+}> {
+  return cachedFetch(
+    "re002_registration",
+    async () => {
+      const response = await fetchWithDiagnostics(
+        "/api/v1/recommendation-lab/re002/registration",
+        { method: "GET" },
+        "RE-002 registration",
+      );
+      if (!response.ok) throw mapHttpError(response.status, response.url);
+      return response.json();
+    },
+    { force, swr: !force, ttlMs: 10 * 60 * 1000, softTimeoutMs: 2500 },
+  );
+}
+
+/** RE-002 health segment */
+export async function fetchRe002Health(days = 7, force = false): Promise<Record<string, unknown>> {
+  const key = `re002_health:${days}`;
+  return cachedFetch(
+    key,
+    async () => {
+      const response = await fetchWithDiagnostics(
+        `/api/v1/recommendation-lab/re002/health?days=${days}`,
+        { method: "GET" },
+        "RE-002 health",
+      );
+      if (!response.ok) throw mapHttpError(response.status, response.url);
+      return response.json();
+    },
+    { force, swr: !force, ttlMs: 2 * 60 * 1000, softTimeoutMs: 3000 },
+  );
 }
 

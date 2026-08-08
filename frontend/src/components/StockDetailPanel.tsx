@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useRef } from "react";
+import { Component, useEffect, useMemo, useState, useRef, type ErrorInfo, type ReactNode } from "react";
 import {
   Bar,
   CartesianGrid,
@@ -25,12 +25,34 @@ import { getCached } from "../utils/appCache";
 import { isPrefetched } from "../utils/researchPrefetcher";
 import { ResearchDashboard } from "./ResearchDashboard";
 import { Re001DetailSection } from "./Re001DetailSection";
+import { Re002DetailSection } from "./Re002DetailSection";
 
 type StockDetailPanelProps = {
   row: CandidateRow | null;
   onBack?: () => void;
   onSendToPaperTrading?: (row: CandidateRow, suggestedEntry?: number | null, side?: "BUY" | "SELL") => void;
+  /**
+   * Originating scanner recommendation engine (Production | RE-001 | RE-002).
+   * Shown as a chip beside "Back to scan results" so multi-engine context is visible.
+   */
+  originEngine?: string | null;
 };
+
+/** Reuse Paper Desk engine-badge classes (no new design). */
+function originEngineBadgeClass(engine: string): string {
+  const upper = engine.trim().toUpperCase();
+  if (upper === "RE-001" || upper === "RE001") return "engine-badge engine-badge--re001";
+  if (upper === "RE-002" || upper === "RE002") return "engine-badge engine-badge--re002";
+  return "engine-badge engine-badge--production";
+}
+
+function formatOriginEngineLabel(engine: string): string {
+  const upper = engine.trim().toUpperCase();
+  if (upper === "PRODUCTION" || upper === "PROD" || upper === "BASELINE") return "Production";
+  if (upper === "RE-001" || upper === "RE001") return "RE-001";
+  if (upper === "RE-002" || upper === "RE002") return "RE-002";
+  return engine.trim() || "Production";
+}
 
 const TABS: { id: DetailTab; label: string }[] = [
   { id: "research", label: "Research" },
@@ -42,13 +64,38 @@ const TABS: { id: DetailTab; label: string }[] = [
   { id: "chart", label: "Chart" },
 ];
 
-export function StockDetailPanel({ row, onBack, onSendToPaperTrading }: StockDetailPanelProps) {
+export function StockDetailPanel({ row, onBack, onSendToPaperTrading, originEngine }: StockDetailPanelProps) {
   const [tab, setTab] = useState<DetailTab>("research");
   const [riskAmount, setRiskAmount] = useState(5000);
   const [symbolDetail, setSymbolDetail] = useState<SymbolDetail | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
   const fetchAttempted = useRef(false);
+  const engineLabel = originEngine ? formatOriginEngineLabel(originEngine) : null;
+
+  // Hooks must run unconditionally (before any early return).
+  const analysis = row?.analysisItem;
+  const technical =
+    analysis?.technical?.find((item) => item.mode === "swing") ?? analysis?.technical?.[0];
+  const plan =
+    analysis?.recommendation?.trade_plans?.find((item) => item.mode === "swing") ??
+    analysis?.recommendation?.trade_plans?.[0];
+  const backtest =
+    analysis?.backtests?.find((item) => item.mode === "swing") ?? analysis?.backtests?.[0];
+
+  const currentPrice = useMemo(() => {
+    if (!row) return 0;
+    const series = symbolDetail?.ohlcv?.length
+      ? symbolDetail.ohlcv
+      : analysis?.ohlcv?.length
+        ? analysis.ohlcv
+        : undefined;
+    if (series && series.length) {
+      const close = series[series.length - 1]?.close;
+      return typeof close === "number" && Number.isFinite(close) ? close : 0;
+    }
+    return row.entryLow ?? row.entryHigh ?? 0;
+  }, [symbolDetail, analysis, row]);
 
   useEffect(() => {
     let mounted = true;
@@ -99,17 +146,7 @@ export function StockDetailPanel({ row, onBack, onSendToPaperTrading }: StockDet
     );
   }
 
-  const analysis = row.analysisItem;
-  const technical = analysis?.technical.find((item) => item.mode === "swing") ?? analysis?.technical[0];
-  const plan = analysis?.recommendation.trade_plans.find((item) => item.mode === "swing") ?? analysis?.recommendation.trade_plans[0];
-  const backtest = analysis?.backtests.find((item) => item.mode === "swing") ?? analysis?.backtests[0];
   const rankReason = buildRankContext(row);
-
-  const currentPrice = useMemo(() => {
-    const series = symbolDetail?.ohlcv?.length ? symbolDetail!.ohlcv! : analysis?.ohlcv?.length ? analysis!.ohlcv : undefined;
-    if (series && series.length) return series[series.length - 1].close;
-    return row.entryLow ?? row.entryHigh ?? 0;
-  }, [symbolDetail, analysis, row]);
 
   return (
     <section className="detail-panel panel">
@@ -124,6 +161,17 @@ export function StockDetailPanel({ row, onBack, onSendToPaperTrading }: StockDet
           >
             ← Back to scan results
           </button>
+          {engineLabel ? (
+            <span
+              className={originEngineBadgeClass(engineLabel)}
+              data-testid="detail-origin-engine-badge"
+              title={`Recommendation Engine: ${engineLabel}`}
+              aria-label={`From recommendation engine ${engineLabel}`}
+              style={{ marginLeft: "auto" }}
+            >
+              {engineLabel}
+            </span>
+          ) : null}
         </div>
       ) : null}
       <div className="detail-header">
@@ -198,35 +246,89 @@ export function StockDetailPanel({ row, onBack, onSendToPaperTrading }: StockDet
       </div>
 
       <div className="detail-content">
-        {tab === "research" ? (
-          <ResearchDashboard
-            research={symbolDetail?.research as Record<string, unknown> | null | undefined}
-            symbol={row.symbol}
-            loading={loadingDetail}
-            error={detailError}
-          />
-        ) : null}
-        {tab === "overview" ? (
-          <OverviewTab analysis={analysis} row={row} rankReason={rankReason} symbolDetail={symbolDetail} currentPrice={currentPrice} loadingDetail={loadingDetail} onSendToPaperTrading={onSendToPaperTrading} />
-        ) : null}
-        {tab === "technicals" ? (
-          <TechnicalsTab technical={technical} row={row} symbolDetail={symbolDetail} />
-        ) : null}
-        {tab === "trade-plan" ? (
-          <TradePlanTab plan={plan} row={row} riskAmount={riskAmount} onRiskAmountChange={setRiskAmount} symbolDetail={symbolDetail} currentPrice={currentPrice} />
-        ) : null}
-        {tab === "news" ? (
-          <NewsTab analysis={analysis} row={row} symbolDetail={symbolDetail} />
-        ) : null}
-        {tab === "backtest" ? (
-          <BacktestTab backtest={backtest} backtestDetail={symbolDetail?.backtest_extras ?? null} />
-        ) : null}
-        {tab === "chart" ? (
-          <ChartTab analysis={analysis} plan={plan} />
-        ) : null}
+        <DetailTabErrorBoundary tabId={tab} key={tab}>
+          {tab === "research" ? (
+            <ResearchDashboard
+              research={symbolDetail?.research as Record<string, unknown> | null | undefined}
+              symbol={row.symbol}
+              loading={loadingDetail}
+              error={detailError}
+            />
+          ) : null}
+          {tab === "overview" ? (
+            <OverviewTab
+              analysis={analysis}
+              row={row}
+              rankReason={rankReason}
+              symbolDetail={symbolDetail}
+              currentPrice={currentPrice}
+              loadingDetail={loadingDetail}
+              onSendToPaperTrading={onSendToPaperTrading}
+            />
+          ) : null}
+          {tab === "technicals" ? (
+            <TechnicalsTab technical={technical} row={row} symbolDetail={symbolDetail} />
+          ) : null}
+          {tab === "trade-plan" ? (
+            <TradePlanTab
+              plan={plan}
+              row={row}
+              riskAmount={riskAmount}
+              onRiskAmountChange={setRiskAmount}
+              symbolDetail={symbolDetail}
+              currentPrice={currentPrice}
+            />
+          ) : null}
+          {tab === "news" ? (
+            <NewsTab analysis={analysis} row={row} symbolDetail={symbolDetail} />
+          ) : null}
+          {tab === "backtest" ? (
+            <BacktestTab backtest={backtest} backtestDetail={symbolDetail?.backtest_extras ?? null} />
+          ) : null}
+          {tab === "chart" ? <ChartTab analysis={analysis} plan={plan} /> : null}
+        </DetailTabErrorBoundary>
       </div>
     </section>
   );
+}
+
+/** Isolate tab render failures so the shell (header + tabs) never goes blank. */
+class DetailTabErrorBoundary extends Component<
+  { tabId: string; children: ReactNode },
+  { error: string | null }
+> {
+  state: { error: string | null } = { error: null };
+
+  static getDerivedStateFromError(error: Error) {
+    return { error: error?.message || "Tab failed to render" };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error("[StockDetailPanel] tab render failed", {
+      tab: this.props.tabId,
+      error,
+      info,
+    });
+  }
+
+  componentDidUpdate(prevProps: { tabId: string }) {
+    if (prevProps.tabId !== this.props.tabId && this.state.error) {
+      this.setState({ error: null });
+    }
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <section className="subpanel" role="alert" data-testid="detail-tab-error">
+          <h3>This tab could not be displayed</h3>
+          <p className="muted-copy">{this.state.error}</p>
+          <p className="helper-text">Try another tab or go back to scan results. The stock header remains available.</p>
+        </section>
+      );
+    }
+    return this.props.children;
+  }
 }
 
 function OverviewTab({
@@ -246,11 +348,18 @@ function OverviewTab({
   loadingDetail?: boolean;
   onSendToPaperTrading?: (row: CandidateRow, suggestedEntry?: number | null, side?: "BUY" | "SELL") => void;
 }) {
+  const reco = analysis?.recommendation;
+  const reasoning = reco?.reasoning;
+  const techScore = row.screenerMatch?.technical_score;
+  const scanScore = row.screenerMatch?.screener_score;
+  const newsLabel = analysis?.news_sentiment_label;
+  const newsScore = analysis?.news_sentiment_score;
+
   return (
     <div className="detail-grid">
       <section className="subpanel">
         <h3>Recommendation overview</h3>
-        <p className="muted-copy">{analysis?.recommendation.summary ?? row.recommendationSummary}</p>
+        <p className="muted-copy">{reco?.summary ?? row.recommendationSummary}</p>
         <Re001DetailSection
           decision={
             (analysis as { lab_engines?: { "RE-001"?: Record<string, unknown> } } | undefined)?.lab_engines?.[
@@ -259,11 +368,30 @@ function OverviewTab({
           }
           symbol={row.symbol}
         />
+        <Re002DetailSection
+          decision={
+            (analysis as { lab_engines?: { "RE-002"?: Record<string, unknown> } } | undefined)?.lab_engines?.[
+              "RE-002"
+            ] as import("./Re002DetailSection").Re002DecisionSummary | undefined
+          }
+          symbol={row.symbol}
+        />
         <div className="reason-columns">
-          <ReasonList title="Top reasons" items={analysis?.recommendation.reasoning.bullets ?? [row.recommendationSummary]} />
+          <ReasonList
+            title="Top reasons"
+            items={
+              Array.isArray(reasoning?.bullets) && reasoning!.bullets!.length
+                ? reasoning!.bullets!
+                : [row.recommendationSummary || "No detailed reasons available."]
+            }
+          />
           <ReasonList
             title="Risk warnings"
-            items={analysis?.recommendation.reasoning.risk_factors ?? ["Full analysis did not return extra risk factors for this name."]}
+            items={
+              Array.isArray(reasoning?.risk_factors) && reasoning!.risk_factors!.length
+                ? reasoning!.risk_factors!
+                : ["Full analysis did not return extra risk factors for this name."]
+            }
           />
         </div>
         <div className="info-cards info-cards--stack">
@@ -293,11 +421,23 @@ function OverviewTab({
         <h3>Ranking context</h3>
         <div className="score-breakdown">
           <MetricTile label="Final score" value={row.score === null || row.score === undefined ? "N/A" : row.score.toFixed(1)} help="Combined recommendation score." />
-          <MetricTile label="Technical" value={row.screenerMatch?.technical_score.toFixed(1) ?? "--"} help="Technical engine strength before recommendation." />
-          <MetricTile label="Scanner" value={row.screenerMatch?.screener_score.toFixed(1) ?? "--"} help="Weighted screener score used for shortlisting." />
+          <MetricTile
+            label="Technical"
+            value={typeof techScore === "number" ? techScore.toFixed(1) : "--"}
+            help="Technical engine strength before recommendation."
+          />
+          <MetricTile
+            label="Scanner"
+            value={typeof scanScore === "number" ? scanScore.toFixed(1) : "--"}
+            help="Weighted screener score used for shortlisting."
+          />
           <MetricTile
             label="News"
-            value={analysis ? `${analysis.news_sentiment_label} (${analysis.news_sentiment_score.toFixed(2)})` : "--"}
+            value={
+              analysis
+                ? `${newsLabel ?? "n/a"}${typeof newsScore === "number" ? ` (${newsScore.toFixed(2)})` : ""}`
+                : "--"
+            }
             help="How recent news supports or weakens the setup."
           />
         </div>
@@ -525,7 +665,17 @@ function TechnicalsTab({
           </div>
         ) : null}
         <div className="score-breakdown">
-          <MetricTile label="Technical score" value={technical?.score.toFixed(1) ?? row.screenerMatch?.technical_score.toFixed(1) ?? "--"} help="Overall technical strength." />
+          <MetricTile
+            label="Technical score"
+            value={
+              typeof technical?.score === "number"
+                ? technical.score.toFixed(1)
+                : typeof row.screenerMatch?.technical_score === "number"
+                  ? row.screenerMatch.technical_score.toFixed(1)
+                  : "--"
+            }
+            help="Overall technical strength."
+          />
           <MetricTile label="Trend" value={row.trend} help="Trend combines EMA, Supertrend, and higher timeframe alignment." />
           <MetricTile label="Momentum" value={row.momentum} help="Momentum uses MACD and RSI support." />
           <MetricTile label="Structure" value={formatValue(indicators["structure_score"])} help="Structure score counts recent HH/HL confirmations." />
@@ -711,30 +861,64 @@ function TradePlanTab({
     );
   }
 
-  const entryMid = (plan.entry_low + plan.entry_high) / 2;
-  const riskPerShare = Math.abs(entryMid - plan.stop_loss);
-  const rewardPerShare = Math.abs(plan.target_1 - entryMid);
+  // Lab engines may omit levels (null) — never call .toFixed on null/undefined.
+  const entryLow = numOrNull(plan.entry_low);
+  const entryHigh = numOrNull(plan.entry_high);
+  const stopLoss = numOrNull(plan.stop_loss);
+  const target1 = numOrNull(plan.target_1);
+  const target2 = numOrNull(plan.target_2);
+  const rr = numOrNull(plan.risk_reward_ratio);
+  const priceRef =
+    entryMidFrom(entryLow, entryHigh) ??
+    numOrNull(currentPrice) ??
+    numOrNull(row.entryLow) ??
+    numOrNull(row.entryHigh);
+  const entryMid = entryMidFrom(entryLow, entryHigh) ?? priceRef ?? 0;
+  const riskPerShare =
+    stopLoss != null && entryMid > 0 ? Math.abs(entryMid - stopLoss) : 0;
+  const rewardPerShare =
+    target1 != null && entryMid > 0 ? Math.abs(target1 - entryMid) : 0;
   const positionSize = riskPerShare > 0 ? Math.floor(riskAmount / riskPerShare) : 0;
+  const invalidation =
+    row.analysisItem?.recommendation?.reasoning?.invalidation_signals;
+  const invalidationItems =
+    Array.isArray(invalidation) && invalidation.length
+      ? invalidation
+      : ["Exit the idea if price loses structure and closes below the planned stop."];
 
   return (
     <div className="detail-stack">
       <section className="tradeplan-hero">
         <div>
           <p className="section-label">Execution plan</p>
-          <h3>{plan.setup_type}</h3>
-          <p className="muted-copy">{plan.notes}</p>
+          <h3>{plan.setup_type || "Swing plan"}</h3>
+          <p className="muted-copy">{plan.notes || "Levels from recommendation engine (partial levels shown as —)."}</p>
         </div>
         <div className="tradeplan-grid">
-          <MetricTile label="Entry zone" value={`${plan.entry_low.toFixed(2)} - ${plan.entry_high.toFixed(2)}`} help="Preferred swing entry area." />
-          <MetricTile label="Stop loss" value={plan.stop_loss.toFixed(2)} help="If price breaks this, the setup is invalidated." />
-          <MetricTile label="Target 1" value={plan.target_1.toFixed(2)} help="First realistic swing objective." />
-          <MetricTile label="Target 2" value={plan.target_2.toFixed(2)} help="Second objective if momentum continues." />
+          <MetricTile
+            label="Entry zone"
+            value={
+              entryLow != null || entryHigh != null
+                ? `${fmtPrice(entryLow)} - ${fmtPrice(entryHigh)}`
+                : priceRef != null
+                  ? `≈ ${fmtPrice(priceRef)}`
+                  : "—"
+            }
+            help="Preferred swing entry area."
+          />
+          <MetricTile label="Stop loss" value={fmtPrice(stopLoss)} help="If price breaks this, the setup is invalidated." />
+          <MetricTile label="Target 1" value={fmtPrice(target1)} help="First realistic swing objective." />
+          <MetricTile label="Target 2" value={fmtPrice(target2)} help="Second objective if momentum continues." />
         </div>
       </section>
       <section className="subpanel">
         <h3>Exit Strategy</h3>
         <div className="muted-copy" style={{ marginTop: 8 }}>
-          {`Exit 50% position at Target 1 (₹${plan.target_1.toFixed(2)}). Move stop loss to entry price. Let remaining 50% ride to Target 2 (₹${plan.target_2.toFixed(2)}).`}
+          {target1 != null && target2 != null
+            ? `Exit 50% position at Target 1 (₹${fmtPrice(target1)}). Move stop loss to entry price. Let remaining 50% ride to Target 2 (₹${fmtPrice(target2)}).`
+            : target1 != null
+              ? `Consider taking profits near Target 1 (₹${fmtPrice(target1)}) and manage the remainder with structure / trailing stop.`
+              : "Exit levels incomplete for this plan — use stop and structure rules, or wait for a fuller recommendation."}
         </div>
 
         <div style={{ marginTop: 12 }}>
@@ -742,7 +926,8 @@ function TradePlanTab({
             <MetricTile
               label="Trailing Stop"
               value={
-                symbolDetail?.technical_extras?.atr != null
+                symbolDetail?.technical_extras?.atr != null &&
+                Number.isFinite(Number(symbolDetail.technical_extras.atr))
                   ? `₹${Number(symbolDetail.technical_extras.atr).toFixed(2)} below current price (1× ATR)`
                   : "--"
               }
@@ -750,7 +935,7 @@ function TradePlanTab({
             />
             <MetricTile
               label="Suggested Holding"
-              value={plan.suggested_holding_days ?? (plan as any).holding_horizon ?? plan.timeframe ?? "--"}
+              value={plan.suggested_holding_days ?? (plan as { holding_horizon?: string }).holding_horizon ?? plan.timeframe ?? "--"}
               help="Suggested holding period for the trade"
             />
           </div>
@@ -761,15 +946,24 @@ function TradePlanTab({
         <div className="subpanel">
           <h3>Trade mechanics</h3>
           <div className="score-breakdown">
-            <MetricTile label="Bias" value={plan.bias} help="Direction of the setup." />
-            <MetricTile label="Risk / share" value={riskPerShare.toFixed(2)} help="Distance from entry midpoint to stop loss." />
-            <MetricTile label="Reward / share" value={rewardPerShare.toFixed(2)} help="Distance from entry midpoint to first target." />
-            <MetricTile label="Risk / Reward" value={plan.risk_reward_ratio.toFixed(2)} help="Higher is better if the setup quality also holds." />
+            <MetricTile label="Bias" value={plan.bias || "—"} help="Direction of the setup." />
+            <MetricTile
+              label="Risk / share"
+              value={riskPerShare > 0 ? riskPerShare.toFixed(2) : "—"}
+              help="Distance from entry midpoint to stop loss."
+            />
+            <MetricTile
+              label="Reward / share"
+              value={rewardPerShare > 0 ? rewardPerShare.toFixed(2) : "—"}
+              help="Distance from entry midpoint to first target."
+            />
+            <MetricTile
+              label="Risk / Reward"
+              value={rr != null ? rr.toFixed(2) : "—"}
+              help="Higher is better if the setup quality also holds."
+            />
           </div>
-          <ReasonList
-            title="Invalidation"
-            items={row.analysisItem?.recommendation.reasoning.invalidation_signals ?? ["Exit the idea if price loses structure and closes below the planned stop."]}
-          />
+          <ReasonList title="Invalidation" items={invalidationItems} />
         </div>
 
         <div className="subpanel">
@@ -779,9 +973,9 @@ function TradePlanTab({
             <input type="number" min={100} step={100} value={riskAmount} onChange={(event) => onRiskAmountChange(Number(event.target.value))} />
           </label>
           <div className="score-breakdown">
-            <MetricTile label="Suggested quantity" value={positionSize} help="Estimated quantity using risk amount / risk per share." />
-            <MetricTile label="Holding horizon" value={plan.timeframe} help="Expected swing holding window." />
-            <MetricTile label="Strategy" value={plan.strategy_name} help="Backtest strategy used for context." />
+            <MetricTile label="Suggested quantity" value={positionSize > 0 ? positionSize : "—"} help="Estimated quantity using risk amount / risk per share." />
+            <MetricTile label="Holding horizon" value={plan.timeframe || "—"} help="Expected swing holding window." />
+            <MetricTile label="Strategy" value={plan.strategy_name || "—"} help="Backtest strategy used for context." />
             <MetricTile label="Signal" value={row.signal} help="Recommendation outcome for this setup." />
           </div>
         </div>
@@ -817,7 +1011,9 @@ function NewsTab({ analysis, row, symbolDetail }: { analysis?: StockAnalysisResu
               {analysis?.news_sentiment_label ?? row.newsSentiment}
             </span>
             <span className="helper-chip">
-              {analysis ? analysis.news_sentiment_score.toFixed(2) : "--"}
+              {analysis && typeof analysis.news_sentiment_score === "number"
+                ? analysis.news_sentiment_score.toFixed(2)
+                : "--"}
             </span>
             <span className="helper-chip" style={{ marginLeft: 8, background: sentimentColor(socialSentiment), color: "var(--text)" }}>
               Sentiment Score: {socialSentiment == null ? "--" : String(socialSentiment)}
@@ -1148,11 +1344,20 @@ function CandlestickChart({ candles, plan }: { candles: OHLCVPoint[]; plan?: Tra
     }
   }
   const tradeLevels = [
-    { label: "Entry", value: plan ? (plan.entry_low + plan.entry_high) / 2 : null, className: "chart-line-entry" },
-    { label: "Stop", value: plan?.stop_loss ?? null, className: "chart-line-stop" },
-    { label: "T1", value: plan?.target_1 ?? null, className: "chart-line-target" },
-    { label: "T2", value: plan?.target_2 ?? null, className: "chart-line-target" },
-  ].filter((item) => item.value !== null) as { label: string; value: number; className: string }[];
+    {
+      label: "Entry",
+      value: plan
+        ? entryMidFrom(numOrNull(plan.entry_low), numOrNull(plan.entry_high))
+        : null,
+      className: "chart-line-entry",
+    },
+    { label: "Stop", value: numOrNull(plan?.stop_loss), className: "chart-line-stop" },
+    { label: "T1", value: numOrNull(plan?.target_1), className: "chart-line-target" },
+    { label: "T2", value: numOrNull(plan?.target_2), className: "chart-line-target" },
+  ].filter(
+    (item): item is { label: string; value: number; className: string } =>
+      item.value != null && Number.isFinite(item.value),
+  );
 
   return (
     <div className="subpanel chart-shell" style={{ position: "relative" }}>
@@ -1327,13 +1532,32 @@ function buildPath(series: number[], xFor: (index: number) => number, yFor: (pri
 }
 
 function formatValue(value: unknown) {
-  if (typeof value === "number") {
+  if (typeof value === "number" && Number.isFinite(value)) {
     return value.toFixed(2);
   }
   if (typeof value === "boolean") {
     return value ? "Yes" : "No";
   }
   return String(value ?? "--");
+}
+
+/** Safe numeric parse — never throws on null/undefined/NaN. */
+function numOrNull(value: unknown): number | null {
+  if (value == null || value === "") return null;
+  const n = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function fmtPrice(value: number | null | undefined): string {
+  const n = numOrNull(value);
+  return n != null ? n.toFixed(2) : "—";
+}
+
+function entryMidFrom(low: number | null, high: number | null): number | null {
+  if (low != null && high != null) return (low + high) / 2;
+  if (high != null) return high;
+  if (low != null) return low;
+  return null;
 }
 
 function formatDate(input?: string | null) {

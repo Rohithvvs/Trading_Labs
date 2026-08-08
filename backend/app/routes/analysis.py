@@ -108,6 +108,7 @@ async def screener_full(
     re001_user_id = str(getattr(user, "id", "") or "") or None
 
     q: asyncio.Queue = asyncio.Queue(maxsize=200)
+    entry_t0 = time.perf_counter()
 
     # Seed the queue immediately so the SSE stream has something to send as soon
     # as the client connects — never leave the UI at "Connecting data feed..."
@@ -123,35 +124,53 @@ async def screener_full(
     from ..services.scan_execution_service import ScanExecutionService
     from ..services.lock_service import LockAcquisitionError
 
-    try:
-        # Always persist the full ScreenerResponse into market_data.scan_results so
-        # GET /analysis/scan/latest (and page refresh) returns THIS run, not an older
-        # scheduler/history snapshot.
-        await ScanExecutionService.execute_scan(
-            payload,
-            progress_queue=q,
-            trigger_source="ui",
-            save_history=True,
-            user_id=re001_user_id,
-        )
-        logger.info("[SCAN] Worker started; opening SSE stream | save_history=True")
-    except LockAcquisitionError as lock_exc:
-        logger.warning("[SCAN] Lock denied | reason=%s", lock_exc)
-        return JSONResponse(
-            status_code=200,
-            content={
-                "status": "scan_in_progress",
-                "message": str(lock_exc) or "Scan is already in progress.",
-            },
-        )
-    except Exception as start_exc:
-        logger.exception("[SCAN] Failed to start scan worker: %s", start_exc)
-        await q.put(
-            {
-                "status": "error",
-                "message": f"Failed to start scanner: {start_exc}",
-            }
-        )
+    async def _start_scan_worker() -> None:
+        """Acquire lock + launch workers WITHOUT blocking the HTTP response.
+
+        Root cause of "Scanner connection timed out after 30s": the previous
+        code `await execute_scan(...)` held response headers until the Neon
+        lock row was acquired (often 10–15s+ cold). The frontend connect race
+        aborts at 30s if headers never arrive.
+        """
+        try:
+            # Always persist the full ScreenerResponse into market_data.scan_results so
+            # GET /analysis/scan/latest (and page refresh) returns THIS run, not an older
+            # scheduler/history snapshot.
+            await ScanExecutionService.execute_scan(
+                payload,
+                progress_queue=q,
+                trigger_source="ui",
+                save_history=True,
+                user_id=re001_user_id,
+            )
+            logger.info(
+                "[SCAN] Worker started | save_history=True | t_start_ms=%.0f",
+                (time.perf_counter() - entry_t0) * 1000,
+            )
+        except LockAcquisitionError as lock_exc:
+            logger.warning("[SCAN] Lock denied | reason=%s", lock_exc)
+            await q.put(
+                {
+                    "status": "error",
+                    "code": "scan_in_progress",
+                    "message": str(lock_exc) or "Scan is already in progress.",
+                }
+            )
+        except Exception as start_exc:
+            logger.exception("[SCAN] Failed to start scan worker: %s", start_exc)
+            await q.put(
+                {
+                    "status": "error",
+                    "message": f"Failed to start scanner: {start_exc}",
+                }
+            )
+
+    # Fire-and-forget: open SSE stream immediately so the client leaves "Connecting..."
+    asyncio.create_task(_start_scan_worker())
+    logger.info(
+        "[SCAN] SSE stream opening (worker scheduled) | t_headers_ms=%.0f",
+        (time.perf_counter() - entry_t0) * 1000,
+    )
 
     async def event_stream():
         """SSE generator with server-side heartbeat to prevent proxy timeouts.
@@ -164,11 +183,19 @@ async def screener_full(
         last_yield_time = _time.monotonic()
         HEARTBEAT_INTERVAL = 5.0
         idle_ticks = 0
+        first_chunk = True
 
         while True:
             try:
                 msg = await asyncio.wait_for(q.get(), timeout=HEARTBEAT_INTERVAL)
                 idle_ticks = 0
+                if first_chunk:
+                    logger.info(
+                        "[SCAN] first SSE event | stage=%s | t_ms=%.0f",
+                        msg.get("stage") or msg.get("status"),
+                        (time.perf_counter() - entry_t0) * 1000,
+                    )
+                    first_chunk = False
                 if "status" in msg and msg["status"] in ("complete", "error"):
                     if "elapsed_sec" not in msg:
                         msg["elapsed_sec"] = round(_time.monotonic() - last_yield_time, 1)

@@ -52,8 +52,11 @@ def _prepare_asyncpg_url(raw_database_url: str) -> tuple[str, dict[str, object]]
 database_url, ssl_connect_args = _prepare_asyncpg_url(settings.database_url)
 connect_args.update(ssl_connect_args)
 
-# Increase connection timeout to 120s to allow Render free tier Postgres to wake up
+# Bound connect + statement time so health/auth cannot hang past client timeouts.
 if database_url.startswith("postgresql"):
+    # asyncpg: seconds to establish a connection (Neon cold-start is usually <15s).
+    connect_args["timeout"] = 15
+    # Per-statement budget once connected.
     connect_args["command_timeout"] = 120
     # Disable asyncpg prepared-statement LRU cache.
     # After ALTER TABLE / migrations (and with Neon / PgBouncer poolers), cached plans
