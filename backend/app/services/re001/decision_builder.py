@@ -12,6 +12,7 @@ from ...schemas.re001 import Re001DecisionObject, TradeGuidance
 from .context import LabExecutionContext
 from .decision_validator import coerce_state_for_reasons, validate_decision_object
 from .registry import get_re001_registration
+from .technicals import build_re001_technicals
 
 logger = logging.getLogger("app.re001")
 
@@ -24,6 +25,32 @@ def _clamp_confidence(raw: Any) -> float:
     if math.isnan(conf) or math.isinf(conf):
         return 0.0
     return max(0.0, min(1.0, conf))
+
+
+def _trade_guidance_from_re001(payload: dict[str, Any] | None) -> TradeGuidance | None:
+    """Prefer RE-001 risk plan (entry=trigger close, SL/TP from ATR/EMA rules)."""
+    if not payload:
+        return None
+    try:
+        entry = float(payload.get("entry_low") or payload.get("entry") or 0)
+        entry_high = float(payload.get("entry_high") or entry or 0)
+        stop_loss = float(payload.get("stop_loss") or 0)
+        target_1 = float(payload.get("target_1") or payload.get("take_profit") or 0)
+        rr = payload.get("risk_reward_ratio")
+        if entry <= 0 or stop_loss <= 0 or target_1 <= 0:
+            return None
+        complete = entry > 0 and entry_high >= entry and stop_loss > 0 and target_1 > 0
+        return TradeGuidance(
+            entry_low=entry,
+            entry_high=entry_high if entry_high > 0 else entry,
+            stop_loss=stop_loss,
+            target_1=target_1,
+            risk_reward_ratio=float(rr) if rr is not None else None,
+            complete=complete,
+        )
+    except Exception as exc:
+        logger.debug("RE-001 native trade guidance parse skipped | %s", exc)
+        return None
 
 
 def _trade_guidance_from_production(prod: Any | None) -> TradeGuidance | None:
@@ -84,7 +111,11 @@ def build_decision_object(
         except (TypeError, ValueError):
             prod_score = None
 
-    guidance = _trade_guidance_from_production(prod)
+    # Prefer RE-001 risk-derived guidance; fall back to production plans
+    guidance = _trade_guidance_from_re001(engine_result.get("trade_guidance_payload"))
+    if guidance is None or not guidance.complete:
+        guidance = _trade_guidance_from_production(prod)
+
     mismatch = None
     if prod_action:
         mismatch = prod_action.upper() != state
@@ -97,8 +128,45 @@ def build_decision_object(
         "regime_bucket": engine_result.get("market_regime"),
     }
 
+    # Pre-recommendation backtest envelope (technical score remains separate)
+    rec_bt = ctx.recommendation_backtest or engine_result.get("recommendation_backtest")
+    if rec_bt:
+        evidence["recommendation_backtest"] = rec_bt
+        if rec_bt.get("backtest_score") is not None:
+            evidence["backtest_score"] = rec_bt.get("backtest_score")
+        evidence["backtest_status"] = rec_bt.get("status") or rec_bt.get("backtest_status")
+        # Technical composite from RE-001 technical_analysis if present
+        tech_snap = engine_result.get("technical_analysis") or {}
+        if tech_snap.get("composite_score") is not None:
+            evidence["technical_score"] = tech_snap.get("composite_score")
+        evidence.setdefault(
+            "score_separation",
+            {
+                "technical_score": evidence.get("technical_score"),
+                "backtest_score": evidence.get("backtest_score"),
+                "note": "Technical and backtest scores are independent; backtest cannot create BUY.",
+            },
+        )
+
     conf = _clamp_confidence(engine_result.get("confidence_score"))
+    # Optional confidence blend when score-eligible backtest exists — never changes state
+    if (
+        rec_bt
+        and rec_bt.get("score_eligible")
+        and rec_bt.get("backtest_score") is not None
+        and state in {"BUY", "WATCH"}
+    ):
+        try:
+            bt_part = max(0.0, min(1.0, float(rec_bt["backtest_score"]) / 100.0))
+            conf = _clamp_confidence(conf * 0.75 + bt_part * 0.25)
+        except (TypeError, ValueError):
+            pass
     symbol = str(ctx.symbol or "").strip().upper() or None
+
+    # Single source of truth: use technical_analysis from engine evaluation when present
+    tech = engine_result.get("technical_analysis")
+    if not tech:
+        tech = build_re001_technicals(ctx.candles, ctx.technical_results)
 
     obj = Re001DecisionObject(
         recommendation_id=str(uuid.uuid4()),
@@ -114,6 +182,7 @@ def build_decision_object(
         risk_profile=engine_result.get("risk_profile") or {},
         portfolio_decision=engine_result.get("portfolio_decision") or {},
         evidence=evidence,
+        technical_analysis=tech,
         explanation=str(engine_result.get("explanation") or ""),
         timestamp=datetime.now(timezone.utc),
         reason_codes=reasons,

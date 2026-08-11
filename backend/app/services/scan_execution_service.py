@@ -177,6 +177,167 @@ class ScanExecutionService:
         )
         lock.start_heartbeat()
 
+        heartbeat_task = asyncio.create_task(
+            ScanExecutionService._heartbeat_sender(progress_queue, scan_id)
+        )
+
+        # Auto-fetch latest strategy-grade market data, then optional fail-closed gate.
+        try:
+            from ..services.market_data_ingestion.ensure import ensure_latest_market_data
+            from ..services.market_data_ingestion.freshness import evaluate_freshness
+            from ..config.settings import settings as _md_settings
+
+            _scan_state.update(stage="Ensuring market data...", progress=4)
+            await ScanExecutionService._emit(
+                progress_queue,
+                {
+                    "stage": "Ensuring latest market data...",
+                    "progress": 4,
+                    "scan_id": scan_id,
+                    "heartbeat": True,
+                },
+            )
+            logger.info(
+                "SCAN_STAGE_START | stage=ensure_market_data | scan_id=%s",
+                scan_id,
+            )
+            ensure_t0 = time.perf_counter()
+
+            def _ensure_progress(update: dict) -> None:
+                # Called from async ensure on the event loop — keep SSE queue warm.
+                stage = str(update.get("stage") or "Ensuring market data...")
+                prog = int(update.get("progress") or 4)
+                _scan_state.update(
+                    stage=stage,
+                    progress=prog,
+                    current_symbol=str(update.get("current_symbol") or ""),
+                    done=int(update.get("done") or 0),
+                    remaining=int(update.get("remaining") or 0),
+                    total=int(update.get("total_fetch") or 0),
+                )
+                if progress_queue is None:
+                    return
+                payload = {
+                    **update,
+                    "stage": stage,
+                    "progress": prog,
+                    "scan_id": scan_id,
+                    "heartbeat": True,
+                }
+                try:
+                    progress_queue.put_nowait(payload)
+                except asyncio.QueueFull:
+                    try:
+                        _ = progress_queue.get_nowait()
+                        progress_queue.put_nowait(payload)
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+
+            try:
+                # Hard outer budget: never hold the scanner at 4% past ~50s.
+                ensure_result = await asyncio.wait_for(
+                    ensure_latest_market_data(
+                        trigger_source="SCANNER",
+                        progress_callback=_ensure_progress,
+                        max_duration_s=45.0,
+                    ),
+                    timeout=50.0,
+                )
+            except asyncio.TimeoutError:
+                ensure_result = {
+                    "status": "TIMEOUT",
+                    "error": "ensure_outer_timeout",
+                    "duration_ms": int((time.perf_counter() - ensure_t0) * 1000),
+                }
+                logger.error(
+                    "SCAN_STAGE_END | stage=ensure_market_data | scan_id=%s | status=TIMEOUT | duration_ms=%s",
+                    scan_id,
+                    ensure_result["duration_ms"],
+                )
+
+            logger.info(
+                "ENSURE_MARKET_DATA_SCAN | scan_id=%s | status=%s | date=%s | "
+                "fetched=%s | duration_ms=%s | equity=%s | timed_out=%s",
+                scan_id,
+                ensure_result.get("status"),
+                ensure_result.get("data_date"),
+                ensure_result.get("fetched"),
+                ensure_result.get("duration_ms"),
+                (ensure_result.get("already_present") or {}).get("equity_coverage")
+                or (ensure_result.get("completeness") or {}).get("coverage_ratio"),
+                ensure_result.get("timed_out"),
+            )
+            logger.info(
+                "SCAN_STAGE_END | stage=ensure_market_data | scan_id=%s | status=%s | duration_ms=%.0f",
+                scan_id,
+                ensure_result.get("status"),
+                (time.perf_counter() - ensure_t0) * 1000,
+            )
+            await ScanExecutionService._emit(
+                progress_queue,
+                {
+                    "stage": (
+                        "Market data ready"
+                        if ensure_result.get("status") in {"ALREADY_FRESH", "SUCCESS"}
+                        else f"Market data {ensure_result.get('status')}"
+                    ),
+                    "progress": 6,
+                    "scan_id": scan_id,
+                    "heartbeat": True,
+                    "market_data_ensure": {
+                        "status": ensure_result.get("status"),
+                        "data_date": ensure_result.get("data_date"),
+                        "fetched": ensure_result.get("fetched"),
+                        "duration_ms": ensure_result.get("duration_ms"),
+                        "timed_out": ensure_result.get("timed_out"),
+                    },
+                },
+            )
+
+            if _md_settings.is_strategy_market_data_gate_enabled():
+                freshness = await evaluate_freshness()
+                if not freshness.ok:
+                    payload_stale = freshness.to_dict()
+                    logger.error(
+                        "MARKET_DATA_STALE | scan_id=%s | reason=%s | expected=%s | coverage=%.3f | index=%s",
+                        scan_id,
+                        payload_stale.get("reason"),
+                        payload_stale.get("expected_trade_date"),
+                        float(payload_stale.get("equity_coverage_ratio") or 0),
+                        payload_stale.get("index_present"),
+                    )
+                    await ScanExecutionService._emit(
+                        progress_queue,
+                        {
+                            "status": "error",
+                            "code": "MARKET_DATA_STALE",
+                            "message": payload_stale.get("message"),
+                            "scan_id": scan_id,
+                            **payload_stale,
+                        },
+                    )
+                    try:
+                        await lock.release()
+                    except Exception:
+                        pass
+                    raise RuntimeError(
+                        f"MARKET_DATA_STALE: {payload_stale.get('reason')} — {payload_stale.get('remediation')}"
+                    )
+        except RuntimeError:
+            heartbeat_task.cancel()
+            raise
+        except asyncio.CancelledError:
+            heartbeat_task.cancel()
+            raise
+        except Exception as gate_exc:
+            logger.warning(
+                "[SCAN] Market data ensure/gate skipped due to error | scan_id=%s | err=%s",
+                scan_id,
+                gate_exc,
+            )
+
         ScanExecutionService._active_scan_start = time.perf_counter()
         ScanExecutionService._active_scan_stage = "Starting scan..."
         _scan_state.update(stage="Starting scan...", progress=3, current_symbol="", done=0, remaining=0, total=0)
@@ -189,10 +350,6 @@ class ScanExecutionService:
                 "heartbeat": True,
                 "scan_id": scan_id,
             },
-        )
-
-        heartbeat_task = asyncio.create_task(
-            ScanExecutionService._heartbeat_sender(progress_queue, scan_id)
         )
 
         asyncio.create_task(
@@ -364,11 +521,33 @@ class ScanExecutionService:
             loop = asyncio.get_running_loop()
 
             def progress_callback(update_dict: dict):
-                if not update_dict.get("heartbeat"):
+                # Always refresh shared stage when a stage is provided — including
+                # heartbeat-flagged lab/ensure events. Previously heartbeat=True
+                # skipped _scan_state updates, so the 5s heartbeat re-broadcast
+                # "Running AI Analysis... (20/20)" while lab sector RS (712) ran.
+                stage_in = update_dict.get("stage")
+                has_stage = bool(stage_in)
+                is_pure_keepalive = bool(update_dict.get("heartbeat")) and not has_stage
+                if not is_pure_keepalive:
+                    # Monotonic progress: never move the bar backwards mid-scan.
+                    try:
+                        incoming_prog = update_dict.get("progress")
+                        if incoming_prog is not None:
+                            incoming_prog = int(incoming_prog)
+                            if incoming_prog < int(_scan_state.progress or 0):
+                                # Keep higher watermark but still update stage text.
+                                update_dict = {
+                                    **update_dict,
+                                    "progress": int(_scan_state.progress or 0),
+                                }
+                    except Exception:
+                        pass
                     _scan_state.update(
                         stage=update_dict.get("stage", _scan_state.stage),
                         progress=update_dict.get("progress", _scan_state.progress),
-                        current_symbol=update_dict.get("current_symbol", _scan_state.current_symbol),
+                        current_symbol=update_dict.get(
+                            "current_symbol", _scan_state.current_symbol
+                        ),
                         done=update_dict.get("done", _scan_state.done),
                         remaining=update_dict.get("remaining", _scan_state.remaining),
                         total=update_dict.get(
@@ -376,13 +555,21 @@ class ScanExecutionService:
                             update_dict.get("total_fetch", _scan_state.total),
                         ),
                     )
-                    logger.info(
-                        "[SCAN] progress | stage=%s | progress=%s | symbol=%s | done=%s",
-                        update_dict.get("stage"),
-                        update_dict.get("progress"),
-                        update_dict.get("current_symbol"),
-                        update_dict.get("done"),
-                    )
+                    if has_stage and not update_dict.get("heartbeat"):
+                        logger.info(
+                            "[SCAN] progress | stage=%s | progress=%s | symbol=%s | done=%s",
+                            update_dict.get("stage"),
+                            update_dict.get("progress"),
+                            update_dict.get("current_symbol"),
+                            update_dict.get("done"),
+                        )
+                    elif has_stage and update_dict.get("heartbeat"):
+                        logger.debug(
+                            "[SCAN] progress_heartbeat_stage | stage=%s | progress=%s | done=%s",
+                            update_dict.get("stage"),
+                            update_dict.get("progress"),
+                            update_dict.get("done"),
+                        )
                 if progress_queue is not None:
                     try:
                         loop.call_soon_threadsafe(progress_queue.put_nowait, update_dict)
@@ -454,19 +641,32 @@ class ScanExecutionService:
                 except Exception:
                     scan_timeout_sec = 600.0
                 scan_timeout_sec = max(30.0, min(scan_timeout_sec, 3600.0))
+                # Explicit task so timeout/cancel can await child teardown and release DB work.
+                scan_task = asyncio.create_task(
+                    RouterAgent(None).screener_full(
+                        payload, progress_callback=progress_callback
+                    ),
+                    name=f"screener_full:{scan_id}",
+                )
                 try:
-                    response = await asyncio.wait_for(
-                        RouterAgent(None).screener_full(
-                            payload, progress_callback=progress_callback
-                        ),
-                        timeout=scan_timeout_sec,
-                    )
+                    response = await asyncio.wait_for(scan_task, timeout=scan_timeout_sec)
                 except asyncio.TimeoutError as to_exc:
                     logger.error(
                         "[SCAN] SCAN_TIMEOUT_ABORT | Scan execution exceeded %.0fs timeout | scan_id=%s",
                         scan_timeout_sec,
                         scan_id,
                     )
+                    if not scan_task.done():
+                        scan_task.cancel()
+                        try:
+                            await asyncio.wait_for(scan_task, timeout=5.0)
+                        except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
+                            pass
+                        logger.warning(
+                            "[SCAN] SCAN_TASK_CANCELLED | scan_id=%s | task_done=%s",
+                            scan_id,
+                            scan_task.done(),
+                        )
                     try:
                         from ..observability.metrics import record_single_write_failure
                         record_single_write_failure(reason="timeout")
@@ -475,6 +675,14 @@ class ScanExecutionService:
                     raise TimeoutError(
                         f"Scan execution timed out after {scan_timeout_sec:.0f} seconds"
                     ) from to_exc
+                except asyncio.CancelledError:
+                    if not scan_task.done():
+                        scan_task.cancel()
+                        try:
+                            await scan_task
+                        except (asyncio.CancelledError, Exception):
+                            pass
+                    raise
 
                 duration_ms = int((time.perf_counter() - start_t) * 1000)
                 # Stamp completion time so UI "Last Scan Completed" and history
@@ -881,6 +1089,15 @@ class ScanExecutionService:
                     reset_scan_run_id(_re001_scan_tok)
                 if _re001_user_tok is not None:
                     reset_user_id(_re001_user_tok)
+            except Exception:
+                pass
+
+            # Drop scan-scoped market-regime ContextVar so the next scan cannot reuse a
+            # stale in-task value (process date cache remains valid for a short TTL).
+            try:
+                from ..services.scan_market_context import set_scan_market_regime
+
+                set_scan_market_regime(None)
             except Exception:
                 pass
 

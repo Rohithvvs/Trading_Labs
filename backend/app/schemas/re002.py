@@ -42,6 +42,7 @@ class Re002DecisionObject(BaseModel):
     risk_profile: dict[str, Any] | str = Field(default_factory=dict)
     portfolio_decision: dict[str, Any] | str = Field(default_factory=dict)
     evidence: dict[str, Any] = Field(default_factory=dict)
+    technical_analysis: dict[str, Any] | None = None
     explanation: str | dict[str, Any] = ""
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     reason_codes: list[str] = Field(default_factory=list)

@@ -234,6 +234,14 @@ def _lab_decisions_to_screener(
                 "trade_readiness": (
                     "Ready" if state == "BUY" else "Avoid" if state == "REJECT" else "Review manually"
                 ),
+                "lab_engines": {
+                    engine: {
+                        "engine_id": engine,
+                        "recommendation_state": state,
+                        "confidence_score": conf,
+                        "technical_analysis": getattr(row, "technical_analysis", None),
+                    }
+                },
             }
         )
 

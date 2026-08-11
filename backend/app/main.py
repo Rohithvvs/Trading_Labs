@@ -730,6 +730,34 @@ async def lifespan(app: FastAPI):
         coalesce=True,
     )
 
+    # JOB 9: Strategy-grade market data daily EOD update (post-close IST)
+    async def job_strategy_market_data_daily_update():
+        from .services.market_data_ingestion.pipelines.daily_update import run_daily_update
+        from .services.trading_hours_service import trading_hours
+
+        if not trading_hours.is_trading_day():
+            logger.info("STRATEGY_MARKET_DATA_DAILY_SKIP | reason=non_trading_day")
+            return
+        try:
+            result = await run_daily_update(trigger_source="SCHEDULE")
+            logger.info("STRATEGY_MARKET_DATA_DAILY_DONE | result=%s", result.get("status"))
+        except Exception:
+            logger.exception("STRATEGY_MARKET_DATA_DAILY_FAILED")
+
+    scheduler.add_job(
+        job_strategy_market_data_daily_update,
+        CronTrigger(
+            day_of_week="mon-fri",
+            hour=int(getattr(settings, "strategy_daily_update_hour_ist", 16) or 16),
+            minute=int(getattr(settings, "strategy_daily_update_minute_ist", 45) or 45),
+            timezone="Asia/Kolkata",
+        ),
+        id="strategy_market_data_daily_update",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
     # Clear in-memory FYERS quarantine on every app start
     from .services.fyers_service import QUARANTINED_SYMBOLS
     QUARANTINED_SYMBOLS.clear()

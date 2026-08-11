@@ -13,6 +13,7 @@ from ...schemas.re002 import Re002DecisionObject
 from .context import LabExecutionContext
 from .decision_validator import coerce_state_for_reasons, validate_decision_object
 from .registry import get_re002_registration
+from .technicals import build_re002_technicals
 
 logger = logging.getLogger("app.re002")
 
@@ -104,9 +105,60 @@ def build_decision_object(
         "regime_bucket": engine_result.get("market_regime"),
     }
 
+    rec_bt = ctx.recommendation_backtest or engine_result.get("recommendation_backtest")
+    if rec_bt:
+        evidence["recommendation_backtest"] = rec_bt
+        if rec_bt.get("backtest_score") is not None:
+            evidence["backtest_score"] = rec_bt.get("backtest_score")
+        evidence["backtest_status"] = rec_bt.get("status") or rec_bt.get("backtest_status")
+        evidence.setdefault(
+            "score_separation",
+            {
+                "technical_score": evidence.get("technical_score")
+                or evidence.get("rs", {}).get("technical_score"),
+                "backtest_score": evidence.get("backtest_score"),
+                "note": "Technical and backtest scores are independent; backtest cannot create BUY.",
+            },
+        )
+
     conf = _clamp_confidence(engine_result.get("confidence_score"))
+    if (
+        rec_bt
+        and rec_bt.get("score_eligible")
+        and rec_bt.get("backtest_score") is not None
+        and state in {"BUY", "WATCH"}
+    ):
+        try:
+            bt_part = max(0.0, min(1.0, float(rec_bt["backtest_score"]) / 100.0))
+            conf = _clamp_confidence(conf * 0.75 + bt_part * 0.25)
+        except (TypeError, ValueError):
+            pass
     symbol = str(ctx.symbol or "").strip().upper() or None
     experiment_id = ctx.experiment_id or reg.experiment_id
+
+    market_regime_dict = (
+        ctx.market_regime.model_dump()
+        if ctx.market_regime is not None and hasattr(ctx.market_regime, "model_dump")
+        else (ctx.market_regime if isinstance(ctx.market_regime, dict) else {})
+    )
+    sector_overlay_dict = (
+        ctx.sector_overlay.model_dump()
+        if ctx.sector_overlay is not None and hasattr(ctx.sector_overlay, "model_dump")
+        else (ctx.sector_overlay if isinstance(ctx.sector_overlay, dict) else {})
+    )
+    # Prefer technicals computed in engine_result when present (single source); else build here.
+    tech_analysis = engine_result.get("technical_analysis")
+    if not tech_analysis:
+        tech_analysis = build_re002_technicals(
+            ctx.candles,
+            sector_overlay_dict,
+            market_regime_dict,
+            benchmark_candles=list(ctx.benchmark_candles or []),
+            benchmark_symbol=ctx.benchmark_symbol,
+            symbol=ctx.symbol,
+            earnings_info=ctx.earnings_info,
+            as_of=ctx.scan_date,
+        )
 
     obj = Re002DecisionObject(
         recommendation_id=str(uuid.uuid4()),
@@ -123,6 +175,7 @@ def build_decision_object(
         risk_profile=engine_result.get("risk_profile") or {},
         portfolio_decision=engine_result.get("portfolio_decision") or {},
         evidence=evidence,
+        technical_analysis=tech_analysis,
         explanation=str(engine_result.get("explanation") or ""),
         timestamp=datetime.now(timezone.utc),
         reason_codes=reasons,

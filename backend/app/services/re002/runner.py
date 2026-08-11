@@ -24,6 +24,9 @@ logger = logging.getLogger("app.re002")
 
 def _evaluate_sync(ctx: LabExecutionContext) -> Re002DecisionObject:
     result = evaluate_re002(ctx)
+    if ctx.recommendation_backtest:
+        result = dict(result)
+        result["recommendation_backtest"] = ctx.recommendation_backtest
     return build_decision_object(ctx, result)
 
 
@@ -126,14 +129,66 @@ async def run_re002_isolated_async(
     analysis_history_id: int | None = None,
     experiment_id: str | None = None,
     db_session_factory: Any | None = None,
+    benchmark_candles: list[Any] | None = None,
+    benchmark_symbol: str | None = None,
+    earnings_info: dict[str, Any] | None = None,
+    run_recommendation_backtest: bool = True,
 ) -> Re002DecisionObject | None:
-    """Async RE-002 entry: never raises into production path; does not block event loop."""
+    """Async RE-002 entry: never raises into production path; does not block event loop.
+
+    ``run_recommendation_backtest=False`` skips the multi-second 3y backtest used on the
+    full stage-universe independent lab path (scanner residual budget).
+    """
     if not is_re002_active():
         return None
 
     reg = get_re002_registration()
     timeout_ms = float(getattr(settings, "re002_timeout_ms", 3000) or 3000)
     timeout_s = max(0.2, timeout_ms / 1000.0)
+
+    from ..lab_technical_precheck import precheck_re002
+    from ..recommendation_backtest import (
+        envelope_not_qualified,
+        envelope_skipped_bulk_lab,
+        run_three_year_backtest,
+    )
+
+    qualified, qual_reason, _tech_snap = await asyncio.to_thread(
+        precheck_re002,
+        candles=candles or [],
+        technical_results=technical_results or [],
+        market_regime=market_regime,
+        sector_overlay=sector_overlay,
+        benchmark_candles=benchmark_candles,
+        benchmark_symbol=benchmark_symbol,
+        symbol=symbol,
+        earnings_info=earnings_info,
+    )
+
+    rec_bt_dict: dict[str, Any] | None = None
+    bt_for_ctx = list(backtests or [])
+    if not qualified:
+        env = envelope_not_qualified(symbol, "RE-002", reason=qual_reason)
+        rec_bt_dict = env.to_dict()
+        bt_for_ctx = []
+    elif not run_recommendation_backtest:
+        env = envelope_skipped_bulk_lab(symbol, "RE-002")
+        rec_bt_dict = env.to_dict()
+        bt_for_ctx = list(backtests or [])
+    else:
+        env = await run_three_year_backtest(
+            symbol=symbol,
+            engine_id="RE-002",
+            candles=candles,
+            existing_backtests=backtests,
+            allow_reuse=True,
+        )
+        rec_bt_dict = env.to_dict()
+        bt_list = env.as_backtest_list()
+        if bt_list:
+            bt_for_ctx = bt_list
+        elif backtests:
+            bt_for_ctx = list(backtests)
 
     ctx = _build_context(
         symbol=symbol,
@@ -143,7 +198,7 @@ async def run_re002_isolated_async(
         technical_results=technical_results,
         sentiment_score=sentiment_score,
         fundamental_result=fundamental_result,
-        backtests=backtests,
+        backtests=bt_for_ctx,
         production_recommendation=production_recommendation,
         market_regime=market_regime,
         sector_overlay=sector_overlay,
@@ -152,15 +207,21 @@ async def run_re002_isolated_async(
         risk_settings=risk_settings,
         analysis_history_id=analysis_history_id,
         experiment_id=experiment_id,
+        benchmark_candles=benchmark_candles,
+        benchmark_symbol=benchmark_symbol,
+        earnings_info=earnings_info,
+        recommendation_backtest=rec_bt_dict,
     )
 
     logger.info(
-        "RE-002 start | symbol=%s | stage=%s | version=%s | scan_run_id=%s | experiment_id=%s",
+        "RE-002 start | symbol=%s | stage=%s | version=%s | scan_run_id=%s | experiment_id=%s | tech_qualified=%s | bt_status=%s",
         symbol,
         reg.stage,
         reg.engine_version,
         ctx.scan_run_id,
         ctx.experiment_id,
+        qualified,
+        (rec_bt_dict or {}).get("status"),
     )
     incr("runs")
     t0 = time.perf_counter()

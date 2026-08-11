@@ -25,6 +25,11 @@ class LabExecutionContext:
     risk_settings: dict[str, Any] | None = None
     scan_date: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     analysis_history_id: int | None = None
+    # Optional earnings blackout override (tests / injected calendar). When None,
+    # engine looks up event_calendar.
+    earnings_info: dict[str, Any] | None = None
+    # Pre-recommendation 3y backtest envelope (dict from RecommendationBacktestEnvelope.to_dict)
+    recommendation_backtest: dict[str, Any] | None = None
 
 
 def build_lab_context(
@@ -45,6 +50,8 @@ def build_lab_context(
     risk_settings: dict[str, Any] | None = None,
     scan_date: datetime | None = None,
     analysis_history_id: int | None = None,
+    earnings_info: dict[str, Any] | None = None,
+    recommendation_backtest: dict[str, Any] | None = None,
 ) -> LabExecutionContext:
     ts = scan_date or datetime.now(timezone.utc)
     run_id = scan_run_id or f"scan-{ts.strftime('%Y%m%dT%H%M%SZ')}"
@@ -65,4 +72,6 @@ def build_lab_context(
         risk_settings=risk_settings,
         scan_date=ts,
         analysis_history_id=analysis_history_id,
+        earnings_info=earnings_info,
+        recommendation_backtest=recommendation_backtest,
     )

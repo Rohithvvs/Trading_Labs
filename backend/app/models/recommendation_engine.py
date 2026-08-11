@@ -41,6 +41,7 @@ class RecommendationEngineDecision(Base):
     explanation: Mapped[str | None] = mapped_column(Text, nullable=True)
     reason_codes: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     trade_guidance: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    technical_analysis: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     production_action: Mapped[str | None] = mapped_column(String(12), nullable=True)
     production_score: Mapped[float | None] = mapped_column(Float, nullable=True)

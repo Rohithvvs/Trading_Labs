@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Any
 
 from .strategy_config import REGIME_PRIMARY_PRIORITY
 

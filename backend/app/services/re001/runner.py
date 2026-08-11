@@ -24,6 +24,9 @@ logger = logging.getLogger("app.re001")
 
 def _evaluate_sync(ctx: LabExecutionContext) -> Re001DecisionObject:
     result = evaluate_re001(ctx)
+    if ctx.recommendation_backtest:
+        result = dict(result)
+        result["recommendation_backtest"] = ctx.recommendation_backtest
     return build_decision_object(ctx, result)
 
 
@@ -115,14 +118,90 @@ async def run_re001_isolated_async(
     risk_settings: dict[str, Any] | None = None,
     analysis_history_id: int | None = None,
     db_session_factory: Any | None = None,
+    run_recommendation_backtest: bool = True,
+    earnings_info: dict[str, Any] | None = None,
+    eval_timeout_s: float | None = None,
+    _executor: Any | None = None,
+    _decision_sink: Any | None = None,
 ) -> Re001DecisionObject | None:
-    """Async RE-001 entry: never raises into production path; does not block event loop."""
+    """Async RE-001 entry: never raises into production path; does not block event loop.
+
+    ``run_recommendation_backtest=False`` skips the 20–45s 3y backtest (used by the
+    full stage-universe independent lab path so Top Set=20 scans can finish under
+    600s). Technical gates + decision evaluate still run.
+
+    Lab-path extensions (internal):
+    - ``earnings_info``  — preloaded earnings blackout override (single bulk query).
+    - ``eval_timeout_s`` — wall-clock evaluation timeout override (defaults to the
+      ``RE001_TIMEOUT_MS`` setting). A dedicated ``_executor`` avoids the shared
+      default thread pool being starved by concurrent scan work.
+    - ``_decision_sink`` — batch persistence channel: ``sink.add(decision)``.
+      When provided, the per-decision executor persist is skipped so the full
+      universe lab path can commit rows in batches.
+    """
     if not is_re001_active():
         return None
 
     reg = get_re001_registration()
     timeout_ms = float(getattr(settings, "re001_timeout_ms", 3000) or 3000)
     timeout_s = max(0.2, timeout_ms / 1000.0)
+    if eval_timeout_s is not None and eval_timeout_s > 0:
+        timeout_s = max(0.2, float(eval_timeout_s))
+
+    def _run_cpu(fn: Any, *args: Any, **kwargs: Any) -> Any:
+        if _executor is not None:
+            return asyncio.get_running_loop().run_in_executor(_executor, fn, *args, **kwargs)
+        return asyncio.to_thread(fn, *args, **kwargs)
+
+    # ------------------------------------------------------------------
+    # Pre-recommendation flow:
+    #   technical qualification → (if qualified) 3y backtest → evaluate
+    # Backtest never overrides technical NO-BUY; unqualifed skip backtest.
+    # ------------------------------------------------------------------
+    from ..lab_technical_precheck import precheck_re001
+    from ..recommendation_backtest import (
+        envelope_not_qualified,
+        envelope_skipped_bulk_lab,
+        run_three_year_backtest,
+    )
+
+    qualified, qual_reason, _tech_snap = await _run_cpu(
+        precheck_re001,
+        candles=candles or [],
+        technical_results=technical_results or [],
+        market_regime=market_regime,
+        sector_overlay=sector_overlay,
+        symbol=symbol,
+        earnings_info=earnings_info,
+    )
+
+    rec_bt_dict: dict[str, Any] | None = None
+    bt_for_ctx = list(backtests or [])
+    if not qualified:
+        env = envelope_not_qualified(symbol, "RE-001", reason=qual_reason)
+        rec_bt_dict = env.to_dict()
+        # Do not inject a fake scoring result
+        bt_for_ctx = []
+    elif not run_recommendation_backtest:
+        env = envelope_skipped_bulk_lab(symbol, "RE-001")
+        rec_bt_dict = env.to_dict()
+        # Prefer any prefetched production backtests; else evaluate without new 3y run
+        bt_for_ctx = list(backtests or [])
+    else:
+        env = await run_three_year_backtest(
+            symbol=symbol,
+            engine_id="RE-001",
+            candles=candles,
+            existing_backtests=backtests,
+            allow_reuse=True,
+        )
+        rec_bt_dict = env.to_dict()
+        bt_list = env.as_backtest_list()
+        if bt_list:
+            bt_for_ctx = bt_list
+        elif backtests:
+            # Keep production backtests available for context even if envelope not SUCCESS
+            bt_for_ctx = list(backtests)
 
     ctx = _build_context(
         symbol=symbol,
@@ -132,7 +211,7 @@ async def run_re001_isolated_async(
         technical_results=technical_results,
         sentiment_score=sentiment_score,
         fundamental_result=fundamental_result,
-        backtests=backtests,
+        backtests=bt_for_ctx,
         production_recommendation=production_recommendation,
         market_regime=market_regime,
         sector_overlay=sector_overlay,
@@ -140,22 +219,27 @@ async def run_re001_isolated_async(
         user_portfolio=user_portfolio,
         risk_settings=risk_settings,
         analysis_history_id=analysis_history_id,
+        recommendation_backtest=rec_bt_dict,
+        earnings_info=earnings_info,
     )
 
     logger.info(
-        "RE-001 start | symbol=%s | stage=%s | version=%s | scan_run_id=%s | analysis_history_id=%s",
+        "RE-001 start | symbol=%s | stage=%s | version=%s | scan_run_id=%s | analysis_history_id=%s | tech_qualified=%s | bt_status=%s",
         symbol,
         reg.stage,
         reg.engine_version,
         ctx.scan_run_id,
         ctx.analysis_history_id,
+        qualified,
+        (rec_bt_dict or {}).get("status"),
     )
     incr("runs")
     t0 = time.perf_counter()
     decision: Re001DecisionObject | None = None
+    # Evaluation timeout is settings-driven (separate wall-clock from backtest phase above).
     try:
         decision = await asyncio.wait_for(
-            asyncio.to_thread(_evaluate_sync, ctx),
+            _run_cpu(_evaluate_sync, ctx),
             timeout=timeout_s,
         )
         incr("success")
@@ -208,6 +292,17 @@ async def run_re001_isolated_async(
 
     # Persist off the critical path — DB write + auto-paper was adding 5–10s after
     # evaluation timeout and blocking shortlist analysis concurrency.
+    if _decision_sink is not None:
+        try:
+            _decision_sink.add(decision)
+        except Exception as sink_exc:
+            logger.warning(
+                "RE-001 decision sink add failed | symbol=%s | err=%s",
+                getattr(decision, "symbol", None),
+                sink_exc,
+            )
+            _persist_safe(decision, mode=mode, db_session_factory=db_session_factory)
+        return decision
     try:
         asyncio.get_running_loop().run_in_executor(
             None,

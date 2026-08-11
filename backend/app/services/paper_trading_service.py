@@ -2182,6 +2182,19 @@ class PaperTradingService:
             self.logger.exception("Failed to add notification for triggered alert")
 
     def auto_exit(self, position_id: int, fill_price: float, reason: str = "MANUAL", source: str = "MANUAL") -> PaperOrderActionResponse:
+        try:
+            return self._auto_exit_impl(position_id, fill_price, reason, source)
+        except Exception:
+            # Leave the session usable for callers that share a long-lived txn
+            # (market engine tick/reconcile). Without this, the next statement
+            # raises PendingRollbackError.
+            try:
+                self.db.rollback()
+            except Exception:
+                pass
+            raise
+
+    def _auto_exit_impl(self, position_id: int, fill_price: float, reason: str = "MANUAL", source: str = "MANUAL") -> PaperOrderActionResponse:
         # Load position first — never use a global/shared account for exits
         query = select(PaperPosition).where(
             PaperPosition.id == position_id,
@@ -2304,7 +2317,7 @@ class PaperTradingService:
             print(f"ERROR adding notification for auto_exit: {e}")
             self.logger.exception("Failed to add notification for auto_exit")
 
-        # Log transaction for AUTO_EXIT to SQLite
+        # Log transaction for AUTO_EXIT
         try:
             tx = PaperTransaction(
                 account_id=int(account.id),
@@ -2335,8 +2348,43 @@ class PaperTradingService:
             print(f"ERROR writing AUTO_EXIT transaction to SQLite: {e}")
             self.logger.exception("Failed to write AUTO_EXIT transaction to SQLite")
 
+        # Exit already committed — never call get_dashboard() here.
+        # Full dashboard reloads portfolio + workspace price fetches; under Neon/proxy
+        # that can hit a dead SSL connection after idle and fail an already-successful exit.
+        try:
+            try:
+                self.db.refresh(account)
+            except Exception:
+                pass
+            summary = self._account_capital_for_confirm(account)
+        except Exception as summary_exc:
+            self.logger.warning(
+                "AUTO_EXIT_SUMMARY_FALLBACK | position_id=%s | symbol=%s | error=%s",
+                position_id,
+                position.symbol,
+                str(summary_exc)[:200],
+            )
+            balance = as_float(q_pnl(account.cash_balance))
+            summary = PaperAccountSummary(
+                account_id=int(account.id),
+                account_name=getattr(account, "name", None) or "Paper",
+                base_currency=getattr(account, "base_currency", None) or "INR",
+                starting_balance=as_float(q_pnl(account.starting_balance)),
+                balance=balance,
+                equity=balance,
+                realized_pnl=0.0,
+                unrealized_pnl=0.0,
+                total_invested=0.0,
+                reserved_cash=0.0,
+                available_cash=balance,
+                open_positions_count=0,
+                open_orders_count=0,
+                max_risk_per_trade=as_float(getattr(account, "max_risk_per_trade", 0) or 0),
+                updated_at=datetime.now(timezone.utc),
+            )
+
         return PaperOrderActionResponse(
-            account=self.get_dashboard(selected_symbol=position.symbol).account,
+            account=summary,
             order=self._serialize_order(order),
             position=None,
             trade=self._serialize_trade(trade),

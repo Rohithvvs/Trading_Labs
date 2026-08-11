@@ -329,6 +329,36 @@ class Settings(BaseSettings):
     candle_store_dual_write: bool = Field(default=True, alias="CANDLE_STORE_DUAL_WRITE")
     candle_store_allow_fallback: bool = Field(default=True, alias="CANDLE_STORE_ALLOW_FALLBACK")
 
+    # Strategy-grade market data ingestion (033-market-data-ingestion)
+    # Gate default False so empty strategy tables do not block scanners until first successful load.
+    strategy_market_data_gate_enabled: bool = Field(
+        default=False,
+        alias="STRATEGY_MARKET_DATA_GATE_ENABLED",
+        description="When True, strategy scanners fail-closed if strategy daily OHLCV/index is stale. Keep False until first successful full/daily load.",
+    )
+    strategy_market_data_coverage_threshold: float = Field(
+        default=0.99, ge=0.5, le=1.0, alias="STRATEGY_MARKET_DATA_COVERAGE_THRESHOLD"
+    )
+    strategy_index_provider_symbol: str = Field(
+        default="NSE:NIFTY500-INDEX", alias="STRATEGY_INDEX_PROVIDER_SYMBOL"
+    )
+    strategy_index_store_symbol: str = Field(default="NIFTY500", alias="STRATEGY_INDEX_STORE_SYMBOL")
+    strategy_market_data_load_concurrency: int = Field(
+        default=5, ge=1, le=25, alias="STRATEGY_MARKET_DATA_LOAD_CONCURRENCY"
+    )
+    strategy_daily_update_hour_ist: int = Field(default=16, ge=15, le=23, alias="STRATEGY_DAILY_UPDATE_HOUR_IST")
+    strategy_daily_update_minute_ist: int = Field(default=45, ge=0, le=59, alias="STRATEGY_DAILY_UPDATE_MINUTE_IST")
+
+    def is_strategy_market_data_gate_enabled(self) -> bool:
+        """Live feature-flag for pre-scanner strategy market-data freshness gate."""
+        try:
+            raw = os.environ.get("STRATEGY_MARKET_DATA_GATE_ENABLED")
+            if raw is not None and str(raw).strip() != "":
+                return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+            return bool(self.strategy_market_data_gate_enabled)
+        except Exception:
+            return False
+
     def is_authoritative_candle_store_enabled(self) -> bool:
         """Live feature-flag read for Authoritative Candle Store (zero-redeploy rollback).
 

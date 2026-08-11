@@ -11,7 +11,7 @@ from ..models.paper_trading import ExecutionEvent, MarketEngineSession, PaperOrd
 from ..services.token_service import get_current_access_token
 from ..services.fyers_service import FyersAuthExpiredError, FyersAuthInvalidError, FyersService
 from ..services.market_data_feed import FyersMarketDataFeed
-from ..db.session import AsyncSessionLocal, SessionLocal
+from ..db.session import AsyncSessionLocal, SessionLocal, is_db_connection_error, dispose_async_pool
 from ..services.paper_trading_service import PaperTradingService
 from ..utils import get_logger
 
@@ -35,6 +35,54 @@ OPEN_ORDER_STATUSES = {
     "PARTIALLY_EXECUTED",
 }
 
+# Consecutive transient DB failures before PRODUCTION_ALERT MARKET_ENGINE_DOWN.
+# Neon/proxy cold-starts and pool pre_ping races produce short TimeoutError blips;
+# a single failed connect must not page as "engine down".
+_DB_TRANSIENT_ALERT_AFTER = 5
+_DB_TRANSIENT_POOL_DISPOSE_EVERY = 3
+_DB_TRANSIENT_MAX_BACKOFF_SEC = 30.0
+
+
+def _is_transient_db_error(exc: BaseException) -> bool:
+    """True when the market engine should retry rather than declare hard failure."""
+    if isinstance(exc, (TimeoutError, asyncio.TimeoutError, ConnectionError, OSError)):
+        return True
+    if isinstance(exc, asyncio.CancelledError):
+        # Connect-path timeouts surface CancelledError → TimeoutError; if a bare
+        # CancelledError reaches the loop, treat as non-transient (shutdown).
+        return False
+    try:
+        from sqlalchemy.exc import PendingRollbackError
+
+        if isinstance(exc, PendingRollbackError):
+            return True
+    except Exception:
+        pass
+    try:
+        if is_db_connection_error(exc):
+            return True
+    except Exception:
+        pass
+    msg = str(exc).lower()
+    needles = (
+        "timeout",
+        "timed out",
+        "connection is closed",
+        "connection was closed",
+        "server closed the connection",
+        "ssl connection has been closed",
+        "could not connect",
+        "connection refused",
+        "too many connections",
+        "pool is closed",
+        "cannot connect",
+        # Session left invalid after a prior DBAPI failure; needs rollback + retry.
+        "can't reconnect until invalid transaction",
+        "pendingrollback",
+        "invalid transaction is rolled back",
+    )
+    return any(n in msg for n in needles)
+
 
 class MarketEngineService:
     def __init__(self) -> None:
@@ -53,6 +101,7 @@ class MarketEngineService:
         self._loop = None
         # Cap concurrent tick DB sessions so websocket floods never share one connection
         self._tick_sem = asyncio.Semaphore(8)
+        self._consecutive_db_failures = 0
 
     def is_market_hours(self, now: datetime | None = None) -> bool:
         """Delegate to trading_hours_service (NSE calendar + session)."""
@@ -170,12 +219,20 @@ class MarketEngineService:
         Holding ``async with db.begin()`` across network polls previously caused
         asyncpg ``another operation is in progress`` when ticks/upserts raced
         the same pool under scan load.
+
+        Transient DB connect timeouts (Neon cold-start, pooler blips) are retried
+        with backoff; MARKET_ENGINE_DOWN is only raised after sustained failures.
         """
         while self._running:
             try:
                 should_reconcile = False
+                # Bound session bootstrap so a hung checkout cannot stall the loop
+                # for the full asyncpg connect timeout repeatedly without recovery.
                 async with AsyncSessionLocal() as db:
-                    session = await self._get_or_create_session(db)
+                    session = await asyncio.wait_for(
+                        self._get_or_create_session(db),
+                        timeout=20.0,
+                    )
                     if session.status in {
                         "STARTING",
                         "RUNNING",
@@ -190,9 +247,55 @@ class MarketEngineService:
                         should_reconcile = True
                     await db.commit()
 
+                if self._consecutive_db_failures:
+                    self.logger.info(
+                        "MARKET_ENGINE_DB_RECOVERED | previous_failures=%s",
+                        self._consecutive_db_failures,
+                    )
+                self._consecutive_db_failures = 0
+
                 if should_reconcile:
                     await self._reconcile_session_isolated()
+                await asyncio.sleep(2)
+            except asyncio.CancelledError:
+                raise
             except Exception as e:
+                # Never call db.rollback() here — session is already closed.
+                if _is_transient_db_error(e):
+                    self._consecutive_db_failures += 1
+                    n = self._consecutive_db_failures
+                    backoff = min(
+                        _DB_TRANSIENT_MAX_BACKOFF_SEC,
+                        float(2 ** min(n, 4)),
+                    )
+                    self.logger.warning(
+                        "MARKET_ENGINE_DB_TRANSIENT | consecutive=%s | backoff_s=%.1f | "
+                        "error_type=%s | error=%s",
+                        n,
+                        backoff,
+                        type(e).__name__,
+                        str(e)[:200] or type(e).__name__,
+                    )
+                    if n % _DB_TRANSIENT_POOL_DISPOSE_EVERY == 0:
+                        try:
+                            await dispose_async_pool(
+                                reason=f"market_engine_transient_db_n={n}"
+                            )
+                        except Exception as dispose_exc:
+                            self.logger.warning(
+                                "MARKET_ENGINE_POOL_DISPOSE_FAILED | error=%s",
+                                dispose_exc,
+                            )
+                    if n >= _DB_TRANSIENT_ALERT_AFTER:
+                        self.logger.error(
+                            "PRODUCTION_ALERT | category=MARKET_ENGINE_DOWN | "
+                            "reason=sustained_db_failure | consecutive=%s | error=%s",
+                            n,
+                            str(e)[:200] or type(e).__name__,
+                        )
+                    await asyncio.sleep(backoff)
+                    continue
+
                 self.logger.exception(
                     "MARKET_ENGINE_EXCEPTION | Market engine loop failed | error=%s",
                     str(e),
@@ -201,8 +304,7 @@ class MarketEngineService:
                     "PRODUCTION_ALERT | category=MARKET_ENGINE_DOWN | error=%s",
                     str(e),
                 )
-                # Never call db.rollback() here — session is already closed.
-            await asyncio.sleep(2)
+                await asyncio.sleep(2)
 
     async def _reconcile_session_isolated(self) -> None:
         """Reconcile feed + missing prices without a long-held DB transaction."""
@@ -426,13 +528,35 @@ class MarketEngineService:
                         
                     self.logger.info("EXIT_ORDER_TRIGGERED | position_id=%s | symbol=%s | reason=%s", position.id, position.symbol, "TARGET_HIT")
                     try:
-                        def _auto_exit_target_sync(session, p_id, ltp):
-                            return PaperTradingService(session).auto_exit(p_id, ltp, "TARGET_HIT", "LIVE")
-                        await db.run_sync(_auto_exit_target_sync, position.id, price)
+                        # Isolated sync session — never auto_exit on the shared async txn
+                        # (SSL/drop mid-exit would poison the tick session).
+                        await asyncio.to_thread(
+                            self._auto_exit_isolated,
+                            int(position.id),
+                            float(price),
+                            "TARGET_HIT",
+                            "LIVE",
+                        )
                         self.logger.info("EXIT_ORDER_SUCCESS | position_id=%s | symbol=%s", position.id, position.symbol)
+                        await self._record_event(
+                            db,
+                            "EXIT_FILLED",
+                            symbol,
+                            None,
+                            position.id,
+                            "OPEN_POSITION",
+                            "EXIT_FILLED",
+                            price,
+                            dedupe_key=f"exit-filled:{position.id}:TARGET_HIT",
+                        )
                     except Exception as exc:
-                        self.logger.exception("EXIT_ORDER_FAILED | position_id=%s | symbol=%s | error=%s", position.id, position.symbol, str(exc))
-                    await self._record_event(db, "EXIT_FILLED", symbol, None, position.id, "OPEN_POSITION", "EXIT_FILLED", price, dedupe_key=f"exit-filled:{position.id}:TARGET_HIT")
+                        self.logger.exception(
+                            "EXIT_ORDER_FAILED | position_id=%s | symbol=%s | error=%s",
+                            position.id,
+                            position.symbol,
+                            str(exc),
+                        )
+                        await self._safe_db_rollback(db)
                 
                 elif position.stop_loss is not None and price <= position.stop_loss:
                     if is_reconciliation:
@@ -442,13 +566,33 @@ class MarketEngineService:
                         
                     self.logger.info("EXIT_ORDER_TRIGGERED | position_id=%s | symbol=%s | reason=%s", position.id, position.symbol, "STOPLOSS_HIT")
                     try:
-                        def _auto_exit_stop_sync(session, p_id, ltp):
-                            return PaperTradingService(session).auto_exit(p_id, ltp, "STOPLOSS_HIT", "LIVE")
-                        await db.run_sync(_auto_exit_stop_sync, position.id, price)
+                        await asyncio.to_thread(
+                            self._auto_exit_isolated,
+                            int(position.id),
+                            float(price),
+                            "STOPLOSS_HIT",
+                            "LIVE",
+                        )
                         self.logger.info("EXIT_ORDER_SUCCESS | position_id=%s | symbol=%s", position.id, position.symbol)
+                        await self._record_event(
+                            db,
+                            "EXIT_FILLED",
+                            symbol,
+                            None,
+                            position.id,
+                            "OPEN_POSITION",
+                            "EXIT_FILLED",
+                            price,
+                            dedupe_key=f"exit-filled:{position.id}:STOPLOSS_HIT",
+                        )
                     except Exception as exc:
-                        self.logger.exception("EXIT_ORDER_FAILED | position_id=%s | symbol=%s | error=%s", position.id, position.symbol, str(exc))
-                    await self._record_event(db, "EXIT_FILLED", symbol, None, position.id, "OPEN_POSITION", "EXIT_FILLED", price, dedupe_key=f"exit-filled:{position.id}:STOPLOSS_HIT")
+                        self.logger.exception(
+                            "EXIT_ORDER_FAILED | position_id=%s | symbol=%s | error=%s",
+                            position.id,
+                            position.symbol,
+                            str(exc),
+                        )
+                        await self._safe_db_rollback(db)
 
     async def _desired_symbols(self, db) -> set[str]:
         order_symbols = set(
@@ -564,6 +708,54 @@ class MarketEngineService:
                     session.websocket_connected = connected
         except Exception:
             self.logger.exception("Failed to persist websocket state change | connected=%s", connected)
+
+    async def _safe_db_rollback(self, db) -> None:
+        """Clear an invalid/failed transaction so the session can be reused or closed cleanly."""
+        try:
+            await db.rollback()
+        except Exception as rb_exc:
+            self.logger.warning(
+                "DB_ROLLBACK_FAILED | error_type=%s | error=%s",
+                type(rb_exc).__name__,
+                str(rb_exc)[:200],
+            )
+
+    @staticmethod
+    def _auto_exit_isolated(
+        position_id: int,
+        fill_price: float,
+        reason: str,
+        source: str,
+        *,
+        max_attempts: int = 3,
+    ):
+        """Run auto_exit on a fresh sync session (no shared/poisoned transaction).
+
+        Retries transient DB disconnects (Neon/proxy SSL drops) with a new session
+        each attempt. Business errors (ValueError) are not retried.
+        """
+        import time
+
+        last_exc: BaseException | None = None
+        for attempt in range(1, max(1, int(max_attempts)) + 1):
+            try:
+                with SessionLocal() as session:
+                    return PaperTradingService(session).auto_exit(
+                        int(position_id),
+                        float(fill_price),
+                        reason,
+                        source,
+                    )
+            except ValueError:
+                raise
+            except Exception as exc:
+                last_exc = exc
+                if not _is_transient_db_error(exc) or attempt >= max_attempts:
+                    raise
+                # Brief backoff; next attempt uses a new pool connection (pre_ping).
+                time.sleep(min(0.15 * attempt, 0.5))
+        assert last_exc is not None
+        raise last_exc
 
     async def _record_event(
         self,
@@ -730,55 +922,122 @@ class MarketEngineService:
             self.logger.info("RECONCILIATION_OHLC_FETCHED | symbol=%s | start_time=%s | end_time=%s | candles_count=%s", 
                 symbol, valid_candles[0].timestamp, valid_candles[-1].timestamp, len(valid_candles))
 
+            # Snapshot levels for breach detection, then release the read session
+            # BEFORE exit. Never call auto_exit via db.run_sync on a shared async
+            # session — a single DBAPI failure poisons that txn and every later
+            # candle raises PendingRollbackError (production spam for OPEN positions).
+            target_level: float | None = None
+            stop_level: float | None = None
+            pid = int(position_id)
             async with AsyncSessionLocal() as db:
-                # Re-acquire lock to process
                 stmt = select(PaperPosition).where(
                     PaperPosition.id == position_id,
-                    PaperPosition.status == "OPEN"
+                    PaperPosition.status == "OPEN",
                 )
-                if db.bind and db.bind.dialect.name == "postgresql":
-                    stmt = stmt.with_for_update(skip_locked=True)
-                
+                # No FOR UPDATE here: holding a lock while later calling auto_exit on
+                # another connection can block/timeout; auto_exit locks its own row.
                 position = await db.scalar(stmt)
                 if not position:
                     return
+                pid = int(position.id)
+                target_level = (
+                    float(position.target) if position.target is not None else None
+                )
+                stop_level = (
+                    float(position.stop_loss)
+                    if position.stop_loss is not None
+                    else None
+                )
 
-                exited = False
-                for candle in valid_candles:
-                    target_breached = position.target is not None and candle.high >= position.target
-                    stop_breached = position.stop_loss is not None and candle.low <= position.stop_loss
-                    
-                    if target_breached or stop_breached:
-                        conflict_resolved_as = "STOPLOSS_HIT" if stop_breached else "TARGET_HIT"
-                        self.logger.info("RECONCILIATION_GAP_DETECTED | symbol=%s | target_breached=%s | stop_breached=%s | conflict_resolved_as=%s",
-                            symbol, target_breached, stop_breached, conflict_resolved_as)
-                        
-                        exit_price = candle.low if stop_breached else candle.high
-                        
-                        try:
-                            def _auto_exit_sync(session, p_id, ltp, reason):
-                                return PaperTradingService(session).auto_exit(p_id, float(ltp), reason, "RECONCILIATION")
-                            await db.run_sync(_auto_exit_sync, position.id, exit_price, conflict_resolved_as)
-                            self.logger.info("RECONCILIATION_EXIT_TRIGGERED | position_id=%s | reason=%s | retroactive_time=%s | exit_price=%s",
-                                position.id, conflict_resolved_as, candle.timestamp, exit_price)
-                            await self._record_event(db, "EXIT_FILLED", symbol, None, position.id, "OPEN_POSITION", "EXIT_FILLED", float(exit_price), dedupe_key=f"exit-filled:{position.id}:{conflict_resolved_as}")
-                            exited = True
-                            break # Stop processing further candles for this position
-                        except Exception as exc:
-                            self.logger.exception("RECONCILIATION_EXIT_FAILED | position_id=%s | error=%s", position.id, str(exc))
-                
-                # Updating last_reconciled_at AFTER the full symbol replay completes safely.
-                # Reason: Guarantees crash safety. If the server crashes mid-replay, 
-                # the transaction rolls back, and no progress is committed.
-                # Upon restart, the engine will safely fetch the OHLC block again.
-                # Because auto_exit is idempotent (requires OPEN status), replaying 
-                # historical candles is mathematically safe and prevents missed exits.
-                if not exited:
-                    # CRITICAL FIX: Anchor watermark exclusively to the last evaluated candle's
-                    # closure timestamp. If FYERS is lagging, using utcnow() creates a blind spot.
-                    last_candle_close = _normalize_utc(valid_candles[-1].timestamp) + timedelta(minutes=1)
-                    position.last_reconciled_at = last_candle_close
-                    await db.commit()
+            exited = False
+            for candle in valid_candles:
+                target_breached = (
+                    target_level is not None and candle.high >= target_level
+                )
+                stop_breached = stop_level is not None and candle.low <= stop_level
+
+                if not (target_breached or stop_breached):
+                    continue
+
+                conflict_resolved_as = (
+                    "STOPLOSS_HIT" if stop_breached else "TARGET_HIT"
+                )
+                self.logger.info(
+                    "RECONCILIATION_GAP_DETECTED | symbol=%s | target_breached=%s | "
+                    "stop_breached=%s | conflict_resolved_as=%s",
+                    symbol,
+                    target_breached,
+                    stop_breached,
+                    conflict_resolved_as,
+                )
+                exit_price = candle.low if stop_breached else candle.high
+
+                try:
+                    await asyncio.to_thread(
+                        self._auto_exit_isolated,
+                        pid,
+                        float(exit_price),
+                        conflict_resolved_as,
+                        "RECONCILIATION",
+                    )
+                except ValueError as exc:
+                    # Already closed / not found — treat as done for this cycle.
+                    self.logger.info(
+                        "RECONCILIATION_EXIT_SKIPPED | position_id=%s | reason=%s",
+                        pid,
+                        str(exc),
+                    )
+                    exited = True
+                    break
+                except Exception as exc:
+                    self.logger.exception(
+                        "RECONCILIATION_EXIT_FAILED | position_id=%s | error=%s",
+                        pid,
+                        str(exc),
+                    )
+                    # One breach attempt only; next sweep retries. Do not walk
+                    # remaining candles with the same broken exit path.
+                    break
+
+                self.logger.info(
+                    "RECONCILIATION_EXIT_TRIGGERED | position_id=%s | reason=%s | "
+                    "retroactive_time=%s | exit_price=%s",
+                    pid,
+                    conflict_resolved_as,
+                    candle.timestamp,
+                    exit_price,
+                )
+                # ExecutionEvent is already written inside auto_exit (same dedupe key).
+                exited = True
+                break
+
+            # Watermark only when we did not exit: separate short session so a
+            # prior failure cannot leave this update in PendingRollbackError.
+            # Reason: Guarantees crash safety. If the server crashes mid-replay,
+            # no progress is committed; on restart OHLC is fetched again.
+            # auto_exit is idempotent (requires OPEN status), so replay is safe.
+            if not exited:
+                last_candle_close = (
+                    _normalize_utc(valid_candles[-1].timestamp) + timedelta(minutes=1)
+                )
+                try:
+                    async with AsyncSessionLocal() as db:
+                        stmt = select(PaperPosition).where(
+                            PaperPosition.id == pid,
+                            PaperPosition.status == "OPEN",
+                        )
+                        position = await db.scalar(stmt)
+                        if position:
+                            # Anchor watermark to last evaluated candle close only.
+                            # utcnow() would create a blind spot if FYERS is lagging.
+                            position.last_reconciled_at = last_candle_close
+                            await db.commit()
+                except Exception as wm_exc:
+                    self.logger.warning(
+                        "RECONCILIATION_WATERMARK_FAILED | position_id=%s | error=%s",
+                        pid,
+                        str(wm_exc),
+                    )
 
         except Exception as e:
             self.logger.warning("RECONCILIATION_FAILED | position_id=%s | error=%s", position_id, str(e))

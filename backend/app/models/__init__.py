@@ -9,7 +9,8 @@ from .paper_trading import (
     PaperTradeHistory,
     PaperTradingAccount,
 )
-from .stock import WatchedStock
+from .stock import WatchedStock, StockMaster
+from .strategy_market_data import DailyOhlcv, IndexOhlcv, DataLoadLog
 from .fyers_token import FyersToken
 from .fyers_token_history import FyersTokenHistory
 from .broker_token import BrokerToken
@@ -48,6 +49,10 @@ __all__ = [
     "MarketEngineSession",
     "ExecutionEvent",
     "WatchedStock",
+    "StockMaster",
+    "DailyOhlcv",
+    "IndexOhlcv",
+    "DataLoadLog",
     "FyersToken",
     "FyersTokenHistory",
     "BrokerToken",

@@ -61,14 +61,22 @@ class OrchestratorAgent:
         self.ranking_agent = RankingAgent()
         self.fundamental_agent = FundamentalAnalysisAgent()
 
-    async def run_full(self, request: AnalysisRequest, progress_callback=None, prefetched_candles: dict[str, dict[AnalysisMode, list[OHLCVPoint]]] | None = None) -> FullAnalysisResponse:
+    async def run_full(
+        self,
+        request: AnalysisRequest,
+        progress_callback=None,
+        prefetched_candles: dict[str, dict[AnalysisMode, list[OHLCVPoint]]] | None = None,
+        *,
+        skip_lab_engines: bool = False,
+    ) -> FullAnalysisResponse:
         self.logger.info(
-            "Starting full analysis | symbols=%s | mode=%s | intraday=%s | swing=%s | lookback=%s",
+            "Starting full analysis | symbols=%s | mode=%s | intraday=%s | swing=%s | lookback=%s | skip_lab_engines=%s",
             ",".join(request.symbols),
             request.mode.value,
             request.timeframe.intraday,
             request.timeframe.swing,
             request.timeframe.lookback_window,
+            skip_lab_engines,
         )
         import asyncio
         from ..services.re001.scan_context import (
@@ -87,6 +95,7 @@ class OrchestratorAgent:
                 request,
                 progress_callback=progress_callback,
                 prefetched_candles=prefetched_candles,
+                skip_lab_engines=skip_lab_engines,
             )
         finally:
             if _scan_tok is not None:
@@ -97,6 +106,8 @@ class OrchestratorAgent:
         request: AnalysisRequest,
         progress_callback=None,
         prefetched_candles: dict[str, dict[AnalysisMode, list[OHLCVPoint]]] | None = None,
+        *,
+        skip_lab_engines: bool = False,
     ) -> FullAnalysisResponse:
         import asyncio
 
@@ -296,11 +307,16 @@ class OrchestratorAgent:
         feat004_config = self._build_feat004_config()
         feat007_config = self._build_feat007_config()
         benchmark_ohlcv, sector_ohlcv_cache, benchmark_failure_reason, benchmark_symbol = await self._resolve_feat004_benchmark()
-        # Pre-resolve market regime once (was called per-symbol before with same scan_date)
-        from ..services.market_permission_service import MarketPermissionService
+        # Pre-resolve market regime once (scan-scoped; shared with lab universe / workers)
+        from ..services.scan_market_context import get_or_build_market_regime
+        from ..services.re001.scan_context import get_scan_run_id as _get_mkt_scan_id
+
         _primary_candles = next(iter(candles_by_symbol_and_mode.values()), {}).get(modes[0], [])
         _scan_date = _primary_candles[-1].timestamp if _primary_candles else datetime.now(timezone.utc)
-        _market_regime = await MarketPermissionService().evaluate_market_permission(scan_date=_scan_date)
+        _market_regime = await get_or_build_market_regime(
+            _scan_date,
+            scan_id=_get_mkt_scan_id(),
+        )
         # Batch-resolve stock IDs (avoids per-symbol DB session in _analyze_symbol_post_bulk)
         stock_ids: dict[str, int] = {}
         if request.symbols:
@@ -378,6 +394,7 @@ class OrchestratorAgent:
                                 stock_id=stock_ids.get(symbol),
                                 market_regime=_market_regime,
                                 shared_lab_portfolio=shared_lab_portfolio,
+                                skip_lab_engines=skip_lab_engines,
                             )
                     except Exception as exc:
                         self.logger.error(
@@ -638,24 +655,61 @@ class OrchestratorAgent:
             rejected_by_conditions,
             request.top_n,
         )
+        # Production top-N shortlist is a Production Engine concern only.
+        # RE-001 / RE-002 receive the FULL stage universe independently — the
+        # screener data_valid set is a diagnostic, not a hard gate: RE-001 owns
+        # its own data validation (cached OHLCV) and rejects insufficient
+        # history itself. See build_lab_input_universe() audit for every run.
+        from ..services.independent_lab_universe import build_lab_input_universe
+
         shortlisted_symbols = matched_symbols[: request.top_n]
+        lab_input_universe = list(source_universe)
+        lab_input_audit = build_lab_input_universe(source_universe, data_valid_symbols)
+        # build_lab_input_universe contract: missing_from_data_valid is an int COUNT
+        # (not a list). Wrapping it in len() raises TypeError when count > 0
+        # (truthy int skips the `or []` fallback). See scan_id=ff8ec0dc...
+        missing_from_data_valid_count = int(
+            lab_input_audit.get("missing_from_data_valid") or 0
+        )
+        self.logger.info(
+            "LAB_INPUT_UNIVERSE | stage=%s | source=%s | data_valid=%s | missing_from_data_valid=%s | "
+            "reason=re001_receives_full_stage_universe",
+            stage_name,
+            len(source_universe),
+            len(data_valid_symbols),
+            missing_from_data_valid_count,
+        )
         analysis: FullAnalysisResponse | None = None
         buy_candidate_symbols: list[str] = []
         watch_candidate_symbols: list[str] = []
+        lab_universe_summary: dict[str, Any] | None = None
+
+        # Capture screener frames BEFORE production shortlist path may clear them.
+        # Shared OHLCV input for Production shortlist + independent lab engines.
+        screener_frames = dict(getattr(self.screener_service, "last_fetched_frames", {}) or {})
 
         if shortlisted_symbols:
-            self.logger.info("STEP 5/8 | Shortlist ready | stage=%s | shortlisted=%s", stage_name, ",".join(shortlisted_symbols))
+            self.logger.info(
+                "STEP 5/8 | Production shortlist ready | stage=%s | shortlisted=%s | lab_universe=%s",
+                stage_name,
+                ",".join(shortlisted_symbols),
+                len(lab_input_universe),
+            )
             analysis_request = AnalysisRequest(
                 symbols=shortlisted_symbols,
                 mode=AnalysisMode.swing,
                 timeframe=request.timeframe,
             )
-            self.logger.info("STEP 6/8 | Run full analysis only on top set | stage=%s | count=%s", stage_name, len(shortlisted_symbols))
+            self.logger.info(
+                "STEP 6/8 | Run Production full analysis on top-N only | stage=%s | count=%s | top_n=%s",
+                stage_name,
+                len(shortlisted_symbols),
+                request.top_n,
+            )
             deep_t0 = time.perf_counter()
             # Reuse OHLCV data from screener phase (avoids duplicate FYERS fetch).
             # May be partial — run_full fills any shortlisted symbol still missing.
             prefetched_candles: dict[str, dict[AnalysisMode, list[OHLCVPoint]]] = {}
-            screener_frames = getattr(self.screener_service, "last_fetched_frames", {}) or {}
             # Build canonical→frame key index so RAIN-EQ finds RAIN / NSE:RAIN-EQ frames
             frame_by_canonical: dict[str, str] = {}
             for frame_key in screener_frames.keys():
@@ -740,14 +794,13 @@ class OrchestratorAgent:
                 len(missing_prefetch),
                 ",".join(missing_prefetch) if missing_prefetch else "none",
             )
-            # Release frames from memory after extracting prefetched candles
-            if hasattr(screener_frames, "clear"):
-                screener_frames.clear()
-            self.screener_service.last_fetched_frames = {}
+            # Production path: do NOT clear screener_frames yet — lab universe reuses them.
+            # Lab engines are skipped here; they run independently on the full universe below.
             shortlist_analysis = await self.run_full(
                 analysis_request,
                 progress_callback,
                 prefetched_candles=prefetched_candles,
+                skip_lab_engines=True,
             )
             buy_items = [item for item in shortlist_analysis.items if item.recommendation.action == "BUY"]
             watch_items = [item for item in shortlist_analysis.items if item.recommendation.action == "WATCH"]
@@ -755,7 +808,7 @@ class OrchestratorAgent:
             buy_candidate_symbols = [item.symbol for item in buy_items]
             watch_candidate_symbols = [item.symbol for item in watch_items]
             self.logger.info(
-                "STEP 7/8 | RecommendationAgent finished | stage=%s | buy=%s | watch=%s | reject=%s | deep_analysis_ms=%.0f",
+                "STEP 7/8 | Production RecommendationAgent finished | stage=%s | buy=%s | watch=%s | reject=%s | deep_analysis_ms=%.0f",
                 stage_name,
                 len(buy_items),
                 len(watch_items),
@@ -780,7 +833,7 @@ class OrchestratorAgent:
                 ",".join(watch_candidate_symbols) if watch_candidate_symbols else "none",
             )
         else:
-            self.logger.info("STEP 6/8 | No shortlisted stocks, so downstream analysis was skipped | stage=%s", stage_name)
+            self.logger.info("STEP 6/8 | No Production shortlist; Production deep analysis skipped | stage=%s", stage_name)
             if screener_results:
                 top_ranked = ",".join(f"{item.symbol}:{item.screener_score}" for item in matched_results[:5]) or "none"
                 self.logger.info(
@@ -796,6 +849,158 @@ class OrchestratorAgent:
                         )[:5]
                     ) or "none",
                 )
+
+        # ------------------------------------------------------------------
+        # Independent RE-001 / RE-002 evaluation over full data_valid universe.
+        # Production top_n shortlist does NOT gate lab input population.
+        # ------------------------------------------------------------------
+        if lab_input_universe and (settings.is_re001_active() or settings.is_re002_active()):
+            try:
+                from ..services.independent_lab_universe import run_independent_lab_universe
+                from ..services.re001.scan_context import get_scan_run_id
+
+                # Optional: pass Production recommendations only for comparison fields
+                # on symbols that happened to be in the Production shortlist.
+                prod_recs: dict[str, Any] = {}
+                if analysis is not None:
+                    for item in analysis.items or []:
+                        if item is not None and getattr(item, "symbol", None) and getattr(item, "recommendation", None):
+                            prod_recs[str(item.symbol)] = item.recommendation
+
+                lab_t0 = time.perf_counter()
+                self.logger.info(
+                    "LAB_ENGINE_INDEPENDENCE | stage=%s | production_shortlist=%s | lab_input_universe=%s | top_n=%s",
+                    stage_name,
+                    len(shortlisted_symbols),
+                    len(lab_input_universe),
+                    request.top_n,
+                )
+                # Clear Production "AI Analysis (N/N)" stage so UI / heartbeats
+                # do not keep advertising 20/20 while lab runs on the full universe.
+                if progress_callback:
+                    try:
+                        progress_callback(
+                            {
+                                "stage": (
+                                    f"Production Top Set done ({len(shortlisted_symbols)}); "
+                                    f"starting independent lab on {len(lab_input_universe)} symbols..."
+                                ),
+                                "progress": 86,
+                                "heartbeat": True,
+                                "done": 0,
+                                "remaining": len(lab_input_universe),
+                                "total_scoring": len(lab_input_universe),
+                            }
+                        )
+                    except Exception:
+                        pass
+                # Reuse production scan market regime when available (never re-fetch INDIAVIX).
+                from ..services.scan_market_context import get_scan_market_regime
+
+                _lab_market_regime = get_scan_market_regime()
+                if _lab_market_regime is None and analysis is not None:
+                    for _item in analysis.items or []:
+                        if getattr(_item, "market_regime", None) is not None:
+                            _lab_market_regime = _item.market_regime
+                            break
+
+                # Residual wall budget inside the 600s scan envelope. Lab fails open
+                # with partial decisions if budget ends — Production Top-N already done.
+                lab_budget_s = 180.0
+                try:
+                    from ..config.settings import settings as _scan_settings
+
+                    total_to = float(
+                        getattr(_scan_settings, "scan_execution_timeout_seconds", 600.0) or 600.0
+                    )
+                    # Cap lab to 40% of total scan timeout (keeps persist headroom).
+                    lab_budget_s = max(60.0, min(240.0, total_to * 0.4))
+                except Exception:
+                    lab_budget_s = 180.0
+                self.logger.info(
+                    "LAB_ENGINE_BUDGET | stage=%s | budget_s=%.0f | lab_symbols=%s | skip_3y_backtest=True",
+                    stage_name,
+                    lab_budget_s,
+                    len(lab_input_universe),
+                )
+                lab_universe_summary = await run_independent_lab_universe(
+                    symbols=lab_input_universe,
+                    lab_input_universe=lab_input_audit,
+                    screener_results=screener_results,
+                    prefetched_frames=screener_frames,
+                    market_regime=_lab_market_regime,
+                    mode=request.mode.value if hasattr(request.mode, "value") else str(request.mode),
+                    scan_run_id=get_scan_run_id(),
+                    production_recommendations=prod_recs or None,
+                    progress_callback=progress_callback,
+                    lookback_window=request.timeframe.lookback_window,
+                    max_duration_s=lab_budget_s,
+                    run_recommendation_backtest=False,
+                )
+                self.logger.info(
+                    "LAB_ENGINE_INDEPENDENCE_DONE | stage=%s | elapsed_ms=%.0f | summary=%s",
+                    stage_name,
+                    (time.perf_counter() - lab_t0) * 1000,
+                    {
+                        k: lab_universe_summary.get(k)
+                        for k in (
+                            "input_universe",
+                            "candles_ready",
+                            "re001_evaluated",
+                            "re001_data_valid",
+                            "re001_trend_matched",
+                            "re001_favorites",
+                            "re001_insufficient_history",
+                            "re001_buy",
+                            "re001_watch",
+                            "re001_reject",
+                            "re002_evaluated",
+                            "re002_buy",
+                            "re002_watch",
+                            "re002_reject",
+                            "sink_persisted",
+                        )
+                    },
+                )
+
+                # Attach lab decisions onto Production shortlist analysis items for UI detail panels.
+                if analysis is not None and lab_universe_summary.get("decisions"):
+                    decisions = lab_universe_summary["decisions"]
+                    merged_items = []
+                    for item in analysis.items or []:
+                        eng = decisions.get(item.symbol) or decisions.get(self._canonical_symbol(item.symbol))
+                        if eng:
+                            try:
+                                item = item.model_copy(update={"lab_engines": eng})
+                            except Exception:
+                                try:
+                                    object.__setattr__(item, "lab_engines", eng)
+                                except Exception:
+                                    pass
+                        merged_items.append(item)
+                    analysis = analysis.model_copy(update={"items": merged_items})
+            except Exception as lab_univ_exc:
+                self.logger.warning(
+                    "Independent lab universe failed (Production path unchanged) | stage=%s | err=%s",
+                    stage_name,
+                    lab_univ_exc,
+                    exc_info=True,
+                )
+                lab_universe_summary = None
+        elif lab_input_universe:
+            self.logger.info(
+                "LAB_ENGINE_INDEPENDENCE_SKIP | stage=%s | reason=engines_inactive | universe=%s",
+                stage_name,
+                len(lab_input_universe),
+            )
+
+        # Release shared frames after both Production and lab paths have used them.
+        try:
+            if hasattr(screener_frames, "clear"):
+                screener_frames.clear()
+        except Exception:
+            pass
+        self.screener_service.last_fetched_frames = {}
 
         self.logger.info(
             "STEP 5/8 | Stage summary | stage=%s | universe=%s | valid=%s | eligible=%s | matched=%s | shortlisted=%s | buy=%s | watch=%s | data_source_failed=%s | data_quality_failed=%s | condition_rejected=%s",
@@ -1067,6 +1272,7 @@ class OrchestratorAgent:
         stock_id: int | None = None,
         market_regime: Any = None,
         shared_lab_portfolio: dict | None = None,
+        skip_lab_engines: bool = False,
     ) -> StockAnalysisResult:
         import asyncio
         if stock_id is None:
@@ -1116,11 +1322,11 @@ class OrchestratorAgent:
             skip_on_missing_next_bar = settings.feat008_skip_on_missing_next_bar
 
         async def _run_agents_concurrently():
-            def run_backtest():
+            async def run_backtest():
                 results = []
                 for mode in modes:
                     try:
-                        results.append(self.backtest_agent.run(
+                        results.append(await self.backtest_agent.run_async(
                             symbol, mode, candles_by_mode[mode],
                             execution_model=exec_model,
                             composite_uses_realistic=use_realistic_for_composite,
@@ -1166,7 +1372,7 @@ class OrchestratorAgent:
                     return self.fundamental_agent._fallback_result()
 
             return await asyncio.gather(
-                asyncio.to_thread(run_backtest),
+                run_backtest(),
                 _news_bounded(),
                 _fund_bounded(),
             )
@@ -1300,10 +1506,15 @@ class OrchestratorAgent:
         # challenger_action fields are updated below after the challenger is built.
         # No second SR-003 evaluation is needed.
 
-        # Integrate SR-004 Market Permission Engine (pre-resolved in run_full to avoid per-symbol re-evaluation)
+        # Integrate SR-004 Market Permission Engine (scan-scoped; never re-load INDIAVIX per symbol)
         if market_regime is None:
-            from ..services.market_permission_service import MarketPermissionService
-            market_regime = await MarketPermissionService().evaluate_market_permission(scan_date=scan_date)
+            from ..services.scan_market_context import get_or_build_market_regime
+            from ..services.re001.scan_context import get_scan_run_id as _get_sym_scan_id
+
+            market_regime = await get_or_build_market_regime(
+                scan_date,
+                scan_id=_get_sym_scan_id(),
+            )
 
         # Build Challenger recommendation (combining sector overlay and market permission)
         challenger_action = recommendation.action
@@ -1409,12 +1620,13 @@ class OrchestratorAgent:
             )
 
         # Lab engines (RE-001 / RE-002): isolated async, fail-open; never mutates production.
-        # Shared portfolio snapshot once; engines run in parallel when both active.
+        # When the screener path runs independent_lab_universe over the full stage universe,
+        # skip per-symbol hooks here so engines are not limited to Production top-N and not double-run.
         re001_decision = None
         re002_decision = None
         try:
-            re001_on = bool(settings.is_re001_active())
-            re002_on = bool(settings.is_re002_active())
+            re001_on = bool(settings.is_re001_active()) and not skip_lab_engines
+            re002_on = bool(settings.is_re002_active()) and not skip_lab_engines
             if re001_on or re002_on:
                 from ..db.session import SessionLocal
                 from ..services.re001.portfolio_loader import load_user_portfolio_dict
@@ -1459,6 +1671,39 @@ class OrchestratorAgent:
                     db_session_factory=SessionLocal,
                 )
 
+                # RE-002 CRS requires aligned benchmark OHLCV (default NIFTY500).
+                # Prefer FEAT-004 benchmark already fetched for this analysis run.
+                re002_benchmark_candles = None
+                re002_benchmark_symbol = benchmark_symbol
+                if benchmark_ohlcv is not None:
+                    try:
+                        import pandas as pd
+
+                        bmdf = benchmark_ohlcv
+                        if isinstance(bmdf, pd.DataFrame) and not bmdf.empty:
+                            tmp = bmdf.reset_index()
+                            # index may be named timestamp or level_0
+                            ts_col = "timestamp" if "timestamp" in tmp.columns else tmp.columns[0]
+                            re002_benchmark_candles = []
+                            for _, row in tmp.iterrows():
+                                re002_benchmark_candles.append(
+                                    {
+                                        "timestamp": row[ts_col],
+                                        "open": float(row.get("open", row.get("close", 0)) or 0),
+                                        "high": float(row.get("high", row.get("close", 0)) or 0),
+                                        "low": float(row.get("low", row.get("close", 0)) or 0),
+                                        "close": float(row["close"]),
+                                        "volume": int(row.get("volume") or 0),
+                                    }
+                                )
+                    except Exception as bm_exc:
+                        self.logger.debug(
+                            "RE-002 benchmark candle conversion skipped | symbol=%s | err=%s",
+                            symbol,
+                            bm_exc,
+                        )
+                        re002_benchmark_candles = None
+
                 async def _run_re001():
                     from ..services.re001 import run_re001_isolated_async
 
@@ -1467,7 +1712,11 @@ class OrchestratorAgent:
                 async def _run_re002():
                     from ..services.re002 import run_re002_isolated_async
 
-                    return await run_re002_isolated_async(**lab_kwargs)
+                    return await run_re002_isolated_async(
+                        **lab_kwargs,
+                        benchmark_candles=re002_benchmark_candles,
+                        benchmark_symbol=re002_benchmark_symbol,
+                    )
 
                 tasks = []
                 labels = []
@@ -1626,6 +1875,7 @@ class OrchestratorAgent:
                         "engine_version": getattr(
                             re001_decision, "engine_version", None
                         ),
+                        "technical_analysis": getattr(re001_decision, "technical_analysis", None),
                     }
             if re002_decision is not None:
                 try:
@@ -1647,11 +1897,12 @@ class OrchestratorAgent:
                         "reason_codes": getattr(re002_decision, "reason_codes", None),
                         "market_regime": getattr(re002_decision, "market_regime", None),
                         "recommendation_id": getattr(
-                            re002_decision, "recommendation_id", None
+                    re002_decision, "recommendation_id", None
                         ),
                         "engine_version": getattr(
                             re002_decision, "engine_version", None
                         ),
+                        "technical_analysis": getattr(re002_decision, "technical_analysis", None),
                         "experiment_id": getattr(re002_decision, "experiment_id", None),
                     }
 

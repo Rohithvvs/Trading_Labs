@@ -81,9 +81,10 @@ scanner_metrics = {
 
 class ScreenerService:
     # Stores the last fetched OHLCV DataFrames keyed by symbol for reuse by orchestrator.
-    # Capped at 500 entries to prevent unbounded memory growth.
+    # Cap covers full NIFTY500-class data_valid sets so RE-001/RE-002 independent
+    # evaluation can reuse OHLCV without re-fetching (engine independence).
     last_fetched_frames: dict[str, pd.DataFrame] = {}
-    _LAST_FRAMES_MAX = 500
+    _LAST_FRAMES_MAX = 1000
 
     def __init__(self, fyers_service=None):
         self.fyers_service = fyers_service or FyersService()
@@ -708,60 +709,81 @@ class ScreenerService:
         # business-day calendar (that exploded 755 symbols into millions of rows and
         # burned ~50s in indicators + tens of seconds of RAM/CPU).
         # Keep each series compact: sort → light ffill on own index → tail(required+buffer).
+        #
+        # CRITICAL: frame build + analyze_bulk_from_frame are pure CPU/pandas and MUST
+        # run off the asyncio event loop. When they ran inline, the loop was blocked for
+        # 30–120s+ → SSE heartbeats never flushed → frontend "stream stalled 90s" AND
+        # concurrent /health probes timed out → Infrastructure painted all "Waking Up".
         _progress("Building indicator frame...", 55)
-        ffill_t0 = time.perf_counter()
-        frame_parts = []
         bar_cap = max(required_history + 20, MINIMUM_SWING_CANDLES + 20)
-        for symbol, df in list(symbol_frames.items()):
-            if df is None or df.empty:
-                continue
-            df = df.sort_index()
-            # In-place gap fill on the symbol's own timestamps only.
-            df = df.ffill().bfill().fillna(0)
-            if len(df) > bar_cap:
-                df = df.iloc[-bar_cap:]
-            symbol_frames[symbol] = df
-            sym_df = df.copy()
-            sym_df["symbol"] = symbol
-            sym_df.index.name = "timestamp"
-            sym_df = sym_df.reset_index().set_index(["timestamp", "symbol"])
-            frame_parts.append(sym_df)
-        stage_timings["ffill_ms"] = (time.perf_counter() - ffill_t0) * 1000
+        tech_service = self.technical_service
 
-        if not frame_parts:
+        def _build_and_analyze_bulk(
+            frames: dict[str, pd.DataFrame],
+        ) -> tuple[dict[str, pd.DataFrame], dict[str, object], float, float]:
+            ffill_t0_local = time.perf_counter()
+            frame_parts_local: list[pd.DataFrame] = []
+            frames_out: dict[str, pd.DataFrame] = {}
+            for symbol, df in list(frames.items()):
+                if df is None or df.empty:
+                    continue
+                df = df.sort_index()
+                df = df.ffill().bfill().fillna(0)
+                if len(df) > bar_cap:
+                    df = df.iloc[-bar_cap:]
+                frames_out[symbol] = df
+                sym_df = df.copy()
+                sym_df["symbol"] = symbol
+                sym_df.index.name = "timestamp"
+                sym_df = sym_df.reset_index().set_index(["timestamp", "symbol"])
+                frame_parts_local.append(sym_df)
+            ffill_ms_local = (time.perf_counter() - ffill_t0_local) * 1000
+            if not frame_parts_local:
+                return frames_out, {}, ffill_ms_local, 0.0
+
+            combined = pd.concat(frame_parts_local)
+            combined.sort_index(inplace=True)
+            del frame_parts_local
+            for col in ("open", "high", "low", "close", "volume"):
+                if col in combined.columns:
+                    nan_count = combined[col].isna().sum()
+                    if nan_count > 0:
+                        combined[col] = combined[col].fillna(0)
+            ind_t0_local = time.perf_counter()
+            bulk = tech_service.analyze_bulk_from_frame(combined, AnalysisMode.swing)
+            ind_ms_local = (time.perf_counter() - ind_t0_local) * 1000
+            del combined
+            return frames_out, bulk, ffill_ms_local, ind_ms_local
+
+        _progress({"stage": "Calculating Technical Indicators...", "progress": 58, "heartbeat": True})
+        # Yield so the SSE generator can flush the progress event before CPU work starts.
+        await asyncio.sleep(0)
+        self.logger.info(
+            "STEP 2/8 | Stage=%s | Run vectorized analyze_bulk OFF event-loop | symbols=%s",
+            stage_name,
+            len(symbol_frames),
+        )
+        cpu_t0 = time.perf_counter()
+        symbol_frames, bulk_technical_results, ffill_ms, indicators_ms = await asyncio.to_thread(
+            _build_and_analyze_bulk, symbol_frames
+        )
+        stage_timings["ffill_ms"] = ffill_ms
+        stage_timings["indicators_ms"] = indicators_ms
+        self.logger.info(
+            "SCANNER_CPU_OFFLOAD_DONE | stage=%s | ffill_ms=%.0f | indicators_ms=%.0f | wall_ms=%.0f | results=%s",
+            stage_name,
+            ffill_ms,
+            indicators_ms,
+            (time.perf_counter() - cpu_t0) * 1000,
+            len(bulk_technical_results or {}),
+        )
+        if not bulk_technical_results and not any(
+            df is not None and not getattr(df, "empty", True) for df in symbol_frames.values()
+        ):
             self.logger.debug("MEMORY_AUDIT stage=no_valid_frames rss_mb=%.1f", get_rss_mb())
             return results
-
-        # Build the single canonical multi-index frame (already size-capped per symbol)
-        combined_frame = pd.concat(frame_parts)
-        combined_frame.sort_index(inplace=True)
-        # Release intermediate frame_parts immediately
-        del frame_parts
-
-        self.logger.debug("MEMORY_AUDIT stage=combined_frame_built rss_mb=%.1f symbols=%s candles=%s", get_rss_mb(), len(symbol_frames), len(combined_frame))
-
-        # NaN safety: ensure all OHLCV values are finite before indicator calculation
-        for col in ("open", "high", "low", "close", "volume"):
-            if col in combined_frame.columns:
-                nan_count = combined_frame[col].isna().sum()
-                if nan_count > 0:
-                    self.logger.warning("NAN_CLEANUP | column=%s | nan_count=%s | replacing_with_zero", col, nan_count)
-                    combined_frame[col] = combined_frame[col].fillna(0)
-
-        # Vectorized Bulk Analysis — pass the pre-built frame directly (no OHLCVPoint conversion)
-        _progress("Calculating Technical Indicators...", 58)
-        self.logger.info("STEP 2/8 | Stage=%s | Run vectorized analyze_bulk on entire universe", stage_name)
-        ind_t0 = time.perf_counter()
-        # Emit heartbeat before the heavy vectorized computation (no yield needed —
-        # the progress callback enqueues into the asyncio.Queue which the SSE generator
-        # reads every 5 seconds via the heartbeat_sender task)
-        _progress({"stage": "Calculating Technical Indicators...", "progress": 58, "heartbeat": True})
-        bulk_technical_results = self.technical_service.analyze_bulk_from_frame(combined_frame, AnalysisMode.swing)
-        stage_timings["indicators_ms"] = (time.perf_counter() - ind_t0) * 1000
         _progress({"stage": "Indicators complete", "progress": 60, "heartbeat": True})
-
-        # Release the combined frame — indicators are extracted, we don't need it anymore
-        del combined_frame
+        await asyncio.sleep(0)
 
         self.logger.debug("MEMORY_AUDIT stage=after_bulk_analysis rss_mb=%.1f symbols=%s", get_rss_mb(), len(bulk_technical_results))
 
@@ -828,6 +850,10 @@ class ScreenerService:
                     conditions={"processing_error": True}, matched=False
                 ))
 
+            # Cooperative yield so SSE/health keep running during long scoring passes.
+            if (idx + 1) % 25 == 0:
+                await asyncio.sleep(0)
+
             if progress_callback:
                 if (idx + 1) % 10 == 0 or idx == 0 or (idx + 1) == total_requested:
                     pct = 62 + int(8 * (idx + 1) / max(1, total_requested))
@@ -846,31 +872,43 @@ class ScreenerService:
 
         stage_timings["scoring_ms"] = (time.perf_counter() - score_t0) * 1000
 
-        # Store frames for orchestrator reuse (avoids duplicate fetch in run_full).
-        # Prefer matched symbols so shortlist analysis always has candle data.
+        # Store frames for orchestrator reuse (avoids duplicate fetch in run_full
+        # and independent RE-001/RE-002 evaluation over the full stage universe).
+        # Prefer data_valid (usable OHLCV) first, then matched Production symbols.
         new_frames = {
             s: df.copy()
             for s, df in symbol_frames.items()
             if df is not None and not df.empty and len(df) >= MINIMUM_SWING_CANDLES
         }
         matched_syms = {r.symbol for r in results if getattr(r, "matched", False)}
+        data_valid_syms = {
+            r.symbol
+            for r in results
+            if not (r.conditions or {}).get("data_source_failed", False)
+            and not (r.conditions or {}).get("data_quality_failed", False)
+        }
         if len(new_frames) > ScreenerService._LAST_FRAMES_MAX:
-            # Always keep matched symbols first, then fill by longest history
+            # Priority: matched → data_valid → longest history remainder
             priority = [s for s in new_frames if s in matched_syms]
+            valid_rest = [
+                s for s in new_frames if s in data_valid_syms and s not in matched_syms
+            ]
             rest = sorted(
-                (s for s in new_frames if s not in matched_syms),
+                (s for s in new_frames if s not in matched_syms and s not in data_valid_syms),
                 key=lambda s: len(new_frames[s]),
                 reverse=True,
             )
-            keep = priority + rest
+            keep = priority + valid_rest + rest
             keep = keep[: ScreenerService._LAST_FRAMES_MAX]
             new_frames = {s: new_frames[s] for s in keep}
         ScreenerService.last_fetched_frames = new_frames
         self.logger.info(
-            "SCREENER_FRAMES_STORED | total_frames=%s | matched_kept=%s | matched_total=%s",
+            "SCREENER_FRAMES_STORED | total_frames=%s | data_valid_kept=%s | matched_kept=%s | matched_total=%s | data_valid_total=%s",
             len(new_frames),
+            len(data_valid_syms & set(new_frames)),
             len(matched_syms & set(new_frames)),
             len(matched_syms),
+            len(data_valid_syms),
         )
         # Release symbol_frames explicitly after scoring loop
         del symbol_frames

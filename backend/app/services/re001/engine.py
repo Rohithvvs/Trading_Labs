@@ -1,18 +1,26 @@
-"""RE-001 strategy orchestration (baseline + Doc 02 priorities)."""
+"""RE-001 strategy orchestration — approved Trend Continuation core logic.
+
+Decision path (core):
+  mandatory gates (Keltner close breakout, RVOL>1.5, HA bullish + wick,
+  RSI14>50, earnings clear)
+  AND composite score > 75
+  (weights: 0.35 volume / 0.30 trend / 0.20 HA / 0.15 RSI)
+
+Production tech_score / regime support counts do NOT create BUY and cannot
+override a failed mandatory gate.
+"""
 
 from __future__ import annotations
 
 from typing import Any
 
 from .context import LabExecutionContext
+from .earnings import earnings_info_from_override, lookup_next_earnings
 from .eligibility import bull_stock_filter_pass, exceptional_rs_leader, _tech_score
 from .portfolio_context import portfolio_blocks_buy, resolve_portfolio_snapshot
 from .regime import is_regime_usable, map_market_regime
-from .strategy_config import (
-    BEAR_MINIMAL_PARTICIPATION,
-    REGIME_PRIMARY_PRIORITY,
-    SIDEWAYS_STRICT_PULLBACK,
-)
+from .strategy_config import BEAR_MINIMAL_PARTICIPATION, REGIME_PRIMARY_PRIORITY
+from .technicals import COMPOSITE_BUY_THRESHOLD, build_re001_technicals
 
 
 def _sector_rs(ctx: LabExecutionContext) -> float | None:
@@ -28,79 +36,33 @@ def _sector_rs(ctx: LabExecutionContext) -> float | None:
         return None
 
 
-def _signal_bullish(technical_results: list[Any]) -> bool:
-    if not technical_results:
-        return False
-    t0 = technical_results[0]
-    sig = str(getattr(t0, "signal", None) or (t0.get("signal") if isinstance(t0, dict) else "") or "").lower()
-    return sig in {"bullish", "buy", "strong_buy"}
-
-
-def _volume_expanding(candles: list[Any]) -> bool:
-    if not candles or len(candles) < 25:
-        return False
+def _capital_from_portfolio(portfolio: Any) -> float | None:
     try:
-        vols = [float(getattr(c, "volume", None) or c["volume"]) for c in candles[-25:]]  # type: ignore[index]
-    except Exception:
-        return False
-    recent = sum(vols[-5:]) / 5.0
-    base = sum(vols[-25:-5]) / 20.0 if len(vols) >= 25 else sum(vols[:-5]) / max(len(vols) - 5, 1)
-    return base > 0 and recent >= 1.1 * base
+        cash = getattr(portfolio, "available_cash", None)
+        if cash is not None and float(cash) > 0:
+            return float(cash)
+    except (TypeError, ValueError):
+        pass
+    return None
 
 
-def _evaluate_primaries(
-    *,
-    regime: str,
-    tech_score: float,
-    bullish: bool,
-    volume_ok: bool,
-    rs: float | None,
-    strict_pullback: bool,
-) -> tuple[list[str], list[dict[str, str]], list[dict[str, str]]]:
-    """Return (qualified families, supporting, rejected)."""
-    supporting: list[dict[str, str]] = []
-    rejected: list[dict[str, str]] = []
-    qualified: list[str] = []
+def _resolve_earnings(ctx: LabExecutionContext) -> dict[str, Any]:
+    override = earnings_info_from_override(ctx.earnings_info)
+    if override is not None:
+        return override
+    return lookup_next_earnings(ctx.symbol, as_of=ctx.scan_date)
 
-    if rs is not None and rs >= 0:
-        supporting.append({"name": "Relative Strength", "result": "pass"})
-    else:
-        supporting.append({"name": "Relative Strength", "result": "weak"})
 
-    if volume_ok:
-        supporting.append({"name": "Volume Confirmation", "result": "pass"})
-    else:
-        supporting.append({"name": "Volume Confirmation", "result": "weak"})
-
-    if bullish:
-        supporting.append({"name": "Multi-Timeframe Alignment", "result": "pass"})
-    else:
-        supporting.append({"name": "Multi-Timeframe Alignment", "result": "fail"})
-
-    # Primary qualification heuristics using existing TA score
-    candidates = {
-        "Trend Following": tech_score >= 68 and bullish,
-        "Pullback Continuation": tech_score >= 60 and bullish and (not strict_pullback or volume_ok),
-        "Breakout Continuation": tech_score >= 72 and volume_ok,
-        "Momentum Continuation": tech_score >= 70 and bullish,
+def _gate_reason_codes(failed: list[str]) -> list[str]:
+    mapping = {
+        "keltner_breakout": "keltner_breakout_failed",
+        "relative_volume": "relative_volume_failed",
+        "ha_bullish": "ha_not_bullish",
+        "ha_lower_wick": "ha_lower_wick_failed",
+        "rsi": "rsi_below_threshold",
+        "earnings_clear": "earnings_blackout",
     }
-
-    if regime == "Sideways" and SIDEWAYS_STRICT_PULLBACK:
-        if candidates["Pullback Continuation"] and not (volume_ok and tech_score >= 68):
-            candidates["Pullback Continuation"] = False
-            rejected.append({"name": "Pullback Continuation", "reason": "sideways_strict_pullback"})
-
-    for name, ok in candidates.items():
-        if ok:
-            qualified.append(name)
-        else:
-            if not any(r["name"] == name for r in rejected):
-                rejected.append({"name": name, "reason": "conditions_not_met"})
-
-    # Priority order
-    order = REGIME_PRIMARY_PRIORITY.get(regime, REGIME_PRIMARY_PRIORITY["Sideways"])
-    qualified_sorted = [f for f in order if f in qualified]
-    return qualified_sorted, supporting, rejected
+    return [mapping.get(f, f"gate_{f}") for f in failed]
 
 
 def evaluate_re001(ctx: LabExecutionContext) -> dict[str, Any]:
@@ -124,6 +86,7 @@ def evaluate_re001(ctx: LabExecutionContext) -> dict[str, Any]:
             "supporting_strategies": [],
             "rejected_strategies": [],
             "evaluation_status": "rejected_by_rules",
+            "technical_analysis": {},
         }
 
     rs = _sector_rs(ctx)
@@ -138,18 +101,24 @@ def evaluate_re001(ctx: LabExecutionContext) -> dict[str, Any]:
         risk_settings=ctx.risk_settings,
     )
     port_block, port_reason = portfolio_blocks_buy(portfolio)
+    capital = _capital_from_portfolio(portfolio)
 
-    tech_score = _tech_score(ctx.technical_results)
-    bullish = _signal_bullish(ctx.technical_results)
-    volume_ok = _volume_expanding(ctx.candles)
+    # Informational only — never drives RE-001 BUY
+    prod_tech_score = _tech_score(ctx.technical_results)
 
     if regime == "Bear" and BEAR_MINIMAL_PARTICIPATION:
         if not exceptional_rs_leader(technical_results=ctx.technical_results, sector_rs=rs):
             reason_codes.append("bear_regime_minimal_participation")
+            tech = build_re001_technicals(
+                ctx.candles,
+                ctx.technical_results,
+                earnings_info=_resolve_earnings(ctx),
+                capital=capital,
+            )
             return {
                 "recommendation_state": "REJECT",
                 "market_regime": regime,
-                "confidence_score": min(tech_score / 100.0, 0.4),
+                "confidence_score": min(prod_tech_score / 100.0, 0.4),
                 "strategy_family": None,
                 "strategy_name": None,
                 "reason_codes": reason_codes + elig_reasons,
@@ -160,6 +129,7 @@ def evaluate_re001(ctx: LabExecutionContext) -> dict[str, Any]:
                         "bull_stock_filter": "fail" if not eligible else "pass",
                         "bear_exceptional_rs": "fail",
                     },
+                    "production_tech_score": prod_tech_score,
                 },
                 "explanation": "Bear regime: ordinary continuation rejected; not an exceptional RS leader.",
                 "portfolio_decision": {
@@ -171,20 +141,28 @@ def evaluate_re001(ctx: LabExecutionContext) -> dict[str, Any]:
                 "supporting_strategies": [],
                 "rejected_strategies": [{"name": "all_primaries", "reason": "bear_minimal"}],
                 "evaluation_status": "rejected_by_rules",
+                "technical_analysis": tech,
             }
 
     if not eligible:
         reason_codes.extend(elig_reasons or ["bull_stock_filter_failed"])
+        tech = build_re001_technicals(
+            ctx.candles,
+            ctx.technical_results,
+            earnings_info=_resolve_earnings(ctx),
+            capital=capital,
+        )
         return {
             "recommendation_state": "REJECT",
             "market_regime": regime,
-            "confidence_score": min(tech_score / 100.0, 0.45),
+            "confidence_score": min(prod_tech_score / 100.0, 0.45),
             "strategy_family": None,
             "strategy_name": None,
             "reason_codes": reason_codes,
             "evidence": {
                 "regime": regime,
                 "validation": {"bull_stock_filter": "fail", "reasons": elig_reasons},
+                "production_tech_score": prod_tech_score,
             },
             "explanation": "Failed Bull Stock Filter eligibility.",
             "portfolio_decision": {
@@ -196,94 +174,187 @@ def evaluate_re001(ctx: LabExecutionContext) -> dict[str, Any]:
             "supporting_strategies": [],
             "rejected_strategies": [],
             "evaluation_status": "rejected_by_rules",
+            "technical_analysis": tech,
         }
 
-    qualified, supporting, rejected = _evaluate_primaries(
-        regime=regime,
-        tech_score=tech_score,
-        bullish=bullish,
-        volume_ok=volume_ok,
-        rs=rs,
-        strict_pullback=(regime == "Sideways"),
+    # ---- Core RE-001 setup evaluation (single source of truth) ----
+    earnings = _resolve_earnings(ctx)
+    tech = build_re001_technicals(
+        ctx.candles,
+        ctx.technical_results,
+        earnings_info=earnings,
+        capital=capital,
     )
 
-    if not qualified:
+    if tech.get("error"):
+        reason_codes.append("insufficient_history" if "insufficient" in str(tech.get("error")) else "technicals_error")
         return {
             "recommendation_state": "REJECT",
             "market_regime": regime,
-            "confidence_score": min(tech_score / 100.0, 0.5),
+            "confidence_score": 0.0,
             "strategy_family": None,
             "strategy_name": None,
-            "reason_codes": ["no_primary_strategy"],
-            "evidence": {
-                "regime": regime,
-                "supporting": supporting,
-                "rejected": rejected,
-            },
-            "explanation": "No primary continuation strategy qualified.",
+            "reason_codes": reason_codes,
+            "evidence": {"regime": regime, "technicals_error": tech.get("error")},
+            "explanation": f"RE-001 technical evaluation failed: {tech.get('error')}",
             "portfolio_decision": {
                 "status": "ok" if portfolio.available else "unavailable",
                 "source": portfolio.source,
             },
             "risk_profile": {"regime": regime},
             "primary_strategy": None,
-            "supporting_strategies": supporting,
-            "rejected_strategies": rejected,
+            "supporting_strategies": [],
+            "rejected_strategies": [],
             "evaluation_status": "rejected_by_rules",
+            "technical_analysis": tech,
         }
 
-    primary = qualified[0]
-    # Confidence from tech + support
-    support_pass = sum(1 for s in supporting if s.get("result") == "pass")
-    conf = min(0.95, max(0.35, tech_score / 100.0 * 0.7 + support_pass * 0.08))
+    decision_block = tech.get("decision") or {}
+    gates = tech.get("gates") or {}
+    mandatory_ok = bool(tech.get("mandatory_gates_pass"))
+    composite = float(tech.get("composite_score") or 0.0)
+    score_ok = composite > COMPOSITE_BUY_THRESHOLD
+    failed_gates = list(decision_block.get("failed_gates") or [])
 
-    if tech_score >= 72 and support_pass >= 2:
-        state = "BUY"
-    elif tech_score >= 55:
-        state = "WATCH"
+    supporting: list[dict[str, str]] = []
+    rejected: list[dict[str, str]] = []
+
+    supporting.append(
+        {
+            "name": "Keltner Breakout",
+            "result": "pass" if gates.get("keltner_breakout") else "fail",
+        }
+    )
+    supporting.append(
+        {
+            "name": "Relative Volume",
+            "result": "pass" if gates.get("relative_volume") else "fail",
+        }
+    )
+    supporting.append(
+        {
+            "name": "Heikin-Ashi",
+            "result": "pass" if gates.get("ha_bullish") and gates.get("ha_lower_wick") else "fail",
+        }
+    )
+    supporting.append(
+        {"name": "RSI14", "result": "pass" if gates.get("rsi") else "fail"}
+    )
+    supporting.append(
+        {
+            "name": "Earnings Clear",
+            "result": "pass" if gates.get("earnings_clear") else "fail",
+        }
+    )
+    if rs is not None and rs >= 0:
+        supporting.append({"name": "Relative Strength", "result": "pass"})
     else:
-        state = "REJECT"
-        reason_codes.append("low_technical_score")
+        supporting.append({"name": "Relative Strength", "result": "weak"})
 
+    # Primary strategy identity for explainability (Keltner breakout path)
+    primary = "Breakout Continuation"
+    order = REGIME_PRIMARY_PRIORITY.get(regime, REGIME_PRIMARY_PRIORITY["Sideways"])
+    if primary not in order:
+        primary = order[0] if order else "Trend Following"
+
+    if not mandatory_ok:
+        reason_codes.extend(_gate_reason_codes(failed_gates))
+        state = "REJECT"
+        conf = min(0.5, max(0.1, composite / 100.0 * 0.5))
+        explanation = (
+            f"RE-001 mandatory gate(s) failed: {', '.join(failed_gates) or 'unknown'}; "
+            f"composite={composite:.2f}."
+        )
+        for g in failed_gates:
+            rejected.append({"name": g, "reason": "mandatory_gate_failed"})
+    elif not score_ok:
+        reason_codes.append("composite_score_below_threshold")
+        state = "WATCH"
+        conf = min(0.7, max(0.35, composite / 100.0 * 0.85))
+        explanation = (
+            f"RE-001 gates passed but composite {composite:.2f} "
+            f"<= {COMPOSITE_BUY_THRESHOLD} (BUY requires > {COMPOSITE_BUY_THRESHOLD})."
+        )
+    else:
+        state = "BUY"
+        conf = min(0.95, max(0.55, composite / 100.0))
+        explanation = (
+            f"RE-001 Trend Continuation BUY: all mandatory gates passed; "
+            f"composite={composite:.2f} > {COMPOSITE_BUY_THRESHOLD}; "
+            f"primary={primary} under {regime}."
+        )
+
+    # Portfolio validation may only downgrade BUY — never create BUY
     if port_block:
         if port_reason:
             reason_codes.append(port_reason)
         if state == "BUY":
             state = "WATCH"
+            explanation = (
+                f"{explanation} Downgraded to WATCH: portfolio validation "
+                f"({port_reason or 'blocked'})."
+            )
+
+    risk = tech.get("risk") or {}
+    risk_profile = {
+        "regime": regime,
+        "mode": "continuation",
+        "entry": risk.get("entry"),
+        "stop_loss": risk.get("selected_sl"),
+        "take_profit": risk.get("take_profit"),
+        "position_size": risk.get("position_size"),
+        "risk_per_share": risk.get("risk_per_share"),
+        "risk_reward": risk.get("risk_reward"),
+        "breakeven_trigger": risk.get("breakeven_trigger"),
+    }
 
     return {
         "recommendation_state": state,
         "market_regime": regime,
         "confidence_score": conf,
-        "strategy_family": primary,
-        "strategy_name": primary,
+        "strategy_family": primary if state in {"BUY", "WATCH"} else None,
+        "strategy_name": primary if state in {"BUY", "WATCH"} else None,
         "reason_codes": reason_codes,
         "evidence": {
             "regime": regime,
             "priority_order": REGIME_PRIMARY_PRIORITY.get(regime, []),
-            "qualified_primaries": qualified,
             "supporting": supporting,
             "rejected": rejected,
-            "technical_score": tech_score,
+            "production_tech_score": prod_tech_score,
+            "re001_composite_score": composite,
+            "mandatory_gates": gates,
+            "scoring": tech.get("scoring"),
             "validation": {
                 "market_regime": "pass",
                 "bull_stock_filter": "pass",
                 "portfolio": "fail" if port_block else "pass",
-                "liquidity": "pass" if volume_ok else "weak",
+                "keltner_breakout": "pass" if gates.get("keltner_breakout") else "fail",
+                "relative_volume": "pass" if gates.get("relative_volume") else "fail",
+                "ha": "pass" if gates.get("ha_bullish") and gates.get("ha_lower_wick") else "fail",
+                "rsi": "pass" if gates.get("rsi") else "fail",
+                "earnings": "pass" if gates.get("earnings_clear") else "fail",
+                "composite": "pass" if score_ok else "fail",
             },
         },
-        "explanation": (
-            f"Primary {primary} under {regime} regime; tech_score={tech_score:.1f}; "
-            f"state={state}."
-        ),
+        "explanation": explanation,
         "portfolio_decision": {
             "status": "blocked" if port_block else "ok",
             "source": portfolio.source,
             "reason": port_reason,
         },
-        "risk_profile": {"regime": regime, "mode": "continuation"},
-        "primary_strategy": primary,
+        "risk_profile": risk_profile,
+        "primary_strategy": primary if state in {"BUY", "WATCH"} else None,
         "supporting_strategies": supporting,
         "rejected_strategies": rejected,
         "evaluation_status": "success" if state != "REJECT" or not reason_codes else "rejected_by_rules",
+        "technical_analysis": tech,
+        "trade_guidance_payload": {
+            "entry_low": risk.get("entry"),
+            "entry_high": risk.get("entry"),
+            "stop_loss": risk.get("selected_sl"),
+            "target_1": risk.get("take_profit"),
+            "risk_reward_ratio": risk.get("risk_reward"),
+        }
+        if risk.get("valid")
+        else None,
     }

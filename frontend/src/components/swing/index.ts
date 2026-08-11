@@ -7,6 +7,9 @@ export type { ScannerControlsProps } from "./ScannerControls";
 export { ScannerStatistics } from "./ScannerStatistics";
 export type { ScannerStatisticsProps, ScannerStatMetric } from "./ScannerStatistics";
 
+export { EngineStatistics } from "./EngineStatistics";
+export type { EngineStatisticsProps } from "./EngineStatistics";
+
 export { DataFeedNotice } from "./DataFeedNotice";
 export type { DataFeedNoticeProps } from "./DataFeedNotice";
 

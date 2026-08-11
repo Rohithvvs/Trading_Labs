@@ -26,6 +26,11 @@ class LabExecutionContext:
     scan_date: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     analysis_history_id: int | None = None
     experiment_id: str | None = None
+    # RE-002 technical layer inputs (optional; technicals may load benchmark if missing)
+    benchmark_candles: list[Any] = field(default_factory=list)
+    benchmark_symbol: str | None = None
+    earnings_info: dict[str, Any] | None = None
+    recommendation_backtest: dict[str, Any] | None = None
 
 
 def build_lab_context(
@@ -47,6 +52,10 @@ def build_lab_context(
     scan_date: datetime | None = None,
     analysis_history_id: int | None = None,
     experiment_id: str | None = None,
+    benchmark_candles: list[Any] | None = None,
+    benchmark_symbol: str | None = None,
+    earnings_info: dict[str, Any] | None = None,
+    recommendation_backtest: dict[str, Any] | None = None,
 ) -> LabExecutionContext:
     ts = scan_date or datetime.now(timezone.utc)
     run_id = scan_run_id or f"scan-{ts.strftime('%Y%m%dT%H%M%SZ')}"
@@ -68,4 +77,8 @@ def build_lab_context(
         scan_date=ts,
         analysis_history_id=analysis_history_id,
         experiment_id=experiment_id,
+        benchmark_candles=list(benchmark_candles or []),
+        benchmark_symbol=benchmark_symbol,
+        earnings_info=earnings_info,
+        recommendation_backtest=recommendation_backtest,
     )

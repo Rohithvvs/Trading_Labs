@@ -318,6 +318,9 @@ async def _run_automated_background_scan_sync():
         from ..agents import RouterAgent
         from ..schemas.analysis import ScreenerRequest, AnalysisMode, TimeframeConfig
         
+        # top_n scopes Production recommendation selection only.
+        # RE-001 / RE-002 evaluate the full data_valid universe independently
+        # inside orchestrator (engine independence architecture).
         req = ScreenerRequest(
             mode=AnalysisMode.SWING,
             timeframe_config=TimeframeConfig(intraday="5m", swing="1d", lookback_window=180),

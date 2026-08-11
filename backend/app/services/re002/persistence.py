@@ -63,6 +63,7 @@ def persist_decision(
             production_score=decision.production_score,
             is_mismatch=decision.is_mismatch,
             evaluation_status=decision.evaluation_status,
+            technical_analysis=decision.technical_analysis,
         )
         # Optional experiment_id if column present
         if hasattr(RecommendationEngineDecision, "experiment_id"):
@@ -178,6 +179,7 @@ def row_to_decision_dict(row: RecommendationEngineDecision) -> dict[str, Any]:
         "production_score": row.production_score,
         "is_mismatch": row.is_mismatch,
         "evaluation_status": row.evaluation_status,
+        "technical_analysis": row.technical_analysis,
         "created_at": row.created_at.isoformat() if row.created_at else None,
     }
     if hasattr(row, "experiment_id"):

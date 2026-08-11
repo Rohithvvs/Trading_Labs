@@ -228,8 +228,8 @@ async def screener_full(
                         idle_ticks * HEARTBEAT_INTERVAL,
                     )
                 yield f"event: progress\ndata: {json.dumps(wait_msg)}\n\n"
-                # Comment keepalive for proxies that ignore event frames
-                yield f": heartbeat {_time.time():.0f}\n\n"
+                # Comment keepalive padded to 2KB to force flush proxies that ignore X-Accel-Buffering
+                yield f": heartbeat {_time.time():.0f} {' ' * 2048}\n\n"
                 last_yield_time = _time.monotonic()
 
     response = StreamingResponse(

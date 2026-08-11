@@ -25,43 +25,9 @@ def persist_decision(
     if not settings.re001_persist_decisions:
         return None
     try:
-        explanation = decision.explanation
-        if isinstance(explanation, dict):
-            explanation = str(explanation)
-
-        symbol = str(decision.symbol or "").strip().upper()
-        row = RecommendationEngineDecision(
-            recommendation_id=decision.recommendation_id,
-            engine_id=decision.engine_id,
-            engine_version=decision.engine_version,
-            symbol=symbol,
-            mode=mode,
-            scan_run_id=decision.scan_run_id,
-            analysis_history_id=decision.analysis_history_id,
-            market_regime=decision.market_regime,
-            trading_objective=decision.trading_objective,
-            trading_style=decision.trading_style,
-            strategy_family=decision.strategy_family,
-            strategy_name=decision.strategy_name,
-            recommendation_state=decision.recommendation_state,
-            confidence_score=float(decision.confidence_score),
-            risk_profile=decision.risk_profile if isinstance(decision.risk_profile, dict) else {"value": decision.risk_profile},
-            portfolio_decision=(
-                decision.portfolio_decision
-                if isinstance(decision.portfolio_decision, dict)
-                else {"value": decision.portfolio_decision}
-            ),
-            evidence=decision.evidence,
-            explanation=str(explanation or ""),
-            reason_codes=list(decision.reason_codes or []),
-            trade_guidance=(
-                decision.trade_guidance.model_dump() if decision.trade_guidance else None
-            ),
-            production_action=decision.production_action,
-            production_score=decision.production_score,
-            is_mismatch=decision.is_mismatch,
-            evaluation_status=decision.evaluation_status,
-        )
+        row = _decision_to_row(decision, mode=mode)
+        if row is None:
+            return None
         db.add(row)
         db.commit()
         db.refresh(row)
@@ -107,6 +73,151 @@ def persist_decision(
         except Exception:
             pass
         return None
+
+
+def _decision_to_row(decision: Any, *, mode: str = "swing") -> RecommendationEngineDecision | None:
+    """Map a Decision Object to an unsaved ``RecommendationEngineDecision`` row.
+
+    Pulled out of ``persist_decision`` so batch paths can ``add_all`` rows and
+    commit once instead of opening one transaction per symbol.
+    """
+    explanation = decision.explanation
+    if isinstance(explanation, dict):
+        explanation = str(explanation)
+
+    symbol = str(decision.symbol or "").strip().upper()
+    if not symbol:
+        return None
+    return RecommendationEngineDecision(
+        recommendation_id=decision.recommendation_id,
+        engine_id=decision.engine_id,
+        engine_version=decision.engine_version,
+        symbol=symbol,
+        mode=mode,
+        scan_run_id=decision.scan_run_id,
+        analysis_history_id=decision.analysis_history_id,
+        market_regime=decision.market_regime,
+        trading_objective=decision.trading_objective,
+        trading_style=decision.trading_style,
+        strategy_family=decision.strategy_family,
+        strategy_name=decision.strategy_name,
+        recommendation_state=decision.recommendation_state,
+        confidence_score=float(decision.confidence_score),
+        risk_profile=(
+            decision.risk_profile if isinstance(decision.risk_profile, dict) else {"value": decision.risk_profile}
+        ),
+        portfolio_decision=(
+            decision.portfolio_decision
+            if isinstance(decision.portfolio_decision, dict)
+            else {"value": decision.portfolio_decision}
+        ),
+        evidence=decision.evidence,
+        explanation=str(explanation or ""),
+        reason_codes=list(decision.reason_codes or []),
+        trade_guidance=(
+            decision.trade_guidance.model_dump() if decision.trade_guidance else None
+        ),
+        production_action=decision.production_action,
+        production_score=decision.production_score,
+        is_mismatch=decision.is_mismatch,
+        evaluation_status=decision.evaluation_status,
+        technical_analysis=decision.technical_analysis,
+    )
+
+
+def persist_decision_batch(
+    db: Session,
+    decisions: list[Any],
+    *,
+    mode: str = "swing",
+) -> int:
+    """Persist many Decision Objects in one transaction (single commit).
+
+    Falls back to per-row inserts when a duplicate recommendation_id (already
+    persisted concurrently) trips the unique constraint mid-batch.
+
+    Diagnostic decisions (``evidence.diagnostic`` — lab-run markers emitted for
+    symbols with insufficient history) are excluded: they exist so lab funnel
+    counts cover the whole input universe, not as real engine decisions.
+    """
+    from ...config.settings import settings
+
+    if not settings.re001_persist_decisions or not decisions:
+        return 0
+
+    rows = []
+    seen_ids = set()
+    for decision in decisions:
+        rid = str(getattr(decision, "recommendation_id", "") or "")
+        if not rid or rid in seen_ids:
+            continue
+        evidence = getattr(decision, "evidence", None)
+        if isinstance(evidence, dict) and evidence.get("diagnostic"):
+            continue
+        row = _decision_to_row(decision, mode=mode)
+        if row is None:
+            continue
+        seen_ids.add(rid)
+        rows.append(row)
+
+    if not rows:
+        return 0
+
+    inserted = 0
+    try:
+        db.add_all(rows)
+        db.commit()
+        inserted = len(rows)
+    except IntegrityError:
+        # Concurrent duplicate write: insert whichever rows are still missing.
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        for row in rows:
+            try:
+                existing = get_decision_by_id(db, row.recommendation_id)
+                if existing is not None:
+                    continue
+                db.add(row)
+                db.commit()
+                inserted += 1
+            except IntegrityError:
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+            except Exception:
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+        if inserted:
+            from .metrics import incr
+            try:
+                incr("persist_batch_ok")
+            except Exception:
+                pass
+    except Exception as exc:
+        logger.warning(
+            "RE-001 batch persist failed | rows=%s | err=%s",
+            len(rows),
+            exc,
+            exc_info=True,
+        )
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return 0
+
+    if inserted:
+        from .metrics import incr
+        try:
+            incr("persist_ok")
+        except Exception:
+            pass
+    return inserted
 
 
 def list_decisions_for_scan(db: Session, scan_run_id: str, *, engine_id: str = "RE-001") -> list[RecommendationEngineDecision]:
@@ -169,5 +280,6 @@ def row_to_decision_dict(row: RecommendationEngineDecision) -> dict[str, Any]:
         "production_score": row.production_score,
         "is_mismatch": row.is_mismatch,
         "evaluation_status": row.evaluation_status,
+        "technical_analysis": row.technical_analysis,
         "created_at": row.created_at.isoformat() if row.created_at else None,
     }

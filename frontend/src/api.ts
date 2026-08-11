@@ -225,34 +225,48 @@ export async function runPresetScreener(
   const decoder = new TextDecoder();
   let buffer = "";
   let payload: ScreenerResponse | null = null;
-  // Server sends progress/heartbeat every ~5s. Stall if nothing for 90s.
+  // Server sends progress/heartbeat every ~5s. Stall means NO STREAM BYTES for 90s
+  // (not "scan running longer than 90s"). Heartbeats and progress both count as activity.
   const STREAM_STALL_TIMEOUT_MS = 90_000;
   let lastProgressAt = Date.now();
   let sawRealProgress = false;
 
   while (true) {
     let result: ReadableStreamReadResult<Uint8Array>;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    const onAbort = () => {
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
+    };
     try {
+      // Remaining budget based on last activity (not wall-clock of entire scan).
+      const remainingMs = Math.max(
+        1_000,
+        STREAM_STALL_TIMEOUT_MS - (Date.now() - lastProgressAt),
+      );
       const timeoutPromise = new Promise<never>((_, reject) => {
-        const id = setTimeout(() => {
+        timeoutId = setTimeout(() => {
           const waited = Math.round((Date.now() - lastProgressAt) / 1000);
           reject(
             new Error(
               sawRealProgress
                 ? `Scanner stream stalled — no progress for ${waited}s`
-                : "Scanner stuck at startup — no progress events received. Check broker token and backend logs for [SCAN].",
-            ),
+                : "Scanner stuck at startup — no progress events received. Check broker token and backend logs for [SCAN]."
+            )
           );
-        }, STREAM_STALL_TIMEOUT_MS);
-        if (signal) signal.addEventListener("abort", () => clearTimeout(id), { once: true });
+        }, remainingMs);
       });
+      if (signal) signal.addEventListener("abort", onAbort, { once: true });
       result = await Promise.race([reader.read(), timeoutPromise]);
-    } catch (err: any) {
+    } catch (err: unknown) {
       if (signal?.aborted) throw new Error("Scan cancelled");
       throw err;
+    } finally {
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
+      if (signal) signal.removeEventListener("abort", onAbort);
     }
     if (result.done) break;
 
+    // Any byte activity (progress event, heartbeat comment, padding) resets stall clock.
     lastProgressAt = Date.now();
     buffer += decoder.decode(result.value, { stream: true });
     const events = buffer.split("\n\n");
@@ -891,6 +905,46 @@ export function invalidateLatestScanCaches(): void {
   invalidateCache(`${CACHE_KEYS.latestScan}:engine:RE-001`);
   invalidateCache(`${CACHE_KEYS.latestScan}:engine:RE-002`);
 }
+
+/**
+ * Consolidated scanner statistics: production + RE-001 + RE-002 engine stats.
+ *
+ * One request per render cycle (30s SWR cache). Engine stats are computed
+ * from actual recommendation_engine_decisions rows on the backend — never
+ * derived from production statistics.
+ *
+ * Endpoint: GET {API_BASE_URL}/scanner/statistics
+ * (same origin/base as /scanner/latest and other scanner APIs)
+ */
+export async function fetchScannerStatistics(): Promise<{
+  production: Record<string, any>;
+  engines: {
+    "RE-001": Record<string, any>;
+    "RE-002": Record<string, any>;
+  };
+}> {
+  return cachedFetch(
+    "scanner:statistics:v1",
+    async () => {
+      const response = await fetchWithDiagnostics(
+        "/scanner/statistics",
+        { method: "GET" },
+        "Fetch scanner statistics",
+      );
+      if (!response.ok) {
+        // Keep HTTP status for dev diagnostics; surface a stable user message.
+        apiWarn(
+          `[api] Fetch scanner statistics failed | status=${response.status} | url=${apiUrl("/scanner/statistics")}`,
+        );
+        throw new Error("Unable to load engine statistics.");
+      }
+      return response.json();
+    },
+    { swr: true, softTimeoutMs: 8000 },
+  );
+}
+
+
 
 /**
  * After a successful Run Scan, persist the response into client caches so

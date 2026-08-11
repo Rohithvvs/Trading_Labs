@@ -5,6 +5,7 @@ import { ScannerProgress } from "../ScannerProgress";
 import { MarketStatus } from "./MarketStatus";
 import { ScannerControls } from "./ScannerControls";
 import { ScannerStatistics, type ScannerStatMetric } from "./ScannerStatistics";
+import { EngineStatistics } from "./EngineStatistics";
 import { DataFeedNotice } from "./DataFeedNotice";
 import { QuickScannerActions } from "./QuickScannerActions";
 import type { ScreenerResponse } from "../../types";
@@ -130,6 +131,9 @@ export const SwingDecisionDashboard = memo(function SwingDecisionDashboard({
       <InfrastructureStatus />
 
       <ScannerStatistics metrics={summaryMetrics} />
+
+      {/* Engine-specific statistics — independent async load, never affects production stats */}
+      <EngineStatistics />
 
       <DataFeedNotice warning={screenerResult?.data_warning} />
 

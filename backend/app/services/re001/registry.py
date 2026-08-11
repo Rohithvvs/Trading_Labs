@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from ...config.settings import settings
-from ...schemas.re001 import Re001Registration, Re001Stage
+from ...schemas.re001 import Re001Registration
 
 
 def get_re001_registration() -> Re001Registration:
