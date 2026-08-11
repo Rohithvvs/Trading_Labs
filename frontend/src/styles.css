@@ -2264,13 +2264,15 @@ abbr {
 
 .paper-tabs-panel {
   min-height: 420px;
-  overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 .paper-tabs-panel .table-scroll {
   width: 100%;
   overflow-x: auto;
-  overflow-y: hidden;
+  overflow-y: auto;
+  max-height: calc(100vh - 250px);
   max-width: 100%;
   min-width: 0;
   box-sizing: border-box;
