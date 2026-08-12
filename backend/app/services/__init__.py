@@ -3,9 +3,9 @@ from .fyers_service import FyersService
 from .llm_service import LLMService
 from .news_service import NewsService
 from .ranking_service import RankingService
-from .recommendation_service import RecommendationService
 from .screener_service import ScreenerService
 from .sentiment_service import SentimentService
+from .score_recommendation_service import ScoreRecommendationService
 from .technical_analysis_service import TechnicalAnalysisService
 from .sector_rs_service import SectorRelativeStrengthService
 from .market_permission_service import MarketPermissionService
@@ -17,9 +17,9 @@ __all__ = [
     "LLMService",
     "NewsService",
     "RankingService",
-    "RecommendationService",
     "ScreenerService",
     "SentimentService",
+    "ScoreRecommendationService",
     "TechnicalAnalysisService",
     "SectorRelativeStrengthService",
     "MarketPermissionService",

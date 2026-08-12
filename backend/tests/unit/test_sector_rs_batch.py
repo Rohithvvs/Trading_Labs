@@ -126,30 +126,6 @@ async def test_batch_path_b_uses_prefetched_candles_without_network():
     assert results["FOO-EQ"].sector_filter_status == "STRENGTH"
     assert results["BAR-EQ"].sector_rs_20 is not None
 
-
-@pytest.mark.anyio
-async def test_lab_resolve_uses_batch_not_per_symbol():
-    """independent_lab_universe._resolve_sector_overlays must call batch API."""
-    from app.services import independent_lab_universe as lab
-
-    batch = AsyncMock(return_value={"AAA": MagicMock()})
-    with patch(
-        "app.services.sector_rs_service.SectorRelativeStrengthService.evaluate_sector_overlays_batch",
-        batch,
-    ):
-        with patch(
-            "app.services.sector_rs_service.SectorRelativeStrengthService.evaluate_sector_overlay",
-            new_callable=AsyncMock,
-        ) as single:
-            out = await lab._resolve_sector_overlays(
-                ["AAA", "BBB"],
-                {"AAA": _points(datetime(2026, 7, 10), [100.0] * 25)},
-            )
-            batch.assert_awaited_once()
-            single.assert_not_called()
-            assert "AAA" in out
-
-
 @pytest.mark.anyio
 async def test_single_symbol_path_still_works():
     """Production Top-N still uses evaluate_sector_overlay."""

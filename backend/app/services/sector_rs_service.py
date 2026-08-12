@@ -3,10 +3,10 @@
 Computes sector_rs_20 = sector_ROC20 - NIFTY50_ROC20 when sector index history is available.
 When the static symbol→sector map is incomplete, resolves sector via stocks_master.
 When sector index data is unavailable, falls back to stock-vs-NIFTY50 relative strength
-(same ROC20 difference formula) so RE-002 and FEAT-007 receive real RS when price data exists.
+(same ROC20 difference formula) so the sector overlay receives real RS when price data exists.
 Never invents RS from technical scores.
 
-Lab / full-universe path MUST use ``evaluate_sector_overlays_batch`` so NIFTY50 and each
+Batch path MUST use ``evaluate_sector_overlays_batch`` so NIFTY50 and each
 sector index are loaded once — per-symbol ``evaluate_sector_overlay`` reloads those series
 and can push a ~700-symbol scan past the 600s hard timeout.
 """

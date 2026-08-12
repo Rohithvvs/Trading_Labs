@@ -91,10 +91,6 @@ def test_reconciliation_exit_source(paper_service):
         source_signal=None,
         source_score=None,
         source_confidence=None,
-        source_engine_id=None,
-        source_engine_version=None,
-        source_recommendation_id=None,
-        experiment_id=None,
         created_at=None,
     )
     paper_service.db.scalar.side_effect = [pos_mock, None]

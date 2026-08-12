@@ -8,8 +8,7 @@ export type FeatureKey =
   | "export_data"
   | "watchlist"
   | "portfolio_analytics"
-  | "advanced_scanner"
-  | "recommendation_lab";
+  | "advanced_scanner";
 
 export interface FeaturePermission {
   id: string;

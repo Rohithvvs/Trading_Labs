@@ -61,12 +61,6 @@ class PaperPositionResponse(BaseModel):
     source_signal: str | None = None
     source_score: float | None = None
     source_confidence: float | None = None
-    source_engine_id: str | None = None
-    source_engine_version: str | None = None
-    source_recommendation_id: str | None = None
-    experiment_id: str | None = None
-    # Alias for UI: Production | RE-001 | RE-002 (same value as source_engine_id)
-    recommendation_engine: str | None = None
     price_source: Literal["FYERS_QUOTE", "CANDLE_FALLBACK", "NO_DATA", "TEST_MOCK"] | None = None
     price_fetched_at: datetime | None = None
     is_price_stale: bool = False
@@ -117,11 +111,6 @@ class PaperOrderResponse(BaseModel):
     source_signal: str | None = None
     source_score: float | None = None
     source_confidence: float | None = None
-    source_engine_id: str | None = None
-    source_engine_version: str | None = None
-    source_recommendation_id: str | None = None
-    experiment_id: str | None = None
-    recommendation_engine: str | None = None
     last_evaluated_at: datetime | None = None
     last_seen_ltp: float | None = None
     price_source: Literal["FYERS_QUOTE", "CANDLE_FALLBACK", "NO_DATA", "TEST_MOCK"] | None = None
@@ -160,11 +149,6 @@ class PaperTradeHistoryItem(BaseModel):
     source_signal: str | None = None
     source_score: float | None = None
     source_confidence: float | None = None
-    source_engine_id: str | None = None
-    source_engine_version: str | None = None
-    source_recommendation_id: str | None = None
-    experiment_id: str | None = None
-    recommendation_engine: str | None = None
     opened_at: datetime
     closed_at: datetime
     holding_period_hours: float
@@ -260,18 +244,11 @@ class PaperOrderCreateRequest(BaseModel):
     source_signal: str | None = Field(default=None, max_length=16)
     source_score: float | None = None
     source_confidence: float | None = None
-    # Recommendation engine provenance (Production | RE-001 | RE-002)
-    source_engine_id: str | None = Field(default=None, max_length=32)
-    source_engine_version: str | None = Field(default=None, max_length=32)
-    source_recommendation_id: str | None = Field(default=None, max_length=64)
-    experiment_id: str | None = Field(default=None, max_length=64)
-    # Alias accepted from clients; normalized into source_engine_id
-    recommendation_engine: str | None = Field(default=None, max_length=32)
 
     @field_validator("limit_price", "stop_price", "stop_loss", "target", mode="before")
     @classmethod
     def coerce_non_positive_price_to_none(cls, value):
-        """Treat 0 / negative as unset — lab engines sometimes emit 0 for missing levels."""
+        """Treat 0 / negative as unset."""
         if value is None or value == "":
             return None
         try:
@@ -333,11 +310,6 @@ class RecommendationPrefillRequest(BaseModel):
     suggested_stop: float | None = None
     suggested_targets: list[float] = Field(default_factory=list)
     recommendation_meta: dict[str, float | str]
-    # Lab engine provenance (optional; RE-001 / RE-002 multi-engine)
-    source_engine_id: str | None = None
-    source_engine_version: str | None = None
-    source_recommendation_id: str | None = None
-    experiment_id: str | None = None
 
 
 class RecommendationPrefillResponse(BaseModel):
@@ -349,10 +321,6 @@ class RecommendationPrefillResponse(BaseModel):
     stop_loss: float | None = None
     target: float | None = None
     note: str
-    source_engine_id: str | None = None
-    source_engine_version: str | None = None
-    source_recommendation_id: str | None = None
-    experiment_id: str | None = None
 
 
 class PaperOrderActionResponse(BaseModel):

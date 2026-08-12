@@ -118,25 +118,3 @@ async def test_health_probes_run_in_parallel_not_serial():
     assert call_order.index("db_start") < call_order.index("redis_end")
     assert call_order.index("redis_start") < call_order.index("db_end")
 
-
-@pytest.mark.asyncio
-async def test_frames_to_ohlcv_points_async_offloads_cpu():
-    """Full-universe frame conversion must not run as bare sync on the caller thread."""
-    import pandas as pd
-    from app.services.independent_lab_universe import frames_to_ohlcv_points_async
-
-    idx = pd.date_range("2024-01-01", periods=250, freq="B")
-    df = pd.DataFrame(
-        {
-            "open": 100.0,
-            "high": 101.0,
-            "low": 99.0,
-            "close": 100.5,
-            "volume": 1_000_000,
-        },
-        index=idx,
-    )
-    frames = {"AAA": df, "BBB": df.copy()}
-    out = await frames_to_ohlcv_points_async(frames, ["AAA", "BBB"], min_bars=220)
-    assert set(out.keys()) == {"AAA", "BBB"}
-    assert len(out["AAA"]) >= 220

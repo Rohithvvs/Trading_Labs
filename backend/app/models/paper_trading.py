@@ -58,31 +58,21 @@ class PaperPosition(Base):
     source_signal: Mapped[str | None] = mapped_column(String(16), nullable=True)
     source_score: Mapped[Decimal | None] = mapped_column(Numeric(18, 8), nullable=True)
     source_confidence: Mapped[Decimal | None] = mapped_column(Numeric(18, 8), nullable=True)
-    # Recommendation engine ownership: Production | RE-001 | RE-002
-    # (stored in source_engine_id; always non-null for open uniqueness)
-    source_engine_id: Mapped[str] = mapped_column(
-        String(32), nullable=False, default="Production", server_default=text("'Production'"), index=True
-    )
-    source_engine_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    source_recommendation_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
-    experiment_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow, index=True)
 
     __table_args__ = (
-        # Unique open position per (account, symbol, recommendation engine) — engines never merge
+        # Unique open position per (account, symbol)
         Index(
-            "idx_unique_open_position_engine",
+            "idx_unique_open_position",
             "account_id",
             "symbol",
-            "source_engine_id",
             unique=True,
             postgresql_where=status == "OPEN",
         ),
         Index("idx_positions_active_symbol", "symbol", "status", "lifecycle_state", "monitor_enabled"),
         # Confirm/cash path: open holdings by account (COUNT / list OPEN only)
         Index("idx_positions_account_status", "account_id", "status"),
-        Index("idx_positions_account_engine_status", "account_id", "source_engine_id", "status"),
     )
 
 
@@ -153,13 +143,6 @@ class PaperOrder(Base):
     source_signal: Mapped[str | None] = mapped_column(String(16), nullable=True)
     source_score: Mapped[Decimal | None] = mapped_column(Numeric(18, 8), nullable=True)
     source_confidence: Mapped[Decimal | None] = mapped_column(Numeric(18, 8), nullable=True)
-    # Recommendation engine ownership: Production | RE-001 | RE-002
-    source_engine_id: Mapped[str] = mapped_column(
-        String(32), nullable=False, default="Production", server_default=text("'Production'"), index=True
-    )
-    source_engine_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    source_recommendation_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
-    experiment_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     filled_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 8), nullable=True)
     # Next session when a WAITING_FOR_MARKET order is expected to execute
     scheduled_execution: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -199,13 +182,6 @@ class PaperTradeHistory(Base):
     source_signal: Mapped[str | None] = mapped_column(String(16), nullable=True)
     source_score: Mapped[Decimal | None] = mapped_column(Numeric(18, 8), nullable=True)
     source_confidence: Mapped[Decimal | None] = mapped_column(Numeric(18, 8), nullable=True)
-    # Recommendation engine ownership: Production | RE-001 | RE-002
-    source_engine_id: Mapped[str] = mapped_column(
-        String(32), nullable=False, default="Production", server_default=text("'Production'"), index=True
-    )
-    source_engine_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    source_recommendation_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
-    experiment_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     closed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
     exit_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
@@ -215,7 +191,6 @@ class PaperTradeHistory(Base):
 
     __table_args__ = (
         Index("idx_trade_history_account_closed", "account_id", "closed_at"),
-        Index("idx_trade_history_account_engine_closed", "account_id", "source_engine_id", "closed_at"),
     )
 
 

@@ -81,8 +81,8 @@ scanner_metrics = {
 
 class ScreenerService:
     # Stores the last fetched OHLCV DataFrames keyed by symbol for reuse by orchestrator.
-    # Cap covers full NIFTY500-class data_valid sets so RE-001/RE-002 independent
-    # evaluation can reuse OHLCV without re-fetching (engine independence).
+    # Cap covers full NIFTY500-class data_valid sets so analysis can reuse OHLCV
+    # without re-fetching.
     last_fetched_frames: dict[str, pd.DataFrame] = {}
     _LAST_FRAMES_MAX = 1000
 
@@ -872,9 +872,8 @@ class ScreenerService:
 
         stage_timings["scoring_ms"] = (time.perf_counter() - score_t0) * 1000
 
-        # Store frames for orchestrator reuse (avoids duplicate fetch in run_full
-        # and independent RE-001/RE-002 evaluation over the full stage universe).
-        # Prefer data_valid (usable OHLCV) first, then matched Production symbols.
+        # Store frames for orchestrator reuse (avoids duplicate fetch in run_full).
+        # Prefer data_valid (usable OHLCV) first, then matched symbols.
         new_frames = {
             s: df.copy()
             for s, df in symbol_frames.items()

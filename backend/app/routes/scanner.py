@@ -25,196 +25,16 @@ CACHE_KEY_SCANNER_LATEST = "scanner:latest:v1"
 ENDPOINT_SCANNER_LATEST = "/scanner/latest"
 
 
-# ---------------------------------------------------------------------------
-# Engine-specific statistics helpers
-# ---------------------------------------------------------------------------
-
-def _compute_engine_statistics(engine_id: str) -> dict:
-    """Compute statistics for a single RE engine from persisted decision rows.
-
-    Uses the most recent multi-symbol cohort scan_run_id so statistics always
-    correspond to the latest scanner run for that engine, never mixing runs.
-
-    Returns a dict with a ``status`` key:
-      - ``"not_executed"``  – no rows of any kind exist for this engine
-      - ``"executed"``      – rows found; metrics computed from actual data
-    """
-    from ..db.session import SessionLocal
-    from ..models.recommendation_engine import RecommendationEngineDecision
-    from sqlalchemy import func, desc
-
-    try:
-        with SessionLocal() as db:
-            # Find the latest cohort scan_run_id for this engine
-            decision_count_col = func.count(RecommendationEngineDecision.id).label("decision_count")
-            latest_col = func.max(RecommendationEngineDecision.created_at).label("latest_created_at")
-
-            cohort_q = (
-                db.query(
-                    RecommendationEngineDecision.scan_run_id,
-                    decision_count_col,
-                    latest_col,
-                )
-                .filter(
-                    RecommendationEngineDecision.engine_id == engine_id,
-                    RecommendationEngineDecision.scan_run_id.isnot(None),
-                )
-                .group_by(RecommendationEngineDecision.scan_run_id)
-                .order_by(desc(decision_count_col), desc(latest_col))
-                .limit(1)
-            )
-            cohort_rows = cohort_q.all()
-
-            if not cohort_rows:
-                # No rows at all — engine has never been executed
-                return {"status": "not_executed", "engine_id": engine_id}
-
-            scan_run_id, total_candidates, scanned_at = cohort_rows[0]
-
-            # Load all decisions for this scan run
-            rows = (
-                db.query(RecommendationEngineDecision)
-                .filter(
-                    RecommendationEngineDecision.engine_id == engine_id,
-                    RecommendationEngineDecision.scan_run_id == scan_run_id,
-                )
-                .all()
-            )
-
-            # ----------------------------------------------------------------
-            # Derive metrics from actual decision rows only.
-            # All derivations use stored fields — no re-scoring, no new logic.
-            # ----------------------------------------------------------------
-            total = len(rows)
-            buy_count = 0
-            watch_count = 0
-            reject_count = 0
-            high_confidence = 0
-            scores: list[float] = []
-            confidences: list[float] = []
-            risk_rewards: list[float] = []
-            ta_completed = 0
-            # "gating passed" = at minimum the evaluation_status is 'success'
-            # (i.e. the engine produced a proper BUY/WATCH — not rejected_by_rules
-            # due to a missing-data/regime gate before any technical work).
-            gating_passed = 0
-
-            for row in rows:
-                state = str(row.recommendation_state or "REJECT").strip().upper()
-                if state == "BUY":
-                    buy_count += 1
-                elif state == "WATCH":
-                    watch_count += 1
-                else:
-                    reject_count += 1
-
-                conf = float(row.confidence_score or 0.0)
-                # Normalize to 0-1 range if stored as 0-100
-                if conf > 1.0:
-                    conf = conf / 100.0
-                if conf >= 0.7:
-                    high_confidence += 1
-
-                # Production score is the engine composite score (0-100)
-                prod_score = row.production_score
-                if prod_score is not None:
-                    try:
-                        scores.append(float(prod_score))
-                    except (TypeError, ValueError):
-                        pass
-
-                confidences.append(conf)
-
-                # Technical analysis completed = technical_analysis is non-empty
-                ta = row.technical_analysis
-                if ta and isinstance(ta, dict) and ta:
-                    ta_completed += 1
-
-                # Gating passed = evaluation reached scoring phase successfully
-                ev_status = str(row.evaluation_status or "").lower()
-                if ev_status in {"success", "watch", "buy"}:
-                    gating_passed += 1
-                elif state in {"BUY", "WATCH"}:
-                    gating_passed += 1
-
-                # Risk/reward from trade_guidance or risk_profile
-                tg = row.trade_guidance or {}
-                rp = row.risk_profile or {}
-                rr_val = tg.get("risk_reward_ratio") or tg.get("risk_reward") or rp.get("risk_reward")
-                if rr_val is not None:
-                    try:
-                        rr_f = float(rr_val)
-                        if rr_f > 0:
-                            risk_rewards.append(rr_f)
-                    except (TypeError, ValueError):
-                        pass
-
-            # ----------------------------------------------------------------
-            # Count definitions (engine-independent cohorts after architecture change):
-            #   total_candidates  = symbols this engine evaluated (decision rows)
-            #   data_valid        = rows with usable TA payload (sufficient OHLCV/tech)
-            #   eligibility_matched = data_valid proxy for trend/RS pass-through stage
-            #   technical_analysis_completed = non-empty technical_analysis JSON
-            #   BUY / WATCH / REJECT = recommendation_state counts
-            # Never derive these from Production top-N.
-            # ----------------------------------------------------------------
-            data_valid = ta_completed if ta_completed > 0 else total
-            eligibility_matched = ta_completed
-
-            avg_score = round(sum(scores) / len(scores), 2) if scores else None
-            highest_score = round(max(scores), 2) if scores else None
-            avg_confidence = round(sum(confidences) / len(confidences), 4) if confidences else None
-            avg_rr = round(sum(risk_rewards) / len(risk_rewards), 2) if risk_rewards else None
-
-            gating_pass_rate = round(gating_passed / total * 100, 1) if total else None
-            ta_success_rate = round(ta_completed / total * 100, 1) if total else None
-
-            return {
-                "status": "executed",
-                "engine_id": engine_id,
-                "scan_run_id": str(scan_run_id),
-                "scanned_at": scanned_at.isoformat() if scanned_at else None,
-                # Engine-evaluated population (independent of Production top_n)
-                "total_candidates": total,
-                "engine_evaluated": total,
-                "data_valid": data_valid,
-                "eligibility_matched": eligibility_matched,
-                "technical_analysis_completed": ta_completed,
-                "buy_ideas": buy_count,
-                "watch_ideas": watch_count,
-                "rejected": reject_count,
-                "high_confidence": high_confidence,
-                "average_score": avg_score,
-                "highest_score": highest_score,
-                "average_confidence": avg_confidence,
-                "average_risk_reward": avg_rr,
-                "gating_pass_rate": gating_pass_rate,
-                "technical_analysis_success_rate": ta_success_rate,
-            }
-
-    except Exception as exc:
-        _stats_logger.warning(
-            "Engine statistics computation failed | engine=%s | err=%s", engine_id, exc, exc_info=True
-        )
-        return {"status": "error", "engine_id": engine_id, "message": str(exc)}
-
-
 @router.get("/statistics")
 async def get_scanner_statistics(
     _: User = Depends(require_feature("advanced_scanner")),
 ):
-    """Consolidated scanner statistics: production + RE-001 + RE-002.
+    """Scanner statistics from the latest completed scan.
 
-    Production stats come from the latest completed scan in the scan store.
-    Engine stats are computed from ``recommendation_engine_decisions`` rows,
-    scoped to the latest cohort scan_run_id per engine.
-
-    Distinguishes "not_executed" (engine never ran) from "executed" (engine ran,
-    even with 0 BUY results).  Never returns fake/hardcoded values.
+    Never returns fake/hardcoded values.
     """
     from ..db.scan_store import load_latest_scan
 
-    # ---- Production statistics from scan store ----
     production: dict = {}
     try:
         latest = await load_latest_scan()
@@ -240,74 +60,34 @@ async def get_scanner_statistics(
                 ),
             }
         else:
-            production = {"available": False, "message": "No completed production scan found"}
+            production = {"available": False, "message": "No completed scan found"}
     except Exception as exc:
-        _stats_logger.warning("Production statistics failed | err=%s", exc, exc_info=True)
+        _stats_logger.warning("Scanner statistics failed | err=%s", exc, exc_info=True)
         production = {"available": False, "message": str(exc)}
 
-    # ---- Engine-specific statistics (run synchronously in thread pool) ----
-    import asyncio
-
-    re001_stats, re002_stats = await asyncio.gather(
-        asyncio.to_thread(_compute_engine_statistics, "RE-001"),
-        asyncio.to_thread(_compute_engine_statistics, "RE-002"),
-    )
-
-    # Attach human-readable engine names
-    re001_stats["engine_name"] = "Trend Continuation Engine"
-    re002_stats["engine_name"] = "Relative Strength Engine"
-
-    # RE-002 uses "relative_strength_matched" instead of "eligibility_matched"
-    if "eligibility_matched" in re002_stats:
-        re002_stats["relative_strength_matched"] = re002_stats.pop("eligibility_matched")
-
-    return {
-        "production": production,
-        "engines": {
-            "RE-001": re001_stats,
-            "RE-002": re002_stats,
-        },
-    }
+    return {"production": production}
 
 
 
 
 @router.get("/results")
-async def get_scanner_results_by_engine(
-    engine: str = Query(
-        default="Production",
-        description="Recommendation engine: Production | RE-001 | RE-002 (also production/re001/re002)",
-    ),
-    force: bool = Query(default=False, description="Force refresh production cache path"),
+async def get_scanner_results(
+    force: bool = Query(default=False, description="Force refresh cache"),
     _: User = Depends(require_feature("advanced_scanner")),
 ):
-    """Scanner results filtered to a single recommendation engine.
+    """Latest completed scanner results (analysis / ScreenerResponse shape)."""
+    from ..db.scan_store import load_latest_scan
 
-    - Production: latest completed production scan (analysis / ScreenerResponse shape)
-    - RE-001 / RE-002: latest multi-symbol lab decision cohort mapped to the same shape
-
-    Does not duplicate stored data — projects existing scans / decisions.
-    """
-    from ..db.session import SessionLocal
-    from ..services.scanner_engine_results import (
-        get_scanner_results_for_engine,
-        normalize_scanner_engine,
-    )
-
-    eng = normalize_scanner_engine(engine)
     try:
-        if eng == "Production":
-            payload = await get_scanner_results_for_engine(None, eng, force=force)
-        else:
-            with SessionLocal() as db:
-                payload = await get_scanner_results_for_engine(db, eng, force=force)
-        return payload
+        data = await load_latest_scan()
+        if not data:
+            return {"available": False, "message": "No completed scan found"}
+        return {"available": True, **data}
     except Exception as exc:
-        logger.exception("GET /scanner/results failed | engine=%s | err=%s", eng, exc)
+        logger.exception("GET /scanner/results failed | err=%s", exc)
         return {
             "available": False,
-            "recommendation_engine": eng,
-            "message": f"Failed to load scanner results for {eng}",
+            "message": "Failed to load scanner results",
             "shortlisted_symbols": [],
             "buy_candidate_symbols": [],
             "watch_candidate_symbols": [],
@@ -453,3 +233,4 @@ async def get_latest_completed_scan(
         media_type="application/json",
         headers={"X-Cache-Status": cache_status},
     )
+

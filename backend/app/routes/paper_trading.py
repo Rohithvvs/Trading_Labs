@@ -134,12 +134,10 @@ def place_order(
     started = time.perf_counter()
     service_ms = 0
     logger.info(
-        "ORDER_REQUEST_RECEIVED | symbol=%s side=%s type=%s engine=%s rec_id=%s limit=%s stop_loss=%s target=%s",
+        "ORDER_REQUEST_RECEIVED | symbol=%s side=%s type=%s limit=%s stop_loss=%s target=%s",
         payload.symbol,
         payload.side,
         payload.type,
-        getattr(payload, "recommendation_engine", None) or getattr(payload, "source_engine_id", None),
-        getattr(payload, "source_recommendation_id", None),
         getattr(payload, "limit_price", None),
         getattr(payload, "stop_loss", None),
         getattr(payload, "target", None),
@@ -154,11 +152,10 @@ def place_order(
         logger.info("ORDER_IDEMPOTENCY_PRESENT | symbol=%s", payload.symbol)
         payload.idempotency_key = key.strip()
         logger.info(
-            "ORDER_SUBMISSION_STARTED | symbol=%s side=%s type=%s engine=%s",
+            "ORDER_SUBMISSION_STARTED | symbol=%s side=%s type=%s",
             payload.symbol,
             payload.side,
             payload.type,
-            getattr(payload, "recommendation_engine", None) or getattr(payload, "source_engine_id", None),
         )
         t_svc = time.perf_counter()
         response = service.place_order(payload)
@@ -318,9 +315,6 @@ async def _run_automated_background_scan_sync():
         from ..agents import RouterAgent
         from ..schemas.analysis import ScreenerRequest, AnalysisMode, TimeframeConfig
         
-        # top_n scopes Production recommendation selection only.
-        # RE-001 / RE-002 evaluate the full data_valid universe independently
-        # inside orchestrator (engine independence architecture).
         req = ScreenerRequest(
             mode=AnalysisMode.SWING,
             timeframe_config=TimeframeConfig(intraday="5m", swing="1d", lookback_window=180),
@@ -692,20 +686,13 @@ def get_analytics(
         default="all",
         description="today|week|month|last_month|last_3_months|last_6_months|last_year|all",
     ),
-    recommendation_engine: str | None = Query(
-        default=None,
-        description="Filter metrics by recommendation engine: All|Production|RE-001|RE-002",
-    ),
     service: PaperTradingService = Depends(get_service),
     _feat=Depends(require_feature_sync("portfolio_analytics")),
 ):
-    """Paper trading analytics. Calculated from closed trades; returns empty defaults when no trades exist.
-
-    Always includes ``by_engine`` comparison blocks for Production, RE-001, RE-002.
-    """
+    """Paper trading analytics. Calculated from closed trades; returns empty defaults when no trades exist."""
     logger = logging.getLogger("app.http.paper_trading")
     try:
-        data = service.get_analytics(period=period, recommendation_engine=recommendation_engine)
+        data = service.get_analytics(period=period)
     except ValueError as exc:
         logger.exception("Analytics ValueError: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc

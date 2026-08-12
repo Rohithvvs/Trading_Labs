@@ -26,37 +26,12 @@ import { fetchSymbolDetail } from "../api";
 import { getCached } from "../utils/appCache";
 import { isPrefetched } from "../utils/researchPrefetcher";
 import { ResearchDashboard } from "./ResearchDashboard";
-import { Re001DetailSection } from "./Re001DetailSection";
-import { Re002DetailSection } from "./Re002DetailSection";
-import { Re001TechnicalsWorkspace } from "./Re001TechnicalsWorkspace";
-import { Re002TechnicalsWorkspace } from "./Re002TechnicalsWorkspace";
 
 type StockDetailPanelProps = {
   row: CandidateRow | null;
   onBack?: () => void;
   onSendToPaperTrading?: (row: CandidateRow, suggestedEntry?: number | null, side?: "BUY" | "SELL") => void;
-  /**
-   * Originating scanner recommendation engine (Production | RE-001 | RE-002).
-   * Shown as a chip beside "Back to scan results" so multi-engine context is visible.
-   */
-  originEngine?: string | null;
 };
-
-/** Reuse Paper Desk engine-badge classes (no new design). */
-function originEngineBadgeClass(engine: string): string {
-  const upper = engine.trim().toUpperCase();
-  if (upper === "RE-001" || upper === "RE001") return "engine-badge engine-badge--re001";
-  if (upper === "RE-002" || upper === "RE002") return "engine-badge engine-badge--re002";
-  return "engine-badge engine-badge--production";
-}
-
-function formatOriginEngineLabel(engine: string): string {
-  const upper = engine.trim().toUpperCase();
-  if (upper === "PRODUCTION" || upper === "PROD" || upper === "BASELINE") return "Production";
-  if (upper === "RE-001" || upper === "RE001") return "RE-001";
-  if (upper === "RE-002" || upper === "RE002") return "RE-002";
-  return engine.trim() || "Production";
-}
 
 const TABS: { id: DetailTab; label: string }[] = [
   { id: "research", label: "Research" },
@@ -68,14 +43,13 @@ const TABS: { id: DetailTab; label: string }[] = [
   { id: "chart", label: "Chart" },
 ];
 
-export function StockDetailPanel({ row, onBack, onSendToPaperTrading, originEngine }: StockDetailPanelProps) {
+export function StockDetailPanel({ row, onBack, onSendToPaperTrading }: StockDetailPanelProps) {
   const [tab, setTab] = useState<DetailTab>("research");
   const [riskAmount, setRiskAmount] = useState(5000);
   const [symbolDetail, setSymbolDetail] = useState<SymbolDetail | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
   const fetchAttempted = useRef(false);
-  const engineLabel = originEngine ? formatOriginEngineLabel(originEngine) : null;
 
   // Hooks must run unconditionally (before any early return).
   const analysis = row?.analysisItem;
@@ -165,17 +139,6 @@ export function StockDetailPanel({ row, onBack, onSendToPaperTrading, originEngi
           >
             ← Back to scan results
           </button>
-          {engineLabel ? (
-            <span
-              className={originEngineBadgeClass(engineLabel)}
-              data-testid="detail-origin-engine-badge"
-              title={`Recommendation Engine: ${engineLabel}`}
-              aria-label={`From recommendation engine ${engineLabel}`}
-              style={{ marginLeft: "auto" }}
-            >
-              {engineLabel}
-            </span>
-          ) : null}
         </div>
       ) : null}
       <div className="detail-header">
@@ -271,7 +234,7 @@ export function StockDetailPanel({ row, onBack, onSendToPaperTrading, originEngi
             />
           ) : null}
           {tab === "technicals" ? (
-            <TechnicalsTab engineLabel={engineLabel} technical={technical} row={row} symbolDetail={symbolDetail} />
+            <TechnicalsTab technical={technical} row={row} symbolDetail={symbolDetail} />
           ) : null}
           {tab === "trade-plan" ? (
             <TradePlanTab
@@ -291,7 +254,6 @@ export function StockDetailPanel({ row, onBack, onSendToPaperTrading, originEngi
               backtest={backtest}
               backtestDetail={symbolDetail?.backtest_extras ?? null}
               row={row}
-              engineLabel={engineLabel}
             />
           ) : null}
           {tab === "chart" ? <ChartTab analysis={analysis} plan={plan} /> : null}
@@ -369,22 +331,6 @@ function OverviewTab({
       <section className="subpanel">
         <h3>Recommendation overview</h3>
         <p className="muted-copy">{reco?.summary ?? row.recommendationSummary}</p>
-        <Re001DetailSection
-          decision={
-            (analysis as { lab_engines?: { "RE-001"?: Record<string, unknown> } } | undefined)?.lab_engines?.[
-              "RE-001"
-            ] as import("./Re001DetailSection").Re001DecisionSummary | undefined
-          }
-          symbol={row.symbol}
-        />
-        <Re002DetailSection
-          decision={
-            (analysis as { lab_engines?: { "RE-002"?: Record<string, unknown> } } | undefined)?.lab_engines?.[
-              "RE-002"
-            ] as import("./Re002DetailSection").Re002DecisionSummary | undefined
-          }
-          symbol={row.symbol}
-        />
         <div className="reason-columns">
           <ReasonList
             title="Top reasons"
@@ -433,7 +379,7 @@ function OverviewTab({
           <MetricTile
             label="Technical"
             value={typeof techScore === "number" ? techScore.toFixed(1) : "--"}
-            help="Technical engine strength before recommendation."
+            help="Technical strength before recommendation weighting."
           />
           <MetricTile
             label="Scanner"
@@ -506,23 +452,14 @@ function OverviewTab({
 }
 
 function TechnicalsTab({
-  engineLabel,
   technical,
   row,
   symbolDetail,
 }: {
-  engineLabel?: string | null;
   technical?: StockAnalysisResult["technical"][number];
   row: CandidateRow;
   symbolDetail?: SymbolDetail | null;
 }) {
-  if (engineLabel === "RE-001") {
-    return <Re001TechnicalsWorkspace row={row} />;
-  }
-  if (engineLabel === "RE-002") {
-    return <Re002TechnicalsWorkspace row={row} />;
-  }
-
   const indicators = technical?.indicators ?? {};
   const techExtra = symbolDetail?.technical_extras;
   const hardFailures = [
@@ -791,7 +728,7 @@ function ConfidenceBreakdown({ analysis }: { analysis?: StockAnalysisResult }) {
     <div className="confidence-box">
       <h4>Confidence breakdown</h4>
       <div className="score-breakdown">
-        <MetricTile label="Technical score" value={formatValue(breakdown.technical_score)} help="Raw technical engine score before weighting." />
+        <MetricTile label="Technical score" value={formatValue(breakdown.technical_score)} help="Raw technical score before weighting." />
         <MetricTile label="Technical part" value={formatValue(breakdown.technical_component)} help="Technical score contribution to final recommendation." />
         <MetricTile label="Sentiment part" value={formatValue(breakdown.sentiment_component)} help="News sentiment contribution to final score." />
         <MetricTile label="Backtest part" value={formatValue(breakdown.backtest_component)} help="Backtest contribution to final score." />
@@ -879,7 +816,7 @@ function TradePlanTab({
     );
   }
 
-  // Lab engines may omit levels (null) — never call .toFixed on null/undefined.
+  // Trade plans may omit levels (null) — never call .toFixed on null/undefined.
   const entryLow = numOrNull(plan.entry_low);
   const entryHigh = numOrNull(plan.entry_high);
   const stopLoss = numOrNull(plan.stop_loss);
@@ -910,7 +847,7 @@ function TradePlanTab({
         <div>
           <p className="section-label">Execution plan</p>
           <h3>{plan.setup_type || "Swing plan"}</h3>
-          <p className="muted-copy">{plan.notes || "Levels from recommendation engine (partial levels shown as —)."}</p>
+          <p className="muted-copy">{plan.notes || "Execution levels (partial levels shown as —)."}</p>
         </div>
         <div className="tradeplan-grid">
           <MetricTile
@@ -1093,31 +1030,15 @@ function BacktestTab({
   backtest,
   backtestDetail,
   row,
-  engineLabel,
 }: {
   backtest?: BacktestResult;
   backtestDetail?: any | null;
   row?: CandidateRow;
-  engineLabel?: string | null;
 }) {
   // Prefer precomputed analysis backtest (generated during recommendation) — never auto-rerun.
   const dataSource = backtestDetail ?? backtest ?? null;
   const [range, setRange] = useState<"1Y" | "3Y" | "5Y" | "ALL">("3Y");
   const [niftyData, setNiftyData] = useState<{label: string, close: number}[]>([]);
-
-  // Lab engine recommendation-generation backtest envelope (RE-001 / RE-002)
-  // @ts-ignore dynamic lab_engines
-  const labEngines = row?.analysisItem?.lab_engines || {};
-  const engKey =
-    engineLabel === "RE-001" || engineLabel === "RE-002" ? engineLabel : null;
-  // @ts-ignore
-  const labEnvelope =
-    (engKey && labEngines[engKey]?.evidence?.recommendation_backtest) ||
-    labEngines["RE-001"]?.evidence?.recommendation_backtest ||
-    labEngines["RE-002"]?.evidence?.recommendation_backtest ||
-    null;
-  const btStatus: string | null =
-    labEnvelope?.status || labEnvelope?.backtest_status || null;
 
   useEffect(() => {
     import('../api').then(api => {
@@ -1132,57 +1053,6 @@ function BacktestTab({
       }).catch(() => {});
     });
   }, []);
-
-  if (
-    btStatus === "NO_TECHNICALLY_QUALIFIED_STOCKS" ||
-    btStatus === "SKIPPED_NOT_QUALIFIED"
-  ) {
-    return (
-      <section className="subpanel">
-        <h3>No stocks qualified for backtesting</h3>
-        <p>
-          {labEnvelope?.message ||
-            "This symbol did not pass technical qualification, so no recommendation backtest was executed."}
-        </p>
-        {labEnvelope?.engine && (
-          <p className="text-sm opacity-70">Engine: {labEnvelope.engine}</p>
-        )}
-      </section>
-    );
-  }
-
-  if (btStatus === "BACKTEST_INSUFFICIENT_TRADES") {
-    return (
-      <section className="subpanel">
-        <h3>Insufficient historical trades</h3>
-        <p>
-          Insufficient historical trades for reliable backtest scoring.
-          {labEnvelope?.trade_count != null
-            ? ` Trade count: ${labEnvelope.trade_count} (minimum 5 required).`
-            : ""}
-        </p>
-        {labEnvelope?.backtest_period && (
-          <p className="text-sm opacity-70">
-            Period: {labEnvelope.backtest_period.start} → {labEnvelope.backtest_period.end}
-          </p>
-        )}
-      </section>
-    );
-  }
-
-  if (
-    btStatus === "BACKTEST_FAILED" ||
-    btStatus === "BACKTEST_TIMEOUT" ||
-    btStatus === "BACKTEST_DATA_UNAVAILABLE" ||
-    btStatus === "BACKTEST_INSUFFICIENT_DATA"
-  ) {
-    return (
-      <section className="subpanel">
-        <h3>Backtest status: {btStatus}</h3>
-        <p>{labEnvelope?.message || "Backtest did not produce a valid result for scoring."}</p>
-      </section>
-    );
-  }
 
   if (!dataSource) {
     return (
@@ -1323,26 +1193,7 @@ function BacktestTab({
         <MetricTile label="Total trades" value={dataSource.trade_count ?? backtest?.trade_count ?? 0} help="Sample size of historical trades." />
         <MetricTile label="Sharpe" value={Number(sharpe).toFixed(2)} help="Sharpe ratio (approx)." />
         <MetricTile label="Profit factor" value={(profitFactor ?? 0).toFixed(2)} help="Profit factor of strategy." />
-        {labEnvelope?.backtest_score != null && (
-          <MetricTile
-            label="Backtest score"
-            value={Number(labEnvelope.backtest_score).toFixed(1)}
-            help="Production raw backtest score used in recommendation scoring (trade_count ≥ 5)."
-          />
-        )}
       </section>
-
-      {labEnvelope && (
-        <p className="helper-text">
-          Recommendation backtest status: <strong>{btStatus || "SUCCESS"}</strong>
-          {labEnvelope.engine ? ` · Engine ${labEnvelope.engine}` : ""}
-          {labEnvelope.backtest_period
-            ? ` · ${labEnvelope.backtest_period.start} → ${labEnvelope.backtest_period.end}`
-            : ""}
-          {labEnvelope.reused ? " · reused existing run" : ""}
-          {" · precomputed at recommendation generation (not re-run on open)"}
-        </p>
-      )}
 
       <p className="helper-text">
         <abbr title="Backtest strength summarizes how healthy the historical strategy profile looks.">Backtest strength</abbr>: {dataSource.verdict ?? backtest?.verdict ?? "--"}.

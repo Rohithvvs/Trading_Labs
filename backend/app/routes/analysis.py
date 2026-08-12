@@ -103,10 +103,6 @@ async def screener_full(
         payload.timeframe.swing,
         len(payload.symbols),
     )
-    # RE-001 portfolio context (FR-026): pass authenticated user into scan worker explicitly
-    # (ContextVar alone is fragile across create_task boundaries if callers change).
-    re001_user_id = str(getattr(user, "id", "") or "") or None
-
     q: asyncio.Queue = asyncio.Queue(maxsize=200)
     entry_t0 = time.perf_counter()
 
@@ -141,7 +137,6 @@ async def screener_full(
                 progress_queue=q,
                 trigger_source="ui",
                 save_history=True,
-                user_id=re001_user_id,
             )
             logger.info(
                 "[SCAN] Worker started | save_history=True | t_start_ms=%.0f",

@@ -634,7 +634,7 @@ function buildPaperTradingPrefill(row: CandidateRow, side?: "BUY" | "SELL"): Rec
     suggested_targets,
     recommendation_meta: {
       signal: row.signal,
-      score: row.score,
+      score: row.score ?? 0,
       confidence: Math.round((row.confidence ?? 0) * 100) / 100,
     },
   };
@@ -790,7 +790,7 @@ function compareRows(left: CandidateRow, right: CandidateRow, sortBy: SortKey) {
   if (sortBy === "riskReward") {
     return (right.riskReward ?? -1) - (left.riskReward ?? -1);
   }
-  return right.score - left.score;
+  return (right.score ?? -1) - (left.score ?? -1);
 }
 
 function formatTrend(

@@ -89,7 +89,7 @@ async def test_shortlist_breaks_equal_screener_scores_by_symbol():
     )
 
     async def _run_full(request, progress_callback=None, prefetched_candles=None, **kwargs):
-        # Accept skip_lab_engines / future kwargs from Production shortlist path
+        # Accept future kwargs from the shortlist path
         return FullAnalysisResponse(
             items=[],
             rankings=RankingsResponse(
@@ -125,10 +125,7 @@ async def test_shortlist_breaks_equal_screener_scores_by_symbol():
 
     from unittest.mock import MagicMock, patch
 
-    # Keep Production shortlist determinism test free of independent lab side-effects
     mock_settings = MagicMock()
-    mock_settings.is_re001_active.return_value = False
-    mock_settings.is_re002_active.return_value = False
     mock_settings.is_authoritative_candle_store_enabled.return_value = False
 
     with patch("app.agents.orchestrator_agent.settings", mock_settings):
