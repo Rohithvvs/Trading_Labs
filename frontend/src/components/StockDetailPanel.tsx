@@ -22,10 +22,16 @@ import type {
   TradePlan,
   SymbolDetail,
 } from "../types";
-import { fetchSymbolDetail } from "../api";
+import { fetchLtmSymbolDetail, fetchSymbolDetail } from "../api";
 import { getCached } from "../utils/appCache";
 import { isPrefetched } from "../utils/researchPrefetcher";
 import { ResearchDashboard } from "./ResearchDashboard";
+import {
+  BacktestAnalyticsDashboard,
+  type BacktestDashboardModel,
+  type BacktestRange,
+  type DashboardTrade,
+} from "./BacktestAnalyticsDashboard";
 
 type StockDetailPanelProps = {
   row: CandidateRow | null;
@@ -146,6 +152,7 @@ export function StockDetailPanel({ row, onBack, onSendToPaperTrading }: StockDet
           <p className="section-label">Selected stock</p>
           <div className="detail-title-row">
             <h2>{row.symbol}</h2>
+            {row.ltm ? <span className="helper-chip">Long-Term Buy & Hold Momentum</span> : null}
             <span className={`signal-badge signal-${row.signal.toLowerCase()}`}>{row.signal}</span>
           </div>
           <p className="detail-summary">{row.recommendationSummary}</p>
@@ -460,6 +467,39 @@ function TechnicalsTab({
   row: CandidateRow;
   symbolDetail?: SymbolDetail | null;
 }) {
+  if (row.ltm?.technicals) {
+    const t = row.ltm.technicals as Record<string, any>;
+    const tiles = [
+      ["Momentum 252", t.momentum_252 == null ? "unavailable" : `${(Number(t.momentum_252) * 100).toFixed(2)}%`],
+      ["Close T", t.close_t ?? "unavailable"],
+      ["Close T−252", t.close_t_minus_252 ?? "unavailable"],
+      ["Rank among eligible", t.rank_among_eligible ?? "—"],
+      ["Gate > +50%", t.gate_pass ? "Pass" : "Fail"],
+      ["Selected", t.selected ? "Yes" : "No"],
+      ["Clock", t.clock_status ?? "—"],
+      ["Sessions to rebalance", t.sessions_to_rebalance ?? "—"],
+    ];
+    return (
+      <div className="detail-stack" data-testid="ltm-technicals">
+        <section className="subpanel">
+          <div className="subpanel-header">
+            <h3>Technical decision</h3>
+            <span className={`signal-badge signal-${row.signal.toLowerCase()}`}>{row.signal}</span>
+            <span className="helper-chip">Long-Term Buy & Hold Momentum</span>
+            <span className="helper-chip">Hard filters passed: {t.hard_filters_pass ? "Yes" : "No"}</span>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(10rem,1fr))", gap: 10 }}>
+            {tiles.map(([label, value]) => (
+              <div key={String(label)} className="metric-card">
+                <span className="section-label">{label}</span>
+                <strong>{String(value)}</strong>
+              </div>
+            ))}
+          </div>
+        </section>
+      </div>
+    );
+  }
   const indicators = technical?.indicators ?? {};
   const techExtra = symbolDetail?.technical_extras;
   const hardFailures = [
@@ -1026,6 +1066,173 @@ function NewsTab({ analysis, row, symbolDetail }: { analysis?: StockAnalysisResu
   );
 }
 
+function yearsAgo(range: BacktestRange): Date {
+  const d = new Date();
+  if (range === "1Y") d.setFullYear(d.getFullYear() - 1);
+  else if (range === "3Y") d.setFullYear(d.getFullYear() - 3);
+  else if (range === "5Y") d.setFullYear(d.getFullYear() - 5);
+  else d.setFullYear(1970);
+  return d;
+}
+
+function asTrade(raw: any): DashboardTrade {
+  const pnl = raw?.pnl_percent ?? (raw?.pnl_pct != null ? Number(raw.pnl_pct) * (Math.abs(Number(raw.pnl_pct)) <= 2 ? 100 : 1) : null);
+  return {
+    entry_date: raw?.entry_date ?? null,
+    exit_date: raw?.exit_date ?? null,
+    type: raw?.type ?? "LONG",
+    entry_price: raw?.entry_price ?? null,
+    exit_price: raw?.exit_price ?? null,
+    pnl_percent: pnl,
+    holding_days: raw?.holding_days ?? null,
+    reason: raw?.reason ?? null,
+    open: Boolean(raw?.open),
+  };
+}
+
+function normalizeEngineBacktest(src: any, range: BacktestRange): BacktestDashboardModel | null {
+  if (!src) return null;
+  const cutoff = yearsAgo(range);
+  const rawEq = (src.equity_curve ?? []) as any[];
+  const equity = rawEq
+    .map((p) => {
+      const label = String(p.label ?? p.date ?? "");
+      return { date: label, label, equity: Number(p.equity ?? p.value ?? 0) };
+    })
+    .filter((p) => p.label && !Number.isNaN(p.equity) && new Date(p.label) >= cutoff);
+  const tradesAll = ((src.trades ?? []) as any[]).map(asTrade);
+  const trades = tradesAll.filter((t) => {
+    const d = t.exit_date || t.entry_date;
+    return !d || new Date(d) >= cutoff;
+  });
+  const monthly = ((src.monthly_returns ?? []) as any[])
+    .filter((m) => String(m.month || "") >= cutoff.toISOString().slice(0, 7))
+    .map((m) => ({ month: String(m.month), return: m.return == null ? null : Number(m.return) }));
+  const winners = trades.filter((t) => (t.pnl_percent ?? 0) > 0).sort((a, b) => (b.pnl_percent ?? 0) - (a.pnl_percent ?? 0));
+  const losers = trades.filter((t) => (t.pnl_percent ?? 0) < 0).sort((a, b) => (a.pnl_percent ?? 0) - (b.pnl_percent ?? 0));
+  let peak = -Infinity;
+  const drawdown_curve = equity.map((p) => {
+    peak = Math.max(peak, p.equity);
+    const dd = peak ? ((p.equity - peak) / Math.abs(peak)) * 100 : 0;
+    return { date: p.date, label: p.label, drawdown: Number(dd.toFixed(4)) };
+  });
+  const initial = equity[0]?.equity ?? src.initial_capital ?? null;
+  const ending = equity[equity.length - 1]?.equity ?? src.ending_capital ?? null;
+  return {
+    window: range,
+    period_start: equity[0]?.date ?? null,
+    period_end: equity[equity.length - 1]?.date ?? null,
+    total_return: src.total_return ?? null,
+    cagr: src.cagr ?? null,
+    max_drawdown: src.max_drawdown ?? null,
+    win_rate: src.win_rate ?? null,
+    trade_count: src.trade_count ?? trades.length,
+    sharpe_ratio: src.sharpe_ratio ?? null,
+    profit_factor: src.profit_factor ?? null,
+    initial_capital: initial,
+    ending_capital: ending,
+    avg_trade_return: trades.length ? trades.reduce((s, t) => s + (t.pnl_percent ?? 0), 0) / trades.length : null,
+    max_consecutive_losses: null,
+    verdict: src.verdict ?? null,
+    equity_curve: equity,
+    drawdown_curve,
+    monthly_returns: monthly,
+    trades,
+    best_trade: src.best_trade ? asTrade(src.best_trade) : winners[0] ?? null,
+    worst_trade: src.worst_trade ? asTrade(src.worst_trade) : losers[0] ?? null,
+    top_winning: winners.slice(0, 5),
+    top_losing: losers.slice(0, 5),
+    never_selected_in_window: trades.length === 0,
+  };
+}
+
+function decToPct(value: unknown): number | null {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return null;
+  return Number(value) * 100;
+}
+
+function hydrateLtmPieces(row: CandidateRow | undefined, range: BacktestRange, api?: Record<string, any> | null): BacktestDashboardModel | null {
+  if (api?.dashboard && (api.dashboard.equity_curve?.length || api.dashboard.trade_count != null)) {
+    return api.dashboard as BacktestDashboardModel;
+  }
+  const ltm = row?.ltm;
+  const bt = (api?.backtest || ltm?.backtest_1y || {}) as Record<string, any>;
+  const curveRaw = (api?.equity_curve || ltm?.equity_curve || []) as any[];
+  const metrics = (api?.book_metrics || ltm?.book_metrics || {}) as Record<string, any>;
+  const want = String(row?.symbol || "").toUpperCase();
+  const tradesSrc = ((api?.dashboard?.trades || bt.trades || ltm?.blotter || []) as any[]).filter((t) => {
+    const s = String(t?.symbol || "").toUpperCase();
+    return !s || !want || s === want;
+  });
+  const hasCurve = Array.isArray(curveRaw) && curveRaw.length > 0;
+  const hasTrades = Array.isArray(tradesSrc) && tradesSrc.length > 0;
+  const hasMetrics = metrics && (metrics.total_return != null || metrics.cagr != null);
+  if (!hasCurve && !hasTrades && !hasMetrics) return null;
+
+  const cutoff = yearsAgo(range);
+  const equity = curveRaw
+    .map((p) => ({
+      date: String(p.date ?? p.label ?? ""),
+      label: String(p.date ?? p.label ?? ""),
+      equity: Number(p.equity ?? p.value ?? 0),
+    }))
+    .filter((p) => p.date && !Number.isNaN(p.equity) && new Date(p.date) >= cutoff);
+  const trades = (hasTrades ? tradesSrc : []).map(asTrade).filter((t) => {
+    const d = t.exit_date || t.entry_date;
+    return !d || new Date(d) >= cutoff;
+  });
+  const winners = trades.filter((t) => (t.pnl_percent ?? 0) > 0).sort((a, b) => (b.pnl_percent ?? 0) - (a.pnl_percent ?? 0));
+  const losers = trades.filter((t) => (t.pnl_percent ?? 0) < 0).sort((a, b) => (a.pnl_percent ?? 0) - (b.pnl_percent ?? 0));
+  let peak = -Infinity;
+  const drawdown_curve = equity.map((p) => {
+    peak = Math.max(peak, p.equity);
+    const dd = peak ? ((p.equity - peak) / Math.abs(peak)) * 100 : 0;
+    return { date: p.date, label: p.label, drawdown: Number(dd.toFixed(4)) };
+  });
+  const monthlyMap: Record<string, number[]> = {};
+  for (const p of equity) {
+    const m = p.date.slice(0, 7);
+    if (m.length < 7) continue;
+    (monthlyMap[m] ||= []).push(p.equity);
+  }
+  const months = Object.keys(monthlyMap).sort();
+  let prev = equity[0]?.equity;
+  const monthly_returns = months.map((month) => {
+    const end = monthlyMap[month][monthlyMap[month].length - 1];
+    const ret = prev ? end / prev - 1 : null;
+    prev = end;
+    return { month, return: ret };
+  });
+  const benchRaw = (api?.index_curve || ltm?.index_curve || []) as any[];
+  return {
+    window: range,
+    period_start: equity[0]?.date ?? null,
+    period_end: equity[equity.length - 1]?.date ?? null,
+    total_return: decToPct(metrics.total_return) ?? decToPct(bt.net_return),
+    cagr: decToPct(metrics.cagr),
+    max_drawdown: decToPct(metrics.max_dd ?? metrics.max_drawdown ?? bt.max_drawdown),
+    win_rate: bt.win_rate == null ? null : Number(bt.win_rate) <= 1.0001 ? Number(bt.win_rate) * 100 : Number(bt.win_rate),
+    trade_count: bt.trade_count ?? trades.length,
+    sharpe_ratio: metrics.sharpe_ratio ?? null,
+    profit_factor: bt.profit_factor ?? null,
+    profit_factor_infinite: bt.profit_factor == null && (bt.win_rate ?? 0) > 0,
+    initial_capital: Number(metrics.initial_capital ?? ltm?.initial_capital ?? equity[0]?.equity ?? null),
+    ending_capital: Number(metrics.ending_equity ?? equity[equity.length - 1]?.equity ?? null),
+    avg_trade_return: trades.length ? trades.reduce((s, t) => s + (t.pnl_percent ?? 0), 0) / trades.length : decToPct(bt.net_return),
+    verdict: null,
+    equity_curve: equity,
+    drawdown_curve,
+    benchmark_curve: benchRaw.map((p) => ({ date: String(p.date ?? p.label ?? ""), close: Number(p.close ?? p.equity) })),
+    monthly_returns,
+    trades,
+    best_trade: winners[0] ?? null,
+    worst_trade: losers[0] ?? null,
+    top_winning: winners.slice(0, 5),
+    top_losing: losers.slice(0, 5),
+    never_selected_in_window: trades.length === 0 && !hasCurve,
+  };
+}
+
 function BacktestTab({
   backtest,
   backtestDetail,
@@ -1035,312 +1242,79 @@ function BacktestTab({
   backtestDetail?: any | null;
   row?: CandidateRow;
 }) {
-  // Prefer precomputed analysis backtest (generated during recommendation) — never auto-rerun.
-  const dataSource = backtestDetail ?? backtest ?? null;
-  const [range, setRange] = useState<"1Y" | "3Y" | "5Y" | "ALL">("3Y");
+  const [range, setRange] = useState<BacktestRange>("3Y");
+  const [ltmDash, setLtmDash] = useState<BacktestDashboardModel | null>(null);
+  const [ltmLoading, setLtmLoading] = useState(false);
+  const [ltmError, setLtmError] = useState<string | null>(null);
   const [niftyData, setNiftyData] = useState<{label: string, close: number}[]>([]);
 
   useEffect(() => {
-    import('../api').then(api => {
-      // Fetch NIFTY 500 data for benchmark display only (not a backtest rerun)
-      api.fetchSymbolDetail('NIFTY 500').then((res: any) => {
-        if (res && res.ohlcv) {
-          setNiftyData(res.ohlcv.map((c: any) => ({
-            label: new Date(c.timestamp).toISOString().split('T')[0],
-            close: c.close
-          })));
-        }
-      }).catch(() => {});
-    });
-  }, []);
-
-  if (!dataSource) {
-    return (
-      <section className="subpanel">
-        <h3>No backtest support</h3>
-        <p>
-          This stock did not return a swing backtest result generated during recommendation,
-          so the recommendation is relying more heavily on scanner and technical evidence.
-          Opening this tab does not start a new backtest.
-        </p>
-      </section>
-    );
-  }
-
-  // normalize equity series
-  const rawEquity = dataSource.equity_curve ?? backtest?.equity_curve ?? [];
-  const initialCapital = rawEquity.length > 0 ? Number(rawEquity[0].equity ?? rawEquity[0].value ?? rawEquity[0][1] ?? 1) : 1;
-  
-  const trades = dataSource.trades ?? backtest?.trades ?? [];
-  const entrySet = new Set(trades.map((t: any) => t.entry_date));
-  const exitSet = new Set(trades.map((t: any) => t.exit_date));
-
-  const fullEquityData = (rawEquity as any[]).map((p: any) => {
-    const rawVal = Number(p.equity ?? p.value ?? p[1] ?? 0);
-    const returnPct = ((rawVal / (initialCapital || 1)) - 1) * 100;
-    const label = p.label ?? p.date ?? String(p[0] ?? "");
-    
-    let signal = null;
-    if (entrySet.has(label)) signal = "BUY";
-    if (exitSet.has(label)) signal = signal ? "BUY_SELL" : "SELL";
-
-    return { 
-      label, 
-      equity: Number(returnPct.toFixed(2)), 
-      rawVal,
-      signal
+    if (!row?.ltm || !row.symbol) {
+      setLtmDash(null);
+      setLtmError(null);
+      return;
+    }
+    let cancelled = false;
+    setLtmLoading(true);
+    setLtmError(null);
+    fetchLtmSymbolDetail(row.symbol, range)
+      .then((res) => {
+        if (cancelled) return;
+        const dash = hydrateLtmPieces(row, range, res);
+        setLtmDash(dash);
+        if (!dash) setLtmError(null);
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        const fallback = hydrateLtmPieces(row, range, null);
+        setLtmDash(fallback);
+        if (!fallback) setLtmError(err instanceof Error ? err.message : "Unable to load backtest data");
+      })
+      .finally(() => {
+        if (!cancelled) setLtmLoading(false);
+      });
+    return () => {
+      cancelled = true;
     };
-  });
+  }, [row?.ltm, row?.symbol, range]);
 
-  // Filter based on range
-  const filterDate = new Date();
-  if (range === "1Y") filterDate.setFullYear(filterDate.getFullYear() - 1);
-  else if (range === "3Y") filterDate.setFullYear(filterDate.getFullYear() - 3);
-  else if (range === "5Y") filterDate.setFullYear(filterDate.getFullYear() - 5);
-  else filterDate.setFullYear(1900);
+  useEffect(() => {
+    if (row?.ltm) return;
+    fetchSymbolDetail("NIFTY 500")
+      .then((res: any) => {
+        if (res?.ohlcv) {
+          setNiftyData(
+            res.ohlcv.map((c: any) => ({
+              label: new Date(c.timestamp).toISOString().split("T")[0],
+              close: c.close,
+            })),
+          );
+        }
+      })
+      .catch(() => {});
+  }, [row?.ltm]);
 
-  const equityData = fullEquityData.filter(d => new Date(d.label) >= filterDate);
-  
-  // Align NIFTY benchmark
-  const firstEquityDate = equityData.length > 0 ? equityData[0].label : null;
-  let niftyInitial = 1;
-  const niftyMap = new Map(niftyData.map(n => [n.label, n.close]));
-  if (firstEquityDate && niftyMap.has(firstEquityDate)) {
-    niftyInitial = niftyMap.get(firstEquityDate)!;
-  } else if (niftyData.length > 0) {
-    niftyInitial = niftyData[0].close; // fallback
-  }
-
-  // Compute Drawdown and Benchmark Series for the filtered range
-  let peak = -Infinity;
-  const drawdownData = equityData.map(d => {
-    if (d.rawVal > peak) peak = d.rawVal;
-    const dd = peak === 0 ? 0 : ((d.rawVal - peak) / Math.abs(peak)) * 100;
-    
-    // Calculate benchmark % return if available
-    let benchmarkReturn = null;
-    if (niftyMap.has(d.label)) {
-      benchmarkReturn = ((niftyMap.get(d.label)! / niftyInitial) - 1) * 100;
+  const engineModel = useMemo(() => {
+    if (row?.ltm) return ltmDash ?? hydrateLtmPieces(row, range, null);
+    const src = backtestDetail ?? backtest ?? null;
+    const model = normalizeEngineBacktest(src, range);
+    if (model && niftyData.length) {
+      model.benchmark_curve = niftyData.map((n) => ({ date: n.label, label: n.label, close: n.close }));
     }
-
-    return { ...d, drawdown: Number(dd.toFixed(2)), benchmark: benchmarkReturn !== null ? Number(benchmarkReturn.toFixed(2)) : undefined };
-  });
-
-  const monthly = dataSource.monthly_returns ?? [];
-  const bestTrade = dataSource.best_trade ?? null;
-  const worstTrade = dataSource.worst_trade ?? null;
-  const sharpe = dataSource.sharpe_ratio ?? backtest?.sharpe_ratio ?? 0;
-  const profitFactor = dataSource.profit_factor ?? backtest?.profit_factor ?? 0;
-
-  // Heatmap for monthly
-  // Group by Year: { "2023": { "Jan": 0.05, ... } }
-  const heatmapData: Record<string, Record<string, number>> = {};
-  monthly.forEach((m: any) => {
-    const parts = String(m.month).split('-');
-    if (parts.length >= 2) {
-      const yr = parts[0];
-      const mo = parseInt(parts[1], 10);
-      const moNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-      const moName = moNames[mo - 1] || parts[1];
-      if (!heatmapData[yr]) heatmapData[yr] = {};
-      heatmapData[yr][moName] = m.return;
-    }
-  });
-  const years = Object.keys(heatmapData).sort().reverse();
-  const allMonths = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-
-  const upColor = "#38b26d"; // green
-  const downColor = "#c05c54"; // red
-  const benchmarkColor = "#3b82f6"; // blue
-
-  const heatmapColor = (r: number | undefined) => {
-    if (r === undefined || Number.isNaN(Number(r))) return "var(--bg-card)";
-    if (r >= 0.1) return "var(--positive)";
-    if (r >= 0.02) return "var(--positive-soft)";
-    if (r > 0) return "rgba(56, 178, 109, 0.3)";
-    if (r <= -0.1) return "var(--negative)";
-    if (r <= -0.02) return "var(--negative-soft)";
-    return "rgba(192, 92, 84, 0.3)";
-  };
+    return model;
+  }, [row?.ltm, row, ltmDash, backtest, backtestDetail, range, niftyData]);
 
   return (
-    <div className="detail-stack">
-      <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.5rem", marginBottom: "-1rem" }}>
-        {["1Y", "3Y", "5Y", "ALL"].map(r => (
-          <button 
-            key={r}
-            onClick={() => setRange(r as any)}
-            className={`btn-tag ${range === r ? "active" : ""}`}
-            style={{ 
-              background: range === r ? "var(--accent)" : "var(--bg-card)",
-              color: range === r ? "#fff" : "var(--text-muted)",
-              border: "1px solid var(--border-color)",
-              padding: "0.25rem 0.5rem",
-              borderRadius: "4px",
-              cursor: "pointer",
-              fontSize: "0.8rem"
-            }}
-          >
-            {r}
-          </button>
-        ))}
-      </div>
-
-      <section className="bt-metrics-grid">
-        <MetricTile label="Win rate" value={`${(dataSource.win_rate ?? backtest?.win_rate ?? 0).toFixed(1)}%`} help="Share of historical winning trades." />
-        <MetricTile label="Average return" value={`${(dataSource.total_return ?? backtest?.total_return ?? 0).toFixed(1)}%`} help="Total return in the backtest window." />
-        <MetricTile label="Max drawdown" value={`${(dataSource.max_drawdown ?? backtest?.max_drawdown ?? 0).toFixed(1)}%`} help="Worst peak-to-trough decline." />
-        <MetricTile label="Total trades" value={dataSource.trade_count ?? backtest?.trade_count ?? 0} help="Sample size of historical trades." />
-        <MetricTile label="Sharpe" value={Number(sharpe).toFixed(2)} help="Sharpe ratio (approx)." />
-        <MetricTile label="Profit factor" value={(profitFactor ?? 0).toFixed(2)} help="Profit factor of strategy." />
-      </section>
-
-      <p className="helper-text">
-        <abbr title="Backtest strength summarizes how healthy the historical strategy profile looks.">Backtest strength</abbr>: {dataSource.verdict ?? backtest?.verdict ?? "--"}.
-      </p>
-
-      <div className="bt-chart-panel" style={{ display: "flex", flexDirection: "column", gap: "1.5rem" }}>
-          <div className="bt-chart-panel__header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <h3>Cumulative Return (%)</h3>
-            <div style={{ display: 'flex', gap: '1rem', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-              <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                <span style={{ width: 12, height: 2, background: upColor, display: 'inline-block' }}></span> Strategy
-              </span>
-              {niftyData.length > 0 && (
-                <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                  <span style={{ width: 12, height: 2, background: benchmarkColor, display: 'inline-block' }}></span> NIFTY 500
-                </span>
-              )}
-            </div>
-          </div>
-          <ResponsiveContainer width="100%" height={240}>
-            <ComposedChart data={drawdownData}>
-              <CartesianGrid strokeDasharray="2 2" vertical={false} stroke="var(--border-color)" />
-              <XAxis dataKey="label" tickLine={false} axisLine={false} stroke="var(--text-muted)" tickFormatter={(val) => {
-                if (!val) return "";
-                const d = new Date(val);
-                return `${d.getMonth()+1}/${d.getFullYear().toString().slice(2)}`;
-              }} />
-              <YAxis tickLine={false} axisLine={false} stroke="var(--text-muted)" domain={['auto', 'auto']} tickFormatter={(val) => `${val}%`} />
-              <Tooltip contentStyle={{ background: "var(--bg-card)", border: "1px solid var(--border-color)", borderRadius: "6px" }} formatter={(value: number, name: string) => [`${value}%`, name === 'equity' ? 'Strategy' : 'Benchmark']} />
-              <Line type="monotone" dataKey="equity" stroke={upColor} dot={(props: any) => {
-                const { cx, cy, payload } = props;
-                if (payload.signal === "BUY") {
-                  return <path key={`buy-${payload.label}`} d={`M${cx},${cy+6} l-4,8 l8,0 Z`} fill="#38b26d" />;
-                } else if (payload.signal === "SELL") {
-                  return <path key={`sell-${payload.label}`} d={`M${cx},${cy-6} l-4,-8 l8,0 Z`} fill="#c05c54" />;
-                } else if (payload.signal === "BUY_SELL") {
-                  return <circle key={`bs-${payload.label}`} cx={cx} cy={cy} r={4} fill="#eab308" />;
-                }
-                return <span key={`none-${payload.label}`}></span>;
-              }} strokeWidth={2} />
-              {niftyData.length > 0 && (
-                <Line type="monotone" dataKey="benchmark" stroke={benchmarkColor} dot={false} strokeWidth={2} />
-              )}
-            </ComposedChart>
-          </ResponsiveContainer>
-
-        <div>
-          <div className="bt-chart-panel__header">
-            <h3>Drawdown (%)</h3>
-          </div>
-          <ResponsiveContainer width="100%" height={160}>
-            <AreaChart data={drawdownData}>
-              <CartesianGrid strokeDasharray="2 2" vertical={false} stroke="var(--border-color)" />
-              <XAxis dataKey="label" hide />
-              <YAxis tickLine={false} axisLine={false} stroke="var(--text-muted)" />
-              <Tooltip contentStyle={{ background: "var(--bg-card)", border: "1px solid var(--border-color)", borderRadius: "6px" }} />
-              <Area type="monotone" dataKey="drawdown" stroke={downColor} fill={downColor} fillOpacity={0.3} />
-            </AreaChart>
-          </ResponsiveContainer>
-        </div>
-      </div>
-
-      <section className="bt-chart-panel">
-        <div className="bt-chart-panel__header">
-          <h3>Monthly Returns (%)</h3>
-        </div>
-        {years.length > 0 ? (
-          <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: "4px", fontSize: "0.85rem", textAlign: "center" }}>
-              <thead>
-                <tr>
-                  <th style={{ padding: "8px", color: "var(--text-muted)" }}>Year</th>
-                  {allMonths.map(mo => (
-                    <th key={mo} style={{ padding: "8px", color: "var(--text-muted)", fontWeight: "normal" }}>{mo}</th>
-                  ))}
-                  <th style={{ padding: "8px", color: "var(--text-muted)" }}>YTD</th>
-                </tr>
-              </thead>
-              <tbody>
-                {years.map(yr => {
-                  let ytdProduct = 1.0;
-                  return (
-                    <tr key={yr}>
-                      <td style={{ padding: "8px", fontWeight: "bold", background: "var(--bg-card-alt)", borderRadius: "4px" }}>{yr}</td>
-                      {allMonths.map(mo => {
-                        const r = heatmapData[yr][mo];
-                        if (r !== undefined && !Number.isNaN(Number(r))) ytdProduct *= (1 + Number(r));
-                        return (
-                          <td 
-                            key={mo} 
-                            style={{ 
-                              padding: "8px", 
-                              background: heatmapColor(r),
-                              color: r !== undefined ? "#fff" : "var(--text-muted)",
-                              borderRadius: "4px"
-                            }}
-                          >
-                            {r !== undefined ? `${(r * 100).toFixed(2)}%` : "-"}
-                          </td>
-                        );
-                      })}
-                      {(() => {
-                        const ytdFinal = ytdProduct - 1;
-                        return (
-                          <td style={{ padding: "8px", fontWeight: "bold", background: heatmapColor(ytdFinal), color: "#fff", borderRadius: "4px" }}>
-                            {`${(ytdFinal * 100).toFixed(2)}%`}
-                          </td>
-                        );
-                      })()}
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <p className="muted-copy">Monthly returns not available.</p>
-        )}
-      </section>
-
-      <section className="bt-metrics-grid bt-metrics-grid--pair">
-        <div className="bt-metric-card" style={{ borderLeft: bestTrade ? `4px solid ${upColor}` : undefined }}>
-          <h3>Best trade</h3>
-          {bestTrade ? (
-            <div>
-              <p>{formatDate(bestTrade.entry_date)} → {formatDate(bestTrade.exit_date)}</p>
-              <strong className="bt-metric-card__value bt-metric-card__value--positive">{bestTrade.pnl_percent.toFixed(2)}%</strong>
-            </div>
-          ) : (
-            <p className="muted-copy">No data</p>
-          )}
-        </div>
-        <div className="bt-metric-card" style={{ borderLeft: worstTrade ? `4px solid ${downColor}` : undefined }}>
-          <h3>Worst trade</h3>
-          {worstTrade ? (
-            <div>
-              <p>{formatDate(worstTrade.entry_date)} → {formatDate(worstTrade.exit_date)}</p>
-              <strong className="bt-metric-card__value bt-metric-card__value--negative">{worstTrade.pnl_percent.toFixed(2)}%</strong>
-            </div>
-          ) : (
-            <p className="muted-copy">No data</p>
-          )}
-        </div>
-      </section>
-    </div>
+    <BacktestAnalyticsDashboard
+      model={engineModel}
+      range={range}
+      onRangeChange={setRange}
+      loading={Boolean(row?.ltm && ltmLoading)}
+      loadError={row?.ltm ? ltmError : null}
+    />
   );
 }
+
 
 function ChartTab({ analysis, plan }: { analysis?: StockAnalysisResult; plan?: TradePlan }) {
   if (!analysis?.ohlcv?.length) {

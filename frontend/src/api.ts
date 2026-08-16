@@ -815,6 +815,57 @@ export function invalidateLatestScanCaches(): void {
  * Endpoint: GET {API_BASE_URL}/scanner/statistics
  * (same origin/base as /scanner/latest and other scanner APIs)
  */
+export type ScannerStrategyInfo = {
+  id: string;
+  display_name: string;
+  short_name: string;
+};
+
+export async function fetchScannerStrategies(): Promise<{ strategies: ScannerStrategyInfo[] }> {
+  const response = await fetchWithDiagnostics("/scanner/strategies", { method: "GET" }, "List scanner strategies");
+  if (!response.ok) throw new Error("Unable to load scanner strategies.");
+  return response.json();
+}
+
+export async function fetchLtmLatest(): Promise<Record<string, any> | null> {
+  const response = await fetchWithDiagnostics("/scanner/ltm/latest", { method: "GET" }, "Fetch LTM latest");
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error("Unable to load Long-Term Buy & Hold Momentum scan.");
+  return response.json();
+}
+
+export async function startLtmScan(mode?: string): Promise<Record<string, any>> {
+  const qs = mode ? `?mode=${encodeURIComponent(mode)}` : "";
+  const response = await fetchWithDiagnostics(`/scanner/ltm/runs${qs}`, { method: "POST" }, "Start LTM scan");
+  if (response.status === 409) {
+    const err: any = new Error("LTM scan already running");
+    err.scanInProgress = true;
+    throw err;
+  }
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    const msg = body?.detail?.message || body?.detail?.reason || body?.message || "Failed to start LTM scan";
+    throw new Error(typeof msg === "string" ? msg : "Failed to start LTM scan");
+  }
+  return response.json();
+}
+
+export async function fetchLtmRun(scanId: string): Promise<Record<string, any>> {
+  const response = await fetchWithDiagnostics(`/scanner/ltm/runs/${scanId}`, { method: "GET" }, "Poll LTM run");
+  if (!response.ok) throw new Error("Unable to load LTM run status.");
+  return response.json();
+}
+
+export async function fetchLtmSymbolDetail(symbol: string, window = "3Y"): Promise<Record<string, any>> {
+  const response = await fetchWithDiagnostics(
+    `/scanner/ltm/symbols/${encodeURIComponent(symbol)}?window=${encodeURIComponent(window)}`,
+    { method: "GET" },
+    "Fetch LTM symbol detail",
+  );
+  if (!response.ok) throw new Error("Unable to load LTM symbol detail.");
+  return response.json();
+}
+
 export async function fetchScannerStatistics(): Promise<{
   production: Record<string, any>;
 }> {
