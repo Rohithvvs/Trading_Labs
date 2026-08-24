@@ -10,6 +10,7 @@ from ta.trend import EMAIndicator, MACD
 
 from ..schemas import AnalysisMode, BacktestResult, OHLCVPoint
 from ..utils import get_logger
+from ..utils.symbol import canonical_symbol
 
 logger = get_logger("app.backtest")
 
@@ -211,11 +212,21 @@ class BacktestService:
         feat008_enabled: bool = True,
         stop_loss_pct: float | None = None,
         target_pct: float | None = None,
+        company_name: str | None = None,
     ) -> BacktestResult:
         execution_model = normalize_execution_model(execution_model)
         strategy_name = "ema_rsi_volume" if mode == AnalysisMode.intraday else "sma_rsi_macd"
+        canon_symbol = canonical_symbol(symbol) if symbol else ""
         if len(candles) < 35:
-            return self._empty_result(mode, strategy_name, cost_scenario, position_sizing_pct, feat008_enabled)
+            return self._empty_result(
+                mode,
+                strategy_name,
+                cost_scenario,
+                position_sizing_pct,
+                feat008_enabled,
+                symbol=canon_symbol,
+                company_name=company_name,
+            )
 
         frame = pd.DataFrame(
             {
@@ -907,6 +918,8 @@ class BacktestService:
         )
 
         return BacktestResult(
+            symbol=canon_symbol or None,
+            company_name=company_name,
             mode=mode,
             strategy_name=strategy_name,
             total_return=primary_total_return,
@@ -958,6 +971,8 @@ class BacktestService:
         cost_scenario: str = "BASE_COST",
         position_sizing_pct: float = 20.0,
         feat008_enabled: bool = True,
+        symbol: str = "",
+        company_name: str | None = None,
     ) -> BacktestResult:
         # FEAT-008 cost metadata from active cost scenario
         cost_cfg = COST_SCENARIOS.get(cost_scenario, COST_SCENARIOS["BASE_COST"])
@@ -976,6 +991,8 @@ class BacktestService:
         feat008_cost_bps = round(total_rate * 10000, 2)
 
         return BacktestResult(
+            symbol=canonical_symbol(symbol) if symbol else None,
+            company_name=company_name,
             mode=mode,
             strategy_name=strategy_name,
             total_return=0.0,

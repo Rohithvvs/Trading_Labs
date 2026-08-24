@@ -11,6 +11,9 @@ def test_parser_commands():
     assert args.force is True
     args2 = p.parse_args(["verify", "--json"])
     assert args2.json is True
+    args3 = p.parse_args(["full-load", "--years", "18", "--skip-delivery"])
+    assert args3.years == 18
+    assert args3.skip_delivery is True
 
 
 def test_main_locked_exit(monkeypatch):

@@ -1,10 +1,16 @@
-import { memo } from "react";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import type { ScreenerConditionResult } from "../types";
 import { InfoTooltip } from "./InfoTooltip";
 import { TOOLTIPS } from "../constants/tooltips";
+import { displayCanonicalSymbol } from "../utils/canonicalSymbol";
+import { lookupUniverseInstrument, type UniverseInstrument } from "../utils/universeInstruments";
+import { useIsCompactViewport } from "../hooks/useMediaQuery";
+
+const ANALYZED_PAGE_SIZE = 50;
 
 type AllAnalyzedStocksTableProps = {
   stocks: ScreenerConditionResult[];
+  instruments?: Map<string, UniverseInstrument>;
 };
 
 function getRejectionReasons(conditions: Record<string, boolean>, matched: boolean): string[] {
@@ -25,7 +31,42 @@ function getRejectionReasons(conditions: Record<string, boolean>, matched: boole
   return reasons.length > 0 ? reasons : ["Failed final threshold"];
 }
 
-export const AllAnalyzedStocksTable = memo(function AllAnalyzedStocksTable({ stocks }: AllAnalyzedStocksTableProps) {
+const EMPTY_INSTRUMENTS = new Map<string, UniverseInstrument>();
+
+export const AllAnalyzedStocksTable = memo(function AllAnalyzedStocksTable({
+  stocks,
+  instruments,
+}: AllAnalyzedStocksTableProps) {
+  const instrumentMap = instruments ?? EMPTY_INSTRUMENTS;
+  const isCompact = useIsCompactViewport();
+  const [visibleCount, setVisibleCount] = useState(ANALYZED_PAGE_SIZE);
+
+  useEffect(() => {
+    setVisibleCount(ANALYZED_PAGE_SIZE);
+  }, [stocks]);
+
+  const companyName = (stock: ScreenerConditionResult) =>
+    stock.company_name || lookupUniverseInstrument(stock.symbol, instrumentMap)?.company_name || "—";
+
+  const orderedStocks = useMemo(() => {
+    const passed: ScreenerConditionResult[] = [];
+    const failed: ScreenerConditionResult[] = [];
+    for (let i = 0; i < stocks.length; i++) {
+      if (stocks[i].matched) passed.push(stocks[i]);
+      else failed.push(stocks[i]);
+    }
+    return [...passed, ...failed];
+  }, [stocks]);
+
+  const visibleStocks = useMemo(
+    () => orderedStocks.slice(0, visibleCount),
+    [orderedStocks, visibleCount],
+  );
+
+  const showMore = useCallback(() => {
+    setVisibleCount((current) => Math.min(current + ANALYZED_PAGE_SIZE, orderedStocks.length));
+  }, [orderedStocks.length]);
+
   if (!stocks.length) {
     return (
       <section className="panel empty-state">
@@ -45,8 +86,7 @@ export const AllAnalyzedStocksTable = memo(function AllAnalyzedStocksTable({ sto
     if (s.conditions?.data_source_failed || s.conditions?.data_quality_failed) dataIssueCount++;
   }
 
-  const passedStocks = stocks.filter((s) => s.matched);
-  const failedStocks = stocks.filter((s) => !s.matched);
+  const hasMore = visibleCount < orderedStocks.length;
 
   return (
     <section className="panel table-panel">
@@ -67,135 +107,145 @@ export const AllAnalyzedStocksTable = memo(function AllAnalyzedStocksTable({ sto
         </div>
       ) : null}
 
-      {/* Desktop table */}
-      <div className="table-scroll">
-        <table className="candidate-table candidate-table--analyzed">
-          <thead>
-            <tr>
-              <th>Symbol</th>
-              <th>Close</th>
-              <th>
-                Score <InfoTooltip content={TOOLTIPS.SCANNER.SCORE_MIN} />
-              </th>
-              <th>Tech Signal</th>
-              <th>Status</th>
-              <th>EMA-20</th>
-              <th>SMA-50</th>
-              <th>SMA-200</th>
-              <th>
-                Volume <InfoTooltip content={TOOLTIPS.SCANNER.VOLUME} />
-              </th>
-              <th>Rejection Reason</th>
-            </tr>
-          </thead>
-          <tbody>
-            {passedStocks.map((stock) => (
-              <tr key={stock.symbol} className="row-passed">
-                <td className="symbol-cell">
-                  <strong>{stock.symbol}</strong>
-                </td>
-                <td className="number-cell">{stock.close > 0 ? stock.close.toFixed(2) : "N/A"}</td>
-                <td className="number-cell">{stock.screener_score.toFixed(1)}</td>
-                <td>{stock.technical_signal}</td>
-                <td>
-                  <span className="badge badge-success">Passed</span>
-                </td>
-                <td className="number-cell">{stock.ema_20 > 0 ? stock.ema_20.toFixed(2) : "N/A"}</td>
-                <td className="number-cell">{stock.sma_50 > 0 ? stock.sma_50.toFixed(2) : "N/A"}</td>
-                <td className="number-cell">{stock.sma_200 > 0 ? stock.sma_200.toFixed(2) : "N/A"}</td>
-                <td className="number-cell">{stock.volume > 0 ? (stock.volume / 1000000).toFixed(1) : "N/A"}M</td>
-                <td>
-                  <span className="badge badge-success">Passed all checks</span>
-                </td>
-              </tr>
-            ))}
-            {failedStocks.map((stock) => {
-              const reasons = getRejectionReasons(stock.conditions, stock.matched);
-              const isDataIssue = stock.conditions.data_source_failed || stock.conditions.data_quality_failed;
-              return (
-                <tr key={stock.symbol} className={`row-rejected ${isDataIssue ? "row-data-issue" : ""}`}>
-                  <td className="symbol-cell">
-                    <strong>{stock.symbol}</strong>
-                  </td>
-                  <td className="number-cell">{stock.close > 0 ? stock.close.toFixed(2) : "N/A"}</td>
-                  <td className="number-cell">{stock.screener_score.toFixed(1)}</td>
-                  <td>{stock.technical_signal}</td>
-                  <td>
+      {isCompact ? (
+        <div className="analyzed-cards">
+          {visibleStocks.map((stock) => {
+            const reasons = getRejectionReasons(stock.conditions, stock.matched);
+            const isDataIssue = stock.conditions.data_source_failed || stock.conditions.data_quality_failed;
+            return (
+              <article
+                key={stock.symbol}
+                className={`analyzed-card ${stock.matched ? "row-passed" : `row-rejected ${isDataIssue ? "row-data-issue" : ""}`}`}
+              >
+                <div className="analyzed-card__top">
+                  <div className="analyzed-card__symbol">{displayCanonicalSymbol(stock.symbol)}</div>
+                  <div className="analyzed-card__company">{companyName(stock)}</div>
+                  {stock.matched ? (
+                    <span className="badge badge-success">Passed</span>
+                  ) : (
                     <span className={`badge ${isDataIssue ? "badge-warning" : "badge-danger"}`}>
                       {isDataIssue ? "Warning" : "Failed"}
                     </span>
-                  </td>
-                  <td className="number-cell">{stock.ema_20 > 0 ? stock.ema_20.toFixed(2) : "N/A"}</td>
-                  <td className="number-cell">{stock.sma_50 > 0 ? stock.sma_50.toFixed(2) : "N/A"}</td>
-                  <td className="number-cell">{stock.sma_200 > 0 ? stock.sma_200.toFixed(2) : "N/A"}</td>
-                  <td className="number-cell">{stock.volume > 0 ? (stock.volume / 1000000).toFixed(1) : "N/A"}M</td>
-                  <td>
-                    <div className="rejection-reasons">
-                      {reasons.map((reason, idx) => (
-                        <div key={idx} className="reason-item">
-                          {reason}
+                  )}
+                </div>
+                <div className="analyzed-card__grid">
+                  <div>
+                    <span>Close</span>
+                    <strong>{stock.close > 0 ? stock.close.toFixed(2) : "N/A"}</strong>
+                  </div>
+                  <div>
+                    <span>Score</span>
+                    <strong>{stock.screener_score.toFixed(1)}</strong>
+                  </div>
+                  <div>
+                    <span>Signal</span>
+                    <strong>{stock.technical_signal || "—"}</strong>
+                  </div>
+                  <div>
+                    <span>Volume</span>
+                    <strong>{stock.volume > 0 ? `${(stock.volume / 1000000).toFixed(1)}M` : "N/A"}</strong>
+                  </div>
+                  <div>
+                    <span>EMA-20</span>
+                    <strong>{stock.ema_20 > 0 ? stock.ema_20.toFixed(2) : "N/A"}</strong>
+                  </div>
+                  <div>
+                    <span>SMA-50</span>
+                    <strong>{stock.sma_50 > 0 ? stock.sma_50.toFixed(2) : "N/A"}</strong>
+                  </div>
+                </div>
+                <div className="analyzed-card__reason">{reasons.join(" · ")}</div>
+              </article>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="table-scroll">
+          <table className="candidate-table candidate-table--analyzed">
+            <thead>
+              <tr>
+                <th>Symbol</th>
+                <th>Company Name</th>
+                <th>Close</th>
+                <th>
+                  Score <InfoTooltip content={TOOLTIPS.SCANNER.SCORE_MIN} />
+                </th>
+                <th>Tech Signal</th>
+                <th>Status</th>
+                <th>EMA-20</th>
+                <th>SMA-50</th>
+                <th>SMA-200</th>
+                <th>
+                  Volume <InfoTooltip content={TOOLTIPS.SCANNER.VOLUME} />
+                </th>
+                <th>Rejection Reason</th>
+              </tr>
+            </thead>
+            <tbody>
+              {visibleStocks.map((stock) => {
+                const reasons = getRejectionReasons(stock.conditions, stock.matched);
+                const isDataIssue = stock.conditions.data_source_failed || stock.conditions.data_quality_failed;
+                return (
+                  <tr
+                    key={stock.symbol}
+                    className={stock.matched ? "row-passed" : `row-rejected ${isDataIssue ? "row-data-issue" : ""}`}
+                  >
+                    <td className="symbol-cell">
+                      <strong data-testid="analyzed-symbol">{displayCanonicalSymbol(stock.symbol)}</strong>
+                    </td>
+                    <td>{companyName(stock)}</td>
+                    <td className="number-cell">{stock.close > 0 ? stock.close.toFixed(2) : "N/A"}</td>
+                    <td className="number-cell">{stock.screener_score.toFixed(1)}</td>
+                    <td>{stock.technical_signal}</td>
+                    <td>
+                      {stock.matched ? (
+                        <span className="badge badge-success">Passed</span>
+                      ) : (
+                        <span className={`badge ${isDataIssue ? "badge-warning" : "badge-danger"}`}>
+                          {isDataIssue ? "Warning" : "Failed"}
+                        </span>
+                      )}
+                    </td>
+                    <td className="number-cell">{stock.ema_20 > 0 ? stock.ema_20.toFixed(2) : "N/A"}</td>
+                    <td className="number-cell">{stock.sma_50 > 0 ? stock.sma_50.toFixed(2) : "N/A"}</td>
+                    <td className="number-cell">{stock.sma_200 > 0 ? stock.sma_200.toFixed(2) : "N/A"}</td>
+                    <td className="number-cell">{stock.volume > 0 ? (stock.volume / 1000000).toFixed(1) : "N/A"}M</td>
+                    <td>
+                      {stock.matched ? (
+                        <span className="badge badge-success">Passed all checks</span>
+                      ) : (
+                        <div className="rejection-reasons">
+                          {reasons.map((reason, idx) => (
+                            <div key={idx} className="reason-item">
+                              {reason}
+                            </div>
+                          ))}
                         </div>
-                      ))}
-                    </div>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
 
-      {/* Mobile cards — no horizontal table scroll */}
-      <div className="analyzed-cards">
-        {[...passedStocks, ...failedStocks].map((stock) => {
-          const reasons = getRejectionReasons(stock.conditions, stock.matched);
-          const isDataIssue = stock.conditions.data_source_failed || stock.conditions.data_quality_failed;
-          return (
-            <article
-              key={stock.symbol}
-              className={`analyzed-card ${stock.matched ? "row-passed" : `row-rejected ${isDataIssue ? "row-data-issue" : ""}`}`}
-            >
-              <div className="analyzed-card__top">
-                <div className="analyzed-card__symbol">{stock.symbol}</div>
-                {stock.matched ? (
-                  <span className="badge badge-success">Passed</span>
-                ) : (
-                  <span className={`badge ${isDataIssue ? "badge-warning" : "badge-danger"}`}>
-                    {isDataIssue ? "Warning" : "Failed"}
-                  </span>
-                )}
-              </div>
-              <div className="analyzed-card__grid">
-                <div>
-                  <span>Close</span>
-                  <strong>{stock.close > 0 ? stock.close.toFixed(2) : "N/A"}</strong>
-                </div>
-                <div>
-                  <span>Score</span>
-                  <strong>{stock.screener_score.toFixed(1)}</strong>
-                </div>
-                <div>
-                  <span>Signal</span>
-                  <strong>{stock.technical_signal || "—"}</strong>
-                </div>
-                <div>
-                  <span>Volume</span>
-                  <strong>{stock.volume > 0 ? `${(stock.volume / 1000000).toFixed(1)}M` : "N/A"}</strong>
-                </div>
-                <div>
-                  <span>EMA-20</span>
-                  <strong>{stock.ema_20 > 0 ? stock.ema_20.toFixed(2) : "N/A"}</strong>
-                </div>
-                <div>
-                  <span>SMA-50</span>
-                  <strong>{stock.sma_50 > 0 ? stock.sma_50.toFixed(2) : "N/A"}</strong>
-                </div>
-              </div>
-              <div className="analyzed-card__reason">{reasons.join(" · ")}</div>
-            </article>
-          );
-        })}
-      </div>
+      {hasMore ? (
+        <div className="table-pager">
+          <span className="muted-copy">
+            Showing {visibleStocks.length} of {orderedStocks.length}
+          </span>
+          <button
+            type="button"
+            className="ds-btn ds-btn--secondary ds-btn--sm"
+            onClick={showMore}
+            data-testid="analyzed-show-more"
+          >
+            Show more
+          </button>
+        </div>
+      ) : null}
     </section>
   );
 });

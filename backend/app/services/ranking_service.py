@@ -15,6 +15,7 @@ class RankingService:
                 RankingItem(
                     rank=index,
                     symbol=item.symbol,
+                    company_name=getattr(item, "company_name", None),
                     overall_score=item.recommendation.score,
                     recommendation=item.recommendation.action,
                 )
@@ -24,6 +25,7 @@ class RankingService:
             RankingItem(
                 rank=index,
                 symbol=item.symbol,
+                company_name=getattr(item, "company_name", None),
                 overall_score=item.recommendation.score,
                 recommendation=item.recommendation.action,
             )
@@ -36,6 +38,7 @@ class RankingService:
             RankingItem(
                 rank=index,
                 symbol=item.symbol,
+                company_name=getattr(item, "company_name", None),
                 overall_score=item.recommendation.score,
                 recommendation=item.recommendation.action,
             )

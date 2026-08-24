@@ -22,8 +22,18 @@ export function LtmScanSummary({ payload }: Props) {
       ) : null}
       {clock === "MID_CYCLE" ? (
         <p className="muted-copy">
-          Mid-cycle: {payload.sessions_to_rebalance ?? "—"} sessions to next rebalance. No new BUY entries today.
+          Mid-cycle: {payload.sessions_to_rebalance ?? "—"} sessions to next rebalance. Selected names stay WATCH
+          until the next 252-session rebalance. BUY is issued only on rebalance day.
         </p>
+      ) : null}
+      {(s.buy ?? 0) === 0 && (s.watch ?? 0) > 0 && clock === "MID_CYCLE" ? (
+        <div className="panel" role="status" data-testid="ltm-zero-buy-reason">
+          <strong>No BUY candidates currently satisfy the strategy rules.</strong>
+          <p className="muted-copy">
+            {s.watch} name{s.watch === 1 ? "" : "s"} passed the +50% / top-10 gates and remain WATCH until
+            rebalance. This is expected mid-cycle behavior, not a missing BUY filter.
+          </p>
+        </div>
       ) : null}
       {emptyBuys && !warmup ? (
         <div className="panel error-state" role="status">

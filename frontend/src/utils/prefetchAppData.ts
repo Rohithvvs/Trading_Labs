@@ -14,6 +14,7 @@ import {
   getTokenStatus,
   loadLatestScan,
   fetchUniverses,
+  fetchUniverseInstruments,
 } from "../api";
 import { cachedFetch, CACHE_KEYS, invalidateCache } from "./appCache";
 import { startKeepAlive } from "./keepAlive";
@@ -52,6 +53,11 @@ export function prefetchAppData(): void {
       cachedFetch(CACHE_KEYS.universes, () => fetchUniverses(), { swr: true, ttlMs: 30 * 60 * 1000 }).catch(
         () => null,
       ),
+      cachedFetch(
+        CACHE_KEYS.universeInstruments,
+        () => fetchUniverseInstruments(),
+        { swr: true, ttlMs: 30 * 60 * 1000 },
+      ).catch(() => null),
     ]);
   };
 

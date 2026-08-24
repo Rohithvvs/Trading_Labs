@@ -37,8 +37,8 @@ test("token management saves a token and backend confirms SQLite persistence", a
 
 test("scanner flow renders results and records browser localStorage history", async ({ page }) => {
   await mockScannerResponse(page);
-  // Run Scanner lives on Markets (Swing Decision Dashboard); results on Scanner
-  await page.goto("/markets");
+  // Run Scanner lives on the Scanner page
+  await page.goto("/scanner");
   await page.getByTestId("run-scanner-button").click();
 
   // Verify the progress UI appears and updates through stages without hanging
@@ -58,9 +58,8 @@ test("scanner flow renders results and records browser localStorage history", as
 
 test("scanner Buy action prefills paper trading flow", async ({ page }) => {
   await mockScannerResponse(page);
-  await page.goto("/markets");
+  await page.goto("/scanner");
   await page.getByTestId("run-scanner-button").click();
-  await page.getByTestId("nav-scanner").click();
   await page.getByText("Buy", { exact: true }).click();
   await expect(page.getByTestId("paper-symbol-select")).toHaveValue("INFY-EQ");
 });

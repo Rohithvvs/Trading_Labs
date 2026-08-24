@@ -5,6 +5,9 @@ from __future__ import annotations
 STRATEGY_ID = "17_long_term_mom"
 DISPLAY_NAME = "Long-Term Buy & Hold Momentum"
 SHORT_NAME = "LTM"
+# Board / stock-detail window only. Does not change selection, gates, or fills.
+ATTRIBUTION_WINDOW = "3Y"
+ATTRIBUTION_YEARS = 3
 
 WARMUP_SESSIONS = 252
 REBALANCE_EVERY = 252

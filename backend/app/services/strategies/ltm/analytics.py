@@ -62,17 +62,45 @@ def _filter_trades(trades: list[Trade], start: date, end: date, symbol: str | No
     return out
 
 
-def _filter_curve(curve: list[dict[str, Any]], start: date, end: date) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    for pt in curve:
+def _calendar_dates(index_curve: list[dict[str, Any]] | None, start: date, end: date) -> list[date]:
+    dates: list[date] = []
+    for pt in index_curve or []:
         d = _as_date(pt.get("date") or pt.get("label"))
-        if d is None or d < start or d > end:
+        if d is not None and start <= d <= end:
+            dates.append(d)
+    return sorted(set(dates))
+
+
+def _equity_from_trades(
+    trades: list[Trade],
+    *,
+    start: date,
+    end: date,
+    initial: float,
+    calendar: list[date] | None = None,
+) -> list[dict[str, Any]]:
+    """Step equity for one name from its attributed book trades."""
+    events: list[tuple[date, float]] = []
+    for tr in trades:
+        if tr.pnl_pct is None:
             continue
-        eq = pt.get("equity")
-        if eq is None:
-            continue
-        rows.append({"date": d.isoformat(), "label": d.isoformat(), "equity": float(eq), "cash": pt.get("cash")})
-    return rows
+        events.append((tr.exit_date or end, float(tr.pnl_pct)))
+    events.sort(key=lambda item: item[0])
+    dates = [d for d in (calendar or []) if start <= d <= end]
+    if not dates:
+        dates = sorted({start, end, *(d for d, _ in events)})
+        dates = [d for d in dates if start <= d <= end]
+    if not dates:
+        return []
+    equity = float(initial)
+    i = 0
+    curve: list[dict[str, Any]] = []
+    for d in dates:
+        while i < len(events) and events[i][0] <= d:
+            equity *= 1.0 + events[i][1]
+            i += 1
+        curve.append({"date": d.isoformat(), "label": d.isoformat(), "equity": round(equity, 4)})
+    return curve
 
 
 def _monthly_from_equity(curve: list[dict[str, Any]], initial: float) -> list[dict[str, Any]]:
@@ -148,19 +176,12 @@ def build_symbol_dashboard(
     start = window_start(asof, years=years) if key != "ALL" else date(1970, 1, 1)
     trades_all = [trade_from_dict(r) for r in blotter]
     trades = _filter_trades(trades_all, start, asof, symbol)
-    curve = _filter_curve(equity_curve, start, asof)
-    if curve:
-        initial = float(curve[0]["equity"])
-        ending = float(curve[-1]["equity"])
-    else:
-        initial = float(initial_capital)
-        ending = initial
-    days = 1
-    if curve:
-        d0 = _as_date(curve[0]["date"])
-        d1 = _as_date(curve[-1]["date"])
-        if d0 and d1:
-            days = max((d1 - d0).days, 1)
+    trades.sort(key=lambda t: (t.exit_date or asof, t.entry_date, t.symbol))
+    initial = float(initial_capital)
+    calendar = _calendar_dates(index_curve, start, asof) or _calendar_dates(equity_curve, start, asof)
+    curve = _equity_from_trades(trades, start=start, end=asof, initial=initial, calendar=calendar) if trades else []
+    ending = float(curve[-1]["equity"]) if curve else initial
+    days = max((asof - start).days, 1)
 
     pnls = [t.pnl_pct for t in trades if t.pnl_pct is not None]
     wins = [p for p in pnls if p > 0]
@@ -178,8 +199,7 @@ def build_symbol_dashboard(
     for p in pnls:
         name_net *= 1.0 + p
     name_return = (name_net - 1.0) * 100.0 if pnls else None
-    book_return = ((ending / initial) - 1.0) * 100.0 if initial else None
-    cagr = calculate_cagr(initial, ending, days)
+    cagr = calculate_cagr(initial, ending, days) if trade_count else None
     dd_series, max_dd = _drawdown_series(curve)
     sharpe = None
     if trade_count > 1:
@@ -219,12 +239,13 @@ def build_symbol_dashboard(
         pf = profit_factor or (2 if pf_infinite else 0)
         verdict = "favorable" if tr > 0 and wr >= 45 and pf >= 1 else "mixed"
 
+    name_ret_pct = None if name_return is None else round(name_return, 4)
     return {
         "window": key,
         "period_start": period_start,
         "period_end": period_end,
-        "total_return": None if book_return is None else round(book_return, 4),
-        "symbol_return": None if name_return is None else round(name_return, 4),
+        "total_return": name_ret_pct,
+        "symbol_return": name_ret_pct,
         "cagr": None if cagr is None else round(cagr, 4),
         "max_drawdown": None if max_dd is None else round(max_dd * 100, 4),
         "win_rate": None if win_rate is None else round(win_rate, 4),
@@ -233,14 +254,14 @@ def build_symbol_dashboard(
         "profit_factor": None if profit_factor is None else round(profit_factor, 4),
         "profit_factor_infinite": pf_infinite,
         "initial_capital": round(initial, 2),
-        "ending_capital": round(ending, 2),
+        "ending_capital": round(ending, 2) if trade_count else None,
         "avg_trade_return": None if not pnls else round((sum(pnls) / len(pnls)) * 100, 4),
         "max_consecutive_losses": _max_consec_losses(pnls),
         "verdict": verdict,
         "equity_curve": curve,
         "drawdown_curve": dd_series,
         "benchmark_curve": bench,
-        "monthly_returns": _monthly_from_equity(curve, initial),
+        "monthly_returns": _monthly_from_equity(curve, initial) if curve else [],
         "trades": payloads,
         "best_trade": best,
         "worst_trade": worst,

@@ -103,6 +103,8 @@ class FyersEodProvider:
         }
         t0 = datetime.now(timezone.utc)
         try:
+            from ...fyers_service import FyersRateLimitError
+
             loop = asyncio.get_running_loop()
             logger.info(
                 "FYERS_EOD_REQUEST | symbol=%s | from=%s | to=%s",
@@ -110,10 +112,30 @@ class FyersEodProvider:
                 range_from.isoformat(),
                 range_to.isoformat(),
             )
-            response = await loop.run_in_executor(
-                svc._network_pool,
-                svc._request_history_with_retries, client, payload, symbol
-            )
+            response = None
+            last_exc: Exception | None = None
+            for attempt in range(1, 6):
+                try:
+                    response = await loop.run_in_executor(
+                        svc._network_pool,
+                        svc._request_history_with_retries, client, payload, symbol
+                    )
+                    last_exc = None
+                    break
+                except FyersRateLimitError as exc:
+                    last_exc = exc
+                    wait_s = 45 * attempt
+                    logger.warning(
+                        "FYERS_EOD_RATE_LIMIT | symbol=%s | from=%s | to=%s | attempt=%s | sleep_s=%s",
+                        symbol,
+                        range_from.isoformat(),
+                        range_to.isoformat(),
+                        attempt,
+                        wait_s,
+                    )
+                    await asyncio.sleep(wait_s)
+            if last_exc is not None:
+                raise last_exc
             ms = int((datetime.now(timezone.utc) - t0).total_seconds() * 1000)
             n_candles = len((response or {}).get("candles") or []) if isinstance(response, dict) else 0
             logger.info(

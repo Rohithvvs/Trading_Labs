@@ -6,6 +6,7 @@ import { useDensity } from "../hooks/useDensity";
 import { useFeaturePermissions } from "../hooks/useFeaturePermissions";
 import { ADMIN_NAV, RETAIL_NAV, isNavActive } from "./navConfig";
 import { ThemeToggle } from "../components/ThemeToggle";
+import { InfrastructureStatus } from "../components/InfrastructureStatus";
 import { navigateToPaperOrder } from "../utils/paperOrderNavigation";
 
 type Props = {
@@ -193,6 +194,7 @@ export function AppShell({ children, topActions, title }: Props) {
           </div>
           <div className="app-topbar__actions">
             {topActions}
+            <InfrastructureStatus variant="header" />
             <button
               type="button"
               className="ds-btn ds-btn--buy ds-btn--sm"
@@ -218,6 +220,14 @@ export function AppShell({ children, topActions, title }: Props) {
               }
             >
               SELL
+            </button>
+            <button
+              type="button"
+              className="ds-btn ds-btn--secondary ds-btn--sm"
+              data-testid="global-paper-cta"
+              onClick={() => navigate("/paper")}
+            >
+              Paper trade
             </button>
             <div className="nav-profile-wrap" ref={profileRef}>
               <button

@@ -424,28 +424,9 @@ class MarketDataService:
     @staticmethod
     def symbol_lookup_variants(symbol: str) -> list[str]:
         """All plausible stored forms for a universe symbol (handles NSE: / -EQ drift)."""
-        from ..utils.symbol import canonical_symbol
+        from ..utils.symbol import ohlcv_symbol_variants
 
-        raw = (symbol or "").strip()
-        if not raw:
-            return []
-        can = canonical_symbol(raw)
-        variants = [
-            raw,
-            raw.upper(),
-            can,
-            f"{can}-EQ",
-            f"NSE:{can}-EQ",
-            f"NSE:{can}",
-        ]
-        # Preserve order, drop empties/dupes
-        seen: set[str] = set()
-        out: list[str] = []
-        for v in variants:
-            if v and v not in seen:
-                seen.add(v)
-                out.append(v)
-        return out
+        return ohlcv_symbol_variants(symbol)
 
     async def get_candle_meta_batch(
         self,

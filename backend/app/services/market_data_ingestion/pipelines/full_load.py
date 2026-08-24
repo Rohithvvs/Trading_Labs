@@ -17,12 +17,40 @@ from .. import repository
 
 logger = logging.getLogger("app.market_data_ingestion.full_load")
 
+# NSE delivery archives are session-by-session. An 18-year window is ~4,500
+# HTTP fetches and is not required for price backtests.
+_DELIVERY_AUTO_SKIP_YEARS = 5
+
+
+def missing_ohlcv_ranges(
+    start: date,
+    end: date,
+    min_d: date | None,
+    max_d: date | None,
+) -> list[tuple[date, date]]:
+    """Inclusive date windows still missing from an existing equity series."""
+    if start > end:
+        return []
+    if min_d is None or max_d is None:
+        return [(start, end)]
+    out: list[tuple[date, date]] = []
+    if start < min_d:
+        gap_end = min_d - timedelta(days=1)
+        if start <= gap_end:
+            out.append((start, gap_end))
+    if max_d < end:
+        gap_start = max_d + timedelta(days=1)
+        if gap_start <= end:
+            out.append((gap_start, end))
+    return out
+
 
 async def run_full_load(
     *,
     years: int = 3,
     symbols: list[str] | None = None,
     trigger_source: str = "CLI",
+    skip_delivery: bool | None = None,
 ) -> dict[str, Any]:
     lease = await acquire_market_data_load_lock()
     if not lease.acquired:
@@ -68,7 +96,12 @@ async def run_full_load(
         )
 
         fyers = FyersEodProvider()
-        nse = NseDeliveryProvider()
+        load_delivery = True
+        if skip_delivery is None:
+            load_delivery = years <= _DELIVERY_AUTO_SKIP_YEARS
+        else:
+            load_delivery = not skip_delivery
+        nse = NseDeliveryProvider() if load_delivery else None
         concurrency = max(1, min(settings.strategy_market_data_load_concurrency, 8))
         sem = asyncio.Semaphore(concurrency)
 
@@ -79,19 +112,28 @@ async def run_full_load(
         except Exception as exc:
             logger.warning("FULL_INDEX_FAIL | err=%s", type(exc).__name__)
 
-        # Delivery over full OHLCV window (trading days only; soft-fail per session)
-        logger.info(
-            "MARKET_DATA_DELIVERY_START | from=%s | to=%s",
-            start.isoformat(),
-            end.isoformat(),
-        )
-        delivery_maps = await nse.fetch_range_delivery(
-            start,
-            end,
-            trading_days_only=True,
-            concurrency=min(6, concurrency),
-        )
-        delivery_sessions_ok = sum(1 for m in delivery_maps.values() if m)
+        delivery_maps: dict[date, Any] = {}
+        delivery_sessions_ok = 0
+        if load_delivery and nse is not None:
+            # Delivery over full OHLCV window (trading days only; soft-fail per session)
+            logger.info(
+                "MARKET_DATA_DELIVERY_START | from=%s | to=%s",
+                start.isoformat(),
+                end.isoformat(),
+            )
+            delivery_maps = await nse.fetch_range_delivery(
+                start,
+                end,
+                trading_days_only=True,
+                concurrency=min(6, concurrency),
+            )
+            delivery_sessions_ok = sum(1 for m in delivery_maps.values() if m)
+        else:
+            logger.info(
+                "MARKET_DATA_DELIVERY_SKIPPED | years=%s | skip_delivery=%s",
+                years,
+                skip_delivery,
+            )
 
         total_fetched = 0
         total_upserted = 0
@@ -103,50 +145,41 @@ async def run_full_load(
             nonlocal total_fetched, total_upserted, total_failed, total_skipped
             async with sem:
                 try:
-                    # Resume: skip if already has enough history and recent max
-                    if await repository.symbol_has_sufficient_history(sym, min_rows=max(400, years * 200)):
-                        max_d = await repository.max_equity_trade_date([sym])
-                        if max_d and max_d >= end:
-                            total_skipped += 1
-                            return
-                        range_from = (max_d + timedelta(days=1)) if max_d else start
-                    else:
-                        range_from = start
-
-                    if range_from > end:
+                    min_d, max_d, _row_count = await repository.equity_date_span(sym)
+                    windows = missing_ohlcv_ranges(start, end, min_d, max_d)
+                    if not windows:
                         total_skipped += 1
                         return
 
-                    rows = await fyers.fetch_daily_range(sym, range_from, end)
-                    for bar in rows:
-                        dmap = delivery_maps.get(bar["trade_date"]) or {}
-                        drec = nse.lookup(dmap, symbol=sym) if dmap else None
-                        d_qty = drec.get("delivery_qty") if drec else None
-                        traded = drec.get("traded_qty") if drec else None
-                        d_pct = drec.get("delivery_pct") if drec else None
-                        if d_pct is None and d_qty is not None:
-                            pct = compute_delivery_pct(d_qty, traded)
-                            d_pct = float(pct) if pct is not None else None
-                        turn = compute_turnover(bar["close"], bar["volume"])
-                        bar["delivery_qty"] = d_qty
-                        bar["delivery_pct"] = d_pct
-                        bar["turnover"] = float(turn) if turn is not None else None
-                    # ADTV needs full sorted series — for incremental range, seed from DB
-                    if rows:
-                        if range_from > start:
-                            prior = await repository.fetch_recent_equity_before(
-                                sym, range_from, limit=19
-                            )
-                            combined = prior + rows
-                            attach_adtv_20_series(combined)
-                            # only keep adtv on new rows (already mutated in combined tail)
-                        else:
-                            attach_adtv_20_series(rows)
-                    total_fetched += len(rows)
-                    chunk = 500
-                    for i in range(0, len(rows), chunk):
-                        n, _ = await repository.upsert_daily_bars(rows[i : i + chunk])
-                        total_upserted += n
+                    for range_from, range_to in windows:
+                        rows = await fyers.fetch_daily_range(sym, range_from, range_to)
+                        for bar in rows:
+                            dmap = delivery_maps.get(bar["trade_date"]) or {}
+                            drec = nse.lookup(dmap, symbol=sym) if nse is not None and dmap else None
+                            d_qty = drec.get("delivery_qty") if drec else None
+                            traded = drec.get("traded_qty") if drec else None
+                            d_pct = drec.get("delivery_pct") if drec else None
+                            if d_pct is None and d_qty is not None:
+                                pct = compute_delivery_pct(d_qty, traded)
+                                d_pct = float(pct) if pct is not None else None
+                            turn = compute_turnover(bar["close"], bar["volume"])
+                            bar["delivery_qty"] = d_qty
+                            bar["delivery_pct"] = d_pct
+                            bar["turnover"] = float(turn) if turn is not None else None
+                        if rows:
+                            if range_from > start:
+                                prior = await repository.fetch_recent_equity_before(
+                                    sym, range_from, limit=19
+                                )
+                                combined = prior + rows
+                                attach_adtv_20_series(combined)
+                            else:
+                                attach_adtv_20_series(rows)
+                        total_fetched += len(rows)
+                        chunk = 500
+                        for i in range(0, len(rows), chunk):
+                            n, _ = await repository.upsert_daily_bars(rows[i : i + chunk])
+                            total_upserted += n
                 except Exception as exc:
                     total_failed += 1
                     failed.append(sym)
@@ -156,19 +189,20 @@ async def run_full_load(
 
         # Delivery pass for rows that already existed (skipped symbols / prior OHLCV)
         delivery_rows_updated = 0
-        for sess, dmap in delivery_maps.items():
-            if not dmap:
-                continue
-            try:
-                delivery_rows_updated += await repository.update_delivery_for_session(
-                    sess, dmap, symbols=universe
-                )
-            except Exception as exc:
-                logger.warning(
-                    "FULL_DELIVERY_APPLY_FAIL | session=%s | err=%s",
-                    sess.isoformat(),
-                    type(exc).__name__,
-                )
+        if load_delivery and nse is not None:
+            for sess, dmap in delivery_maps.items():
+                if not dmap:
+                    continue
+                try:
+                    delivery_rows_updated += await repository.update_delivery_for_session(
+                        sess, dmap, symbols=universe
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "FULL_DELIVERY_APPLY_FAIL | session=%s | err=%s",
+                        sess.isoformat(),
+                        type(exc).__name__,
+                    )
 
         if total_upserted == 0 and total_failed == len(universe):
             status, exit_code = "FAILED", 1

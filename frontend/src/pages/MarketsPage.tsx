@@ -16,7 +16,7 @@ import { Card, CardHeader, EmptyState, Button, PnL, StatusPill } from "../design
 import { useAuth } from "../hooks/useAuth";
 import { useFeaturePermissions } from "../hooks/useFeaturePermissions";
 import type { ProfilePreferences } from "../utils/profilePrefs";
-import { SwingDecisionDashboard } from "../components/swing";
+
 import type { ScreenerResponse, ThemeMode } from "../types";
 import { FeatureGuard } from "../components/FeatureGuard";
 
@@ -68,29 +68,14 @@ function isFresh(key: string): boolean {
 }
 
 /**
- * Retail Markets home — Market Overview + embedded Swing Decision Dashboard.
- * Shares scanner state with the Scanner page via props from App.
+ * Retail Markets home — Market Overview, watchlist, and desk shortcuts.
+ * Scanner results live on the Scanner page. Infrastructure lives in the global header.
  */
 export const MarketsPage = memo(function MarketsPage({
   onLoadSavedScan,
   screenerResult = null,
   isLoading = false,
-  scanError = null,
-  timeframe = "1d",
-  summaryMetrics = [],
   onRunScanner,
-  search = "",
-  onSearchChange,
-  topN = 20,
-  lookback = 180,
-  universe = "NIFTY500",
-  universes = [],
-  onTopNChange,
-  onLookbackChange,
-  onTimeframeChange,
-  onUniverseChange,
-  progressData = null,
-  scanStartTime = null,
 }: Props) {
   const navigate = useNavigate();
   const { user } = useAuth();
@@ -111,11 +96,6 @@ export const MarketsPage = memo(function MarketsPage({
   const lastLoadAt = useRef(0);
 
   const handleRunScanner = onRunScanner ?? (() => {});
-  const handleSearchChange = onSearchChange ?? ((_value: string) => {});
-  const handleTopNChange = onTopNChange ?? ((_value: number) => {});
-  const handleLookbackChange = onLookbackChange ?? ((_value: number) => {});
-  const handleTimeframeChange = onTimeframeChange ?? ((_value: string) => {});
-  const handleUniverseChange = onUniverseChange ?? ((_value: string) => {});
 
   const load = useCallback(async (force = false) => {
     const now = Date.now();
@@ -293,28 +273,6 @@ export const MarketsPage = memo(function MarketsPage({
           </div>
         ) : null}
       </Card>
-
-      {/* ── Swing Decision Dashboard (moved from Scanner) ── */}
-      <SwingDecisionDashboard
-        isLoading={isLoading}
-        search={search}
-        onSearchChange={handleSearchChange}
-        onRunScanner={handleRunScanner}
-        topN={topN}
-        lookback={lookback}
-        timeframe={timeframe}
-        universe={universe}
-        universes={universes}
-        onTopNChange={handleTopNChange}
-        onLookbackChange={handleLookbackChange}
-        onTimeframeChange={handleTimeframeChange}
-        onUniverseChange={handleUniverseChange}
-        screenerResult={screenerResult}
-        summaryMetrics={summaryMetrics}
-        scanError={scanError}
-        progressData={progressData}
-        scanStartTime={scanStartTime}
-      />
 
       {/* ── Secondary: watchlist, highlights, desk, presets, alerts ── */}
       <div className="markets-grid-2">

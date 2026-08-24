@@ -1,0 +1,36 @@
+{
+  "evaluated_at": "2026-08-16T12:30:00.031622+00:00",
+  "promoted_rules_count": 3,
+  "rules": [
+    {
+      "rule_id": "news_dedup",
+      "evaluated_at": "2026-08-16T12:30:00.031622+00:00",
+      "health_status": "GREEN",
+      "health_label": "healthy",
+      "false_positive_rate_30d": 0.0,
+      "baseline_false_positive_rate": 0.15,
+      "sample_count_30d": 86,
+      "status_reason": "30-day false-positive rate (0.0%) is within baseline tolerance (15.0% + 5.0%)"
+    },
+    {
+      "rule_id": "sentiment_decay",
+      "evaluated_at": "2026-08-16T12:30:00.031622+00:00",
+      "health_status": "INSUFFICIENT_DATA",
+      "health_label": "insufficient data",
+      "false_positive_rate_30d": null,
+      "baseline_false_positive_rate": 0.15,
+      "sample_count_30d": 9,
+      "status_reason": "Insufficient sample count (9 < 15 recommendations evaluated in 30-day window)"
+    },
+    {
+      "rule_id": "market_breadth",
+      "evaluated_at": "2026-08-16T12:30:00.031622+00:00",
+      "health_status": "INSUFFICIENT_DATA",
+      "health_label": "insufficient data",
+      "false_positive_rate_30d": null,
+      "baseline_false_positive_rate": 0.15,
+      "sample_count_30d": 9,
+      "status_reason": "Insufficient sample count (9 < 15 recommendations evaluated in 30-day window)"
+    }
+  ]
+}

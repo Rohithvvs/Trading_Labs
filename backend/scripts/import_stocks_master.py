@@ -36,16 +36,18 @@ async def import_csv(csv_path: str, universe: str):
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     is_nifty500 = universe.upper().replace(" ", "") in {"NIFTY500", "NIFTY_500"}
     records = []
+    seen_store_symbols: set[str] = set()
+    from app.services.universe_csv import parse_nifty500_row
     with open(csv_path, newline='', encoding='utf-8-sig') as f:
         reader = csv.DictReader(f)
         for row in reader:
-            raw_symbol = (row.get("Symbol") or row.get("symbol") or "").strip().upper()
-            if not raw_symbol:
+            parsed = parse_nifty500_row(row)
+            if not parsed:
                 continue
-                
-            series = (row.get("Series") or row.get("series") or "").strip().upper()
-            
-            # Normalization: ABC -> ABC-EQ
+            raw_symbol = parsed["symbol"]
+            series = parsed["series"]
+
+            # Normalization: ABC -> ABC-EQ. Preserve BE/other series as stored today.
             if series == "EQ" and not raw_symbol.endswith("-EQ"):
                 symbol = f"{raw_symbol}-EQ"
             elif not series and not raw_symbol.endswith("-EQ"):
@@ -53,10 +55,14 @@ async def import_csv(csv_path: str, universe: str):
             else:
                 symbol = raw_symbol
 
-            company_name = (row.get("Company Name") or row.get("company_name") or "").strip()
-            sector = (row.get("Industry") or row.get("industry") or row.get("sector") or "").strip()
-            industry = (row.get("Industry") or row.get("industry") or "").strip() or None
-            isin = (row.get("ISIN Code") or row.get("isin") or "").strip()
+            if symbol in seen_store_symbols:
+                continue
+            seen_store_symbols.add(symbol)
+
+            company_name = parsed["company_name"]
+            sector = parsed["industry"]
+            industry = parsed["industry"] or None
+            isin = parsed["isin"]
 
             records.append({
                 "symbol": symbol,

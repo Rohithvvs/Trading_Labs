@@ -44,6 +44,10 @@ _CLI_ENSURE_BUDGET_S = 900.0
 # Cap how many missing OHLCV symbols the scanner path will chase live via FYERS.
 # Remaining gaps stay for the daily job; scanners still score the full data-valid set.
 _SCANNER_MAX_OHLCV_FETCH = 40
+# SMA50 needs 50 sessions; 52W warmup/lookback needs 253. Fetch this many before
+# treating index history as sufficient.
+_INDEX_HISTORY_MIN_ROWS = 253
+_INDEX_HISTORY_YEARS = 3
 
 
 async def _get_universe(symbols: list[str] | None) -> list[str]:
@@ -175,6 +179,38 @@ def _is_fast_fresh(
     return missing_n <= tol and snap["equity_coverage"] >= 0.95
 
 
+async def backfill_index_history(
+    *,
+    range_to: date | None = None,
+    years: int = _INDEX_HISTORY_YEARS,
+    provider: FyersEodProvider | None = None,
+) -> dict[str, Any]:
+    """Load NIFTY500 daily OHLCV into ``index_ohlcv`` via the existing FYERS adapter.
+
+    Does not invent prices. Upsert is idempotent on (trade_date, symbol).
+    """
+    end = range_to or expected_last_completed_session()
+    start = end - timedelta(days=int(years * 365) + 30)
+    store = settings.strategy_index_store_symbol
+    fyers = provider or FyersEodProvider()
+    rows = await fyers.fetch_index_range(start, end)
+    upserted = 0
+    if rows:
+        upserted = await repository.upsert_index_bars(rows)
+    count = await repository.index_row_count(store)
+    return {
+        "status": "SUCCESS" if upserted or count >= _INDEX_HISTORY_MIN_ROWS else "PARTIAL",
+        "store_symbol": store,
+        "range_from": start.isoformat(),
+        "range_to": end.isoformat(),
+        "rows_fetched": len(rows),
+        "rows_upserted": upserted,
+        "index_row_count": count,
+        "min_date": (await repository.min_index_trade_date(store)),
+        "max_date": (await repository.max_index_trade_date(store)),
+    }
+
+
 async def ensure_latest_market_data(
     *,
     target_date: date | None = None,
@@ -283,13 +319,21 @@ async def ensure_latest_market_data(
         gap_dates = _trading_days_between(expected, expected)
 
     needs_gap = bool(gap_dates)
+    try:
+        idx_count = await repository.index_row_count(index_symbol)
+    except Exception:
+        idx_count = 0
+    need_index_history = idx_count < _INDEX_HISTORY_MIN_ROWS
     # When gap exists, full universe for those dates; else only missing symbols on expected
-    fast_ok = _is_fast_fresh(
-        snap,
-        threshold=threshold,
-        force=force,
-        universe_size=len(universe),
-        has_date_gap=needs_gap,
+    fast_ok = (
+        _is_fast_fresh(
+            snap,
+            threshold=threshold,
+            force=force,
+            universe_size=len(universe),
+            has_date_gap=needs_gap,
+        )
+        and not need_index_history
     )
 
     if fast_ok:
@@ -403,12 +447,21 @@ async def ensure_latest_market_data(
         elif force:
             gap_dates = _trading_days_between(expected, expected)
 
-        if _is_fast_fresh(
-            snap,
-            threshold=threshold,
-            force=force,
-            universe_size=len(universe),
-            has_date_gap=bool(gap_dates),
+        try:
+            idx_count = await repository.index_row_count(index_symbol)
+        except Exception:
+            idx_count = 0
+        need_index_history = idx_count < _INDEX_HISTORY_MIN_ROWS
+
+        if (
+            _is_fast_fresh(
+                snap,
+                threshold=threshold,
+                force=force,
+                universe_size=len(universe),
+                has_date_gap=bool(gap_dates),
+            )
+            and not need_index_history
         ):
             duration_ms = int((time.perf_counter() - t0) * 1000)
             if run_id:
@@ -515,7 +568,11 @@ async def ensure_latest_market_data(
                     break
                 sessions_touched.append(session)
                 need_ohlcv = session in ohlcv_sessions
-                need_index = not await repository.index_present(session, index_symbol) or force
+                need_index = (
+                    not await repository.index_present(session, index_symbol)
+                    or force
+                    or need_index_history
+                )
                 present_now = await repository.symbols_present_on(session, universe)
                 with_deliv = await repository.symbols_with_delivery_on(session, universe)
                 with_adtv = await repository.symbols_with_adtv_on(session, universe)
@@ -710,20 +767,31 @@ async def ensure_latest_market_data(
                             type(exc).__name__,
                         )
 
-                # Index
+                # Index — pull multi-year history when the table is empty/short so
+                # market SMA50 and 52W warmup have real NIFTY500 sessions.
                 if need_index and not _budget_exhausted():
                     try:
+                        idx_from = session
+                        if need_index_history or force:
+                            idx_from = session - timedelta(days=int(_INDEX_HISTORY_YEARS * 365) + 30)
+                        idx_timeout = min(
+                            60.0 if need_index_history else 25.0,
+                            max(5.0, _budget_left()),
+                        )
                         idx_rows = await asyncio.wait_for(
-                            fyers.fetch_index_range(session, session),
-                            timeout=min(25.0, max(5.0, _budget_left())),
+                            fyers.fetch_index_range(idx_from, session),
+                            timeout=idx_timeout,
                         )
                         if idx_rows:
                             await repository.upsert_index_bars(idx_rows)
                             fetched_flags["index"] = True
+                            if len(idx_rows) >= _INDEX_HISTORY_MIN_ROWS:
+                                need_index_history = False
                     except Exception as exc:
                         logger.warning(
-                            "ENSURE_INDEX_FAIL | session=%s | err=%s",
+                            "ENSURE_INDEX_FAIL | session=%s | history=%s | err=%s",
                             session.isoformat(),
+                            need_index_history,
                             type(exc).__name__,
                         )
 

@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..models.market_data import LatestScanResult, ScanSnapshot, ScanSnapshotRecord
 from ..schemas import AnalysisMode, ScreenerResponse
 from ..utils import get_logger
+from ..utils.symbol import canonical_symbol
 from ..observability.scan_diagnostics import get_current_scan, log_scan_persist
 from ..config.settings import settings
 from .persistence_service import PersistenceService
@@ -468,7 +469,8 @@ class LatestScanService:
         def _cand_from_item(item, rec: str) -> dict:
             tech = _swing_indicators(item)
             return {
-                "symbol": item.symbol,
+                "symbol": canonical_symbol(item.symbol),
+                "company_name": getattr(item, "company_name", None),
                 "recommendation": rec,
                 "score": float(getattr(item.recommendation, "score", 0.0) or 0.0),
                 "close_price": float(_close_price(item) or 0.0),
@@ -493,11 +495,13 @@ class LatestScanService:
                 rejected_candidates.append(_cand_from_item(item, "REJECTED"))
 
         for sym in response.buy_candidate_symbols or []:
-            if sym in by_symbol:
+            canon = canonical_symbol(sym)
+            if canon in by_symbol or sym in by_symbol:
                 continue
             buy_candidates.append(
                 {
-                    "symbol": sym,
+                    "symbol": canon,
+                    "company_name": None,
                     "recommendation": "BUY",
                     "score": 0.0,
                     "close_price": 0.0,
@@ -511,11 +515,13 @@ class LatestScanService:
                 }
             )
         for sym in response.watch_candidate_symbols or []:
-            if sym in by_symbol:
+            canon = canonical_symbol(sym)
+            if canon in by_symbol or sym in by_symbol:
                 continue
             watch_candidates.append(
                 {
-                    "symbol": sym,
+                    "symbol": canon,
+                    "company_name": None,
                     "recommendation": "WATCH",
                     "score": 0.0,
                     "close_price": 0.0,
@@ -769,7 +775,7 @@ class LatestScanService:
 
         for r in records:
             item = {
-                "symbol": r.symbol,
+                "symbol": canonical_symbol(r.symbol) if r.symbol else "",
                 "recommendation": r.recommendation,
                 "score": float(r.score) if r.score is not None else 0.0,
                 "close_price": float(r.close_price) if r.close_price is not None else 0.0,
@@ -833,7 +839,7 @@ class LatestScanService:
 
             items.append(
                 {
-                    "symbol": r.symbol,
+                    "symbol": canonical_symbol(r.symbol) if r.symbol else "",
                     "recommendation": r.recommendation,
                     "score": float(r.score) if r.score is not None else 0.0,
                     "close_price": float(r.close_price) if r.close_price is not None else 0.0,
@@ -878,34 +884,19 @@ class LatestScanService:
         if not snapshot:
             return None, []
 
-        stmt_records = select(ScanSnapshotRecord).where(
-            ScanSnapshotRecord.scan_id == snapshot.scan_id
+        stmt_rec = (
+            select(ScanSnapshotRecord)
+            .where(ScanSnapshotRecord.scan_id == snapshot.scan_id)
         )
-        result_records = await self.db.execute(stmt_records)
-        records = result_records.scalars().all()
-        return snapshot, list(records)
+        result_rec = await self.db.execute(stmt_rec)
+        records = list(result_rec.scalars().all())
+        return snapshot, records
 
     async def _fetch_latest_from_canonical_results(self) -> dict | None:
-        """Derive dashboard payload from ``latest_scan_results`` (canonical source).
-
-        Shape matches ``_format_dashboard_payload`` so clients get the same field
-        contract whether data came from snapshots or canonical rows (FR-009).
-        Only the latest scan wave (max ``scanned_at``) is included so stale
-        symbols from older runs do not pollute the dashboard.
-        """
-        res = await self.db.execute(select(LatestScanResult))
-        scalars_result = res.scalars()
-        # Support both sync Result.scalars() and async mock/session variants.
-        if hasattr(scalars_result, "__await__"):
-            scalars_result = await scalars_result  # type: ignore[misc]
-        all_method = getattr(scalars_result, "all", None)
-        if all_method is None:
-            all_rows = list(scalars_result) if scalars_result else []
-        else:
-            maybe_rows = all_method()
-            if hasattr(maybe_rows, "__await__"):
-                maybe_rows = await maybe_rows  # type: ignore[misc]
-            all_rows = list(maybe_rows or [])
+        """Dashboard projection from ``latest_scan_results`` table (M-R1)."""
+        stmt = select(LatestScanResult)
+        result = await self.db.execute(stmt)
+        all_rows = list(result.scalars().all())
         if not all_rows:
             return None
 
@@ -935,7 +926,7 @@ class LatestScanService:
                 rec = "REJECTED"
 
             cand_dict = {
-                "symbol": row.symbol,
+                "symbol": canonical_symbol(row.symbol) if row.symbol else "",
                 "recommendation": rec if rec != "REJECTED" else row.signal_type,
                 "score": float(row.score or 0.0),
                 # Canonical table has no OHLCV; preserve field presence for contract parity.

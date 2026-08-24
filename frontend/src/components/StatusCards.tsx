@@ -1,18 +1,17 @@
 import { memo, useEffect, useMemo, useState } from "react";
 
-function formatScanTime(isoString: string | null | undefined): string | null {
+export function formatScanTime(isoString: string | null | undefined): string | null {
   if (!isoString) return null;
   const date = new Date(isoString);
   if (Number.isNaN(date.getTime())) return null;
-  const day = date.getDate().toString().padStart(2, "0");
-  const month = date.toLocaleString("en-US", { month: "short" });
-  const year = date.getFullYear();
-  let hour = date.getHours();
-  const minute = date.getMinutes().toString().padStart(2, "0");
-  const ampm = hour >= 12 ? "PM" : "AM";
-  hour = hour % 12;
-  if (hour === 0) hour = 12;
-  return `${day} ${month} ${year}, ${hour.toString().padStart(2, "0")}:${minute} ${ampm}`;
+  return new Intl.DateTimeFormat(undefined, {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: true,
+  }).format(date);
 }
 
 function formatDuration(seconds: number | null): string | null {
@@ -91,6 +90,7 @@ type LastScanCardProps = {
   scannedSymbols: number | null | undefined;
   durationSec: number | null;
   compact?: boolean;
+  runningLabel?: string | null;
 };
 
 export const LastScanCard = memo(function LastScanCard({
@@ -99,16 +99,18 @@ export const LastScanCard = memo(function LastScanCard({
   scannedSymbols,
   durationSec,
   compact,
+  runningLabel,
 }: LastScanCardProps) {
   const formattedTime = useMemo(() => formatScanTime(lastScanAt), [lastScanAt]);
   const duration = useMemo(() => formatDuration(durationSec), [durationSec]);
 
   const subtitle = useMemo(() => {
     const parts: string[] = [];
-    if (duration) parts.push(`Completed in ${duration}`);
+    if (isLoading && formattedTime) parts.push(`Last completed: ${formattedTime}`);
+    if (!isLoading && duration) parts.push(`Completed in ${duration}`);
     if (scannedSymbols != null) parts.push(`${scannedSymbols} Stocks`);
     return parts.join(" · ") || undefined;
-  }, [duration, scannedSymbols]);
+  }, [duration, scannedSymbols, isLoading, formattedTime]);
 
   return (
     <article
@@ -118,9 +120,11 @@ export const LastScanCard = memo(function LastScanCard({
     >
       <span className="status-card__label">Last Scan Completed</span>
       <span className="status-card__value">
-        {isLoading ? "Scanning…" : formattedTime ?? "No scan completed"}
+        {isLoading ? (runningLabel || "Scanning…") : formattedTime ?? "No scan completed"}
       </span>
-      {!compact && subtitle ? <span className="status-card__subtitle">{subtitle}</span> : null}
+      {!compact && subtitle ? <span className="status-card__subtitle">{subtitle}</span> : compact && isLoading && formattedTime ? (
+        <span className="status-card__subtitle">Last completed: {formattedTime}</span>
+      ) : null}
     </article>
   );
 });
@@ -134,6 +138,7 @@ export type StatusCardsProps = {
   className?: string;
   /** Show Market open/closed card (default true for desk header). */
   showMarket?: boolean;
+  runningLabel?: string | null;
 };
 
 export const StatusCards = memo(function StatusCards({
@@ -144,6 +149,7 @@ export const StatusCards = memo(function StatusCards({
   compact,
   className = "",
   showMarket = true,
+  runningLabel,
 }: StatusCardsProps) {
   return (
     <section
@@ -157,6 +163,7 @@ export const StatusCards = memo(function StatusCards({
         scannedSymbols={scannedSymbols}
         durationSec={durationSec}
         compact={compact}
+        runningLabel={runningLabel}
       />
     </section>
   );

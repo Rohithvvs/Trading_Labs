@@ -11,6 +11,7 @@ import {
 } from "../api";
 
 import { toCanonicalSymbol } from "../utils/paperOrderNavigation";
+import { completePaperLevels } from "../utils/paperOrderLevels";
 import {
   extractPaperAvailableCash,
   extractPaperMaxRiskPerTrade,
@@ -181,25 +182,17 @@ export function PaperOrderPage() {
   const orderIdFromUrl = Number(searchParams.get("orderId") || navState.orderId || 0) || null;
   const returnTo = navState.returnTo || "/scanner";
 
-  const [ticket, setTicket] = useState<PaperOrderTicketState>({
-    ...DEFAULT_TICKET,
-    symbol: initialSymbol || DEFAULT_TICKET.symbol,
+  const seedEntry =
+    (navState.prefill?.suggested_entry != null && Number(navState.prefill.suggested_entry) > 0
+      ? Number(navState.prefill.suggested_entry)
+      : null) ??
+    (navState.currentPrice != null && Number(navState.currentPrice) > 0
+      ? Number(navState.currentPrice)
+      : null);
+  const seedLevels = completePaperLevels({
+    entry: seedEntry,
     side: initialSide,
-    // Prefer LIMIT only when we have a positive entry; otherwise MARKET (uses live quote)
-    type:
-      navState.prefill?.suggested_entry != null && Number(navState.prefill.suggested_entry) > 0
-        ? "LIMIT"
-        : navState.currentPrice != null && Number(navState.currentPrice) > 0
-          ? "LIMIT"
-          : "MARKET",
-    limitPrice:
-      (navState.prefill?.suggested_entry != null && Number(navState.prefill.suggested_entry) > 0
-        ? Number(navState.prefill.suggested_entry)
-        : null) ??
-      (navState.currentPrice != null && Number(navState.currentPrice) > 0
-        ? Number(navState.currentPrice)
-        : null),
-    stopLoss:
+    stop:
       navState.prefill?.suggested_stop != null && Number(navState.prefill.suggested_stop) > 0
         ? Number(navState.prefill.suggested_stop)
         : null,
@@ -208,6 +201,17 @@ export function PaperOrderPage() {
       Number(navState.prefill.suggested_targets[0]) > 0
         ? Number(navState.prefill.suggested_targets[0])
         : null,
+  });
+
+  const [ticket, setTicket] = useState<PaperOrderTicketState>({
+    ...DEFAULT_TICKET,
+    symbol: initialSymbol || DEFAULT_TICKET.symbol,
+    side: initialSide,
+    // Prefer LIMIT only when we have a positive entry; otherwise MARKET (uses live quote)
+    type: seedEntry != null ? "LIMIT" : "MARKET",
+    limitPrice: seedEntry,
+    stopLoss: seedLevels.stopLoss,
+    target: seedLevels.target,
     sourceSignal:
       (navState.signal as string) ??
       String(navState.prefill?.recommendation_meta?.signal ?? "BUY"),
@@ -255,6 +259,8 @@ export function PaperOrderPage() {
   const [idempotencyKey, setIdempotencyKey] = useState(() => crypto.randomUUID());
   const [trailingStopPct, setTrailingStopPct] = useState<string>("2");
   const [cashAllocPct, setCashAllocPct] = useState<string>("10");
+  const derivedStopRef = useRef(seedLevels.derivedStop);
+  const derivedTargetRef = useRef(seedLevels.derivedTarget);
   /** Bumps on remount / retry so stale async work is ignored (Strict Mode safe). */
   const loadGenRef = useRef(0);
   const pollAbortRef = useRef<AbortController | null>(null);
@@ -268,6 +274,25 @@ export function PaperOrderPage() {
     if (ticket.type === "STOP") return ticket.stopPrice ?? currentPrice;
     return currentPrice;
   }, [ticket, currentPrice]);
+
+  useEffect(() => {
+    const entry = entryReference != null && entryReference > 0 ? entryReference : null;
+    if (entry == null) return;
+    const next = completePaperLevels({
+      entry,
+      side: ticket.side,
+      stop: derivedStopRef.current ? null : ticket.stopLoss,
+      target: derivedTargetRef.current ? null : ticket.target,
+    });
+    if (next.derivedStop) derivedStopRef.current = true;
+    if (next.derivedTarget) derivedTargetRef.current = true;
+    if (next.stopLoss === ticket.stopLoss && next.target === ticket.target) return;
+    setTicket((prev) => ({
+      ...prev,
+      stopLoss: next.stopLoss,
+      target: next.target,
+    }));
+  }, [entryReference, ticket.side]);
 
   const risk = useMemo(() => {
     const qty = Math.max(0, Number(ticket.qty) || 0);
@@ -690,6 +715,14 @@ export function PaperOrderPage() {
           const posOrNull = (n: number | null | undefined) =>
             n != null && Number(n) > 0 ? Number(n) : null;
           const limit = posOrNull(local.limit_price) ?? posOrNull(prefill.suggested_entry);
+          const filled = completePaperLevels({
+            entry: limit,
+            side: local.side,
+            stop: posOrNull(local.stop_loss) ?? posOrNull(prefill.suggested_stop),
+            target: posOrNull(local.target) ?? posOrNull(prefill.suggested_targets?.[0]),
+          });
+          derivedStopRef.current = filled.derivedStop || derivedStopRef.current;
+          derivedTargetRef.current = filled.derivedTarget || derivedTargetRef.current;
           setTicket({
             symbol: toCanonicalSymbol(local.symbol) || symbolForLoad,
             side: local.side,
@@ -698,8 +731,8 @@ export function PaperOrderPage() {
             qty: local.qty,
             limitPrice: limit,
             stopPrice: null,
-            stopLoss: posOrNull(local.stop_loss),
-            target: posOrNull(local.target),
+            stopLoss: filled.stopLoss,
+            target: filled.target,
             notes: local.note,
             sourceSignal: String(prefill.recommendation_meta?.signal ?? "BUY"),
             sourceScore: Number(prefill.recommendation_meta?.score ?? 0) || null,
@@ -1229,10 +1262,19 @@ export function PaperOrderPage() {
   function applyTrailingStop() {
     const pct = Number(trailingStopPct) || 0;
     if (!entryReference || pct <= 0) return;
-    const direction = ticket.side === "BUY" ? -1 : 1;
+    const next = completePaperLevels({
+      entry: entryReference,
+      side: ticket.side,
+      stop: null,
+      target: derivedTargetRef.current ? null : ticket.target,
+      stopPct: pct,
+    });
+    derivedStopRef.current = true;
+    if (next.derivedTarget) derivedTargetRef.current = true;
     setTicket({
       ...ticket,
-      stopLoss: Math.round(entryReference * (1 + (direction * pct) / 100) * 20) / 20,
+      stopLoss: next.stopLoss,
+      target: next.target,
     });
   }
 
@@ -1501,6 +1543,11 @@ export function PaperOrderPage() {
                       else setTicket({ ...ticket, limitPrice: v });
                     }}
                   />
+                  {navState.prefill?.suggested_entry != null ? (
+                    <span className="helper-text" data-testid="paper-order-entry-source">
+                      Auto-filled from strategy
+                    </span>
+                  ) : null}
                   {fieldErrors.price ? <span className="field-error">{fieldErrors.price}</span> : null}
                 </label>
               ) : null}
@@ -1515,8 +1562,10 @@ export function PaperOrderPage() {
                   type="number"
                   min={0.01}
                   step="0.05"
+                  placeholder="Not available"
                   value={ticket.stopLoss ?? ""}
                   onChange={(e) => {
+                    derivedStopRef.current = false;
                     setTicket({ ...ticket, stopLoss: Number(e.target.value) || null });
                     setFieldErrors((prev) => {
                       if (!prev.stopLoss) return prev;
@@ -1527,6 +1576,17 @@ export function PaperOrderPage() {
                     setPageError(null);
                   }}
                 />
+                {ticket.stopLoss != null ? (
+                  <span className="helper-text" data-testid="paper-order-sl-source">
+                    {derivedStopRef.current
+                      ? "Auto-filled from limit price (2% stop)"
+                      : navState.prefill?.recommendation_meta?.stop_source === "strategy"
+                        ? "Auto-filled from strategy"
+                        : "Auto-filled"}
+                  </span>
+                ) : (
+                  <span className="helper-text">Not available — enter a limit price to auto-fill</span>
+                )}
                 {fieldErrors.stopLoss ? (
                   <span className="field-error" data-testid="paper-order-sl-error">
                     {fieldErrors.stopLoss}
@@ -1544,8 +1604,10 @@ export function PaperOrderPage() {
                   type="number"
                   min={0.01}
                   step="0.05"
+                  placeholder="Not available"
                   value={ticket.target ?? ""}
                   onChange={(e) => {
+                    derivedTargetRef.current = false;
                     setTicket({ ...ticket, target: Number(e.target.value) || null });
                     setFieldErrors((prev) => {
                       if (!prev.target) return prev;
@@ -1556,6 +1618,17 @@ export function PaperOrderPage() {
                     setPageError(null);
                   }}
                 />
+                {ticket.target != null ? (
+                  <span className="helper-text" data-testid="paper-order-target-source">
+                    {derivedTargetRef.current
+                      ? "Auto-filled from limit price (1:2 vs stop)"
+                      : navState.prefill?.recommendation_meta?.target_source === "strategy"
+                        ? "Auto-filled from strategy"
+                        : "Auto-filled"}
+                  </span>
+                ) : (
+                  <span className="helper-text">Not available — enter a limit price to auto-fill</span>
+                )}
                 {fieldErrors.target ? (
                   <span className="field-error" data-testid="paper-order-target-error">
                     {fieldErrors.target}
@@ -1636,9 +1709,13 @@ export function PaperOrderPage() {
               <div className="paper-order-summary__metrics">
                 <Metric label="Signal" value={signalLabel} />
                 <Metric
-                  label="Score"
+                  label={String(navState.prefill?.recommendation_meta?.score_label || "Score")}
                   value={
-                    meta.score != null && meta.score !== 0 ? formatNum(Number(meta.score), 1) : "—"
+                    meta.score != null && meta.score !== 0
+                      ? String(navState.prefill?.recommendation_meta?.score_kind || "").startsWith("momentum")
+                        ? `${formatNum(Number(meta.score), 1)}%`
+                        : formatNum(Number(meta.score), 1)
+                      : "—"
                   }
                 />
                 <Metric
@@ -1660,9 +1737,18 @@ export function PaperOrderPage() {
             {navState.prefill ? (
               <p className="helper-text" style={{ marginTop: 12 }}>
                 Scanner recommendation loaded
+                {navState.prefill.recommendation_meta?.signal
+                  ? ` · signal ${String(navState.prefill.recommendation_meta.signal)}`
+                  : ""}
                 {navState.prefill.suggested_entry != null
                   ? ` · suggested entry ${formatInr(navState.prefill.suggested_entry)}`
                   : ""}
+                {ticket.stopLoss != null
+                  ? ` · stop ${formatInr(ticket.stopLoss)}`
+                  : " · stop not available"}
+                {ticket.target != null
+                  ? ` · target ${formatInr(ticket.target)}`
+                  : " · target not available"}
                 {ticket.qty ? ` · suggested qty ${ticket.qty}` : ""}.
               </p>
             ) : !hasNavState && searchParams.get("symbol") ? (

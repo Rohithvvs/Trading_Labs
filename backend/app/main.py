@@ -763,6 +763,16 @@ async def lifespan(app: FastAPI):
     QUARANTINED_SYMBOLS.clear()
     logger.info("FYERS in-memory symbol quarantine cleared on startup")
 
+    # Clean up any orphaned strategy scans left from previous process termination
+    try:
+        from .services.strategies.breakout52w.persistence import cleanup_orphan_runs as cleanup_w52_orphan_runs
+        cleaned_w52 = await cleanup_w52_orphan_runs()
+        if cleaned_w52:
+            logger.info("CLEANUP_ORPHAN_RUNS | strategy=09_52w_breakout | count=%d", cleaned_w52)
+    except Exception:
+        logger.exception("Failed to clean up orphaned 52W strategy scans on startup")
+
+
     # Scheduler + automatic daily Access Token → Market Scanner bootstrap.
     # Token generation uses existing fyers_token retry policy; scanner starts only
     # after a confirmed valid token is saved and cached (once per IST day).

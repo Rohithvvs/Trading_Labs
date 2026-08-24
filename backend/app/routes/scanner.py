@@ -1,5 +1,7 @@
 import json
 import uuid
+from types import SimpleNamespace
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from ..db import get_db
@@ -24,6 +26,64 @@ logger = get_logger("app.routes.scanner")
 
 CACHE_KEY_SCANNER_LATEST = "scanner:latest:v1"
 ENDPOINT_SCANNER_LATEST = "/scanner/latest"
+
+
+def _progress_fields_from_run(run) -> dict:
+    """In-flight progress lives on the run row, not the last completed latest payload."""
+    out: dict = {}
+    if run is None:
+        return out
+    meta = run.payload if isinstance(getattr(run, "payload", None), dict) and getattr(run, "status", None) != "completed" else {}
+    out["current_symbol"] = meta.get("current_symbol") or ""
+    out["processed_count"] = meta.get("processed_count")
+    out["total_count"] = meta.get("total_count")
+    if meta.get("phase"):
+        out["phase"] = meta.get("phase")
+    return out
+
+
+def _strategy_run_body(run) -> dict:
+    body = {
+        "scan_id": str(run.scan_id),
+        "strategy_id": run.strategy_id,
+        "status": run.status,
+        "progress_pct": run.progress_pct,
+        "stage": run.stage,
+        "error_code": run.error_code,
+        "error_detail": getattr(run, "error_detail", None),
+        "started_at": run.started_at.isoformat() if getattr(run, "started_at", None) else None,
+        "recommendations_final": run.status == "completed",
+        "payload": run.payload if run.status == "completed" else None,
+    }
+    body.update(_progress_fields_from_run(run))
+    return body
+
+
+def _strategy_latest_body(row, *, strategy_id: str, display_name: str, run=None) -> dict:
+    """Envelope for namespaced strategy latest: current run overlay + last completed results."""
+    body = dict(row.payload or {})
+    body.setdefault("strategy_id", strategy_id)
+    body.setdefault("display_name", display_name)
+    body["status"] = row.status
+    body["run_status"] = row.status
+    body["scan_id"] = str(row.scan_id) if row.scan_id else body.get("scan_id")
+    body["completed_at"] = row.completed_at.isoformat() if getattr(row, "completed_at", None) else None
+    started = getattr(row, "started_at", None) or (getattr(run, "started_at", None) if run else None)
+    body["started_at"] = started.isoformat() if started else None
+    if run is not None:
+        body["progress_pct"] = run.progress_pct
+        body["stage"] = run.stage or row.status
+        body["error_code"] = run.error_code or row.error_code
+        body["error_detail"] = run.error_detail
+        body.update(_progress_fields_from_run(run))
+    else:
+        body["progress_pct"] = 100 if row.status == "completed" else body.get("progress_pct") or 0
+        body["stage"] = body.get("stage") or row.status
+        body["error_code"] = row.error_code
+    if row.status != "completed":
+        # Do not present last successful payload as the current completed scan.
+        body["recommendations_final"] = False
+    return body
 
 
 @router.get("/statistics")
@@ -240,12 +300,22 @@ async def get_latest_completed_scan(
 async def list_scanner_strategies(
     _: User = Depends(require_feature("advanced_scanner")),
 ):
-    from ..services.strategies.ltm.identity import DISPLAY_NAME, SHORT_NAME, STRATEGY_ID
+    from ..services.strategies.ltm.identity import (
+        DISPLAY_NAME as LTM_DISPLAY,
+        SHORT_NAME as LTM_SHORT,
+        STRATEGY_ID as LTM_ID,
+    )
+    from ..services.strategies.breakout52w.identity import (
+        DISPLAY_NAME as W52_DISPLAY,
+        SHORT_NAME as W52_SHORT,
+        STRATEGY_ID as W52_ID,
+    )
 
     return {
         "strategies": [
             {"id": "production", "display_name": "Production", "short_name": "PROD"},
-            {"id": STRATEGY_ID, "display_name": DISPLAY_NAME, "short_name": SHORT_NAME},
+            {"id": LTM_ID, "display_name": LTM_DISPLAY, "short_name": LTM_SHORT},
+            {"id": W52_ID, "display_name": W52_DISPLAY, "short_name": W52_SHORT},
         ]
     }
 
@@ -258,17 +328,27 @@ async def get_ltm_latest(
     from ..services.strategies.ltm.identity import DISPLAY_NAME, STRATEGY_ID
 
     row = await persistence.load_latest(STRATEGY_ID)
-    if not row or not row.payload:
-        raise HTTPException(
-            status_code=404,
-            detail={"available": False, "message": "No LTM scan yet", "strategy_id": STRATEGY_ID},
+    run = await persistence.get_run(row.scan_id) if row and row.scan_id else None
+    if row is None:
+        run = await persistence.find_active_run(mark_stale=False)
+        if run is None:
+            raise HTTPException(
+                status_code=404,
+                detail={"available": False, "message": "No LTM scan yet", "strategy_id": STRATEGY_ID},
+            )
+        row = SimpleNamespace(
+            payload={},
+            status=run.status,
+            scan_id=run.scan_id,
+            completed_at=None,
+            started_at=run.started_at,
+            error_code=run.error_code,
         )
-    body = dict(row.payload)
-    body.setdefault("strategy_id", STRATEGY_ID)
-    body.setdefault("display_name", DISPLAY_NAME)
-    body["status"] = row.status
-    if row.status != "completed":
-        body["recommendations_final"] = False
+    body = _strategy_latest_body(row, strategy_id=STRATEGY_ID, display_name=DISPLAY_NAME, run=run)
+    if body.get("blotter") or body.get("recommendations"):
+        from ..services.strategies.ltm.attribution import apply_windowed_attribution
+
+        body = apply_windowed_attribution(body)
     return body
 
 
@@ -276,12 +356,25 @@ async def get_ltm_latest(
 async def start_ltm_run(
     _: User = Depends(require_feature("advanced_scanner")),
     mode: str | None = Query(default=None),
+    strategy_id: str | None = Query(default=None),
 ):
+    from ..services.strategies.ltm.identity import STRATEGY_ID
     from ..services.strategies.ltm.scan_service import start_scan_background
 
+    if strategy_id and strategy_id != STRATEGY_ID:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "STRATEGY_MISMATCH",
+                "message": "This endpoint only runs Long-Term Buy & Hold Momentum.",
+                "expected": STRATEGY_ID,
+                "got": strategy_id,
+            },
+        )
     result = await start_scan_background(mode=mode)
     if result.get("error_code") == "LTM_SCAN_IN_PROGRESS":
         raise HTTPException(status_code=409, detail=result)
+    result["strategy_id"] = STRATEGY_ID
     return result
 
 
@@ -295,16 +388,7 @@ async def get_ltm_run(
     run = await persistence.get_run(scan_id)
     if not run:
         raise HTTPException(status_code=404, detail={"message": "Scan run not found"})
-    return {
-        "scan_id": str(run.scan_id),
-        "strategy_id": run.strategy_id,
-        "status": run.status,
-        "progress_pct": run.progress_pct,
-        "stage": run.stage,
-        "error_code": run.error_code,
-        "recommendations_final": run.status == "completed",
-        "payload": run.payload if run.status == "completed" else None,
-    }
+    return _strategy_run_body(run)
 
 
 @router.get("/ltm/symbols/{symbol}")
@@ -364,6 +448,278 @@ async def get_ltm_symbol(
         "equity_curve": payload.get("equity_curve"),
         "signal": match.get("signal"),
         "limitations": payload.get("limitations"),
+    }
+
+
+@router.get("/w52/latest")
+async def get_w52_latest(
+    _: User = Depends(require_feature("advanced_scanner")),
+    period: str = Query(default="3Y"),
+    start_date: str | None = Query(default=None),
+    end_date: str | None = Query(default=None),
+):
+    from datetime import date as date_cls
+
+    from ..services.strategies.breakout52w import persistence
+    from ..services.strategies.breakout52w.identity import DISPLAY_NAME, STRATEGY_ID
+    from ..services.strategies.breakout52w.period import PeriodRequestError
+    from ..services.strategies.breakout52w.scan_service import is_scan_active_in_memory
+
+    row = await persistence.load_latest(STRATEGY_ID)
+    run = await persistence.get_run(row.scan_id) if row and row.scan_id else None
+
+    # Check for stale/interrupted in-progress runs
+    if row and row.status in ("queued", "evaluating", "backtesting", "publishing"):
+        if not is_scan_active_in_memory(row.scan_id):
+            active_run = await persistence.find_active_run(STRATEGY_ID, max_age_seconds=10, mark_stale=True)
+            if active_run is None:
+                row = await persistence.load_latest(STRATEGY_ID)
+                run = await persistence.get_run(row.scan_id) if row and row.scan_id else None
+
+    if row is None:
+        run = await persistence.find_active_run(mark_stale=False)
+        if run is None:
+            raise HTTPException(
+                status_code=404,
+                detail={"available": False, "message": "No 52-Week High Breakout scan yet", "strategy_id": STRATEGY_ID},
+            )
+        row = SimpleNamespace(
+            payload={},
+            status=run.status,
+            scan_id=run.scan_id,
+            completed_at=None,
+            started_at=run.started_at,
+            error_code=run.error_code,
+        )
+    body = _strategy_latest_body(row, strategy_id=STRATEGY_ID, display_name=DISPLAY_NAME, run=run)
+    start = None
+    end = None
+    try:
+        if isinstance(start_date, str) and start_date:
+            start = date_cls.fromisoformat(start_date[:10])
+        if isinstance(end_date, str) and end_date:
+            end = date_cls.fromisoformat(end_date[:10])
+    except ValueError:
+        raise HTTPException(status_code=400, detail={"message": "start_date and end_date must be YYYY-MM-DD"})
+    if body.get("blotter") or body.get("recommendations"):
+        from ..services.strategies.breakout52w.attribution import apply_windowed_attribution
+
+        try:
+            body = apply_windowed_attribution(body, period=period, start=start, end=end)
+        except PeriodRequestError as exc:
+            raise HTTPException(status_code=400, detail={"message": str(exc)}) from exc
+        logger.info(
+            "BACKTEST_REQUEST_ACCEPTED strategy=%s period=%s start_date=%s end_date=%s "
+            "trade_count=%s cache_key=%s",
+            STRATEGY_ID,
+            body.get("attribution_window"),
+            body.get("attribution_window_start"),
+            body.get("attribution_window_end"),
+            body.get("period_trade_count"),
+            body.get("cache_key"),
+        )
+    return body
+
+
+@router.post("/w52/runs")
+async def start_w52_run(
+    _: User = Depends(require_feature("advanced_scanner")),
+    mode: str | None = Query(default=None),
+    strategy_id: str | None = Query(default=None),
+):
+    from ..services.strategies.breakout52w.identity import STRATEGY_ID
+    from ..services.strategies.breakout52w.scan_service import start_scan_background
+
+    if strategy_id and strategy_id != STRATEGY_ID:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "STRATEGY_MISMATCH",
+                "message": "This endpoint only runs 52-Week High Breakout.",
+                "expected": STRATEGY_ID,
+                "got": strategy_id,
+            },
+        )
+    result = await start_scan_background(mode=mode)
+    if result.get("error_code") == "W52_SCAN_IN_PROGRESS":
+        raise HTTPException(status_code=409, detail=result)
+    result["strategy_id"] = STRATEGY_ID
+    return result
+
+
+@router.get("/w52/runs/{scan_id}")
+async def get_w52_run(
+    scan_id: uuid.UUID,
+    _: User = Depends(require_feature("advanced_scanner")),
+):
+    from ..services.strategies.breakout52w import persistence
+    from ..services.strategies.breakout52w.identity import STRATEGY_ID
+    from ..services.strategies.breakout52w.scan_service import is_scan_active_in_memory
+
+    run = await persistence.get_run(scan_id)
+    if not run:
+        raise HTTPException(status_code=404, detail={"message": "Scan run not found"})
+    if run.status in ("queued", "evaluating", "backtesting", "publishing") and not is_scan_active_in_memory(scan_id):
+        await persistence.find_active_run(STRATEGY_ID, max_age_seconds=10, mark_stale=True)
+        run = await persistence.get_run(scan_id) or run
+    return _strategy_run_body(run)
+
+
+@router.get("/w52/performance/{symbol}")
+async def get_w52_symbol_performance(
+    symbol: str,
+    window: str | None = Query(default=None),
+    _: User = Depends(require_feature("advanced_scanner")),
+):
+    from ..services.strategies.breakout52w.performance_store import (
+        get_symbol_performance,
+        list_symbol_performance,
+        row_to_dict,
+        strategy_tester_payload,
+    )
+
+    if window:
+        row = await get_symbol_performance(symbol, window.upper())
+        rows = [row] if row is not None else []
+    else:
+        rows = await list_symbol_performance(symbol)
+    if not rows:
+        raise HTTPException(
+            status_code=404,
+            detail={"message": "No stored 52-Week High Breakout tester metrics for this symbol"},
+        )
+    windows = []
+    for row in rows:
+        item = row_to_dict(row)
+        item.pop("trades", None)
+        windows.append(
+            {
+                "window": item.get("window"),
+                "period_start": item.get("period_start"),
+                "period_end": item.get("period_end"),
+                "status": item.get("status"),
+                "strategy_tester": strategy_tester_payload(item),
+                **{k: item.get(k) for k in (
+                    "total_pnl",
+                    "max_drawdown",
+                    "total_trades",
+                    "profitable_trades",
+                    "losing_trades",
+                    "breakeven",
+                    "profit_factor",
+                    "gross_profit",
+                    "gross_loss",
+                    "commission",
+                    "expected_payoff",
+                    "largest_profit",
+                    "largest_loss",
+                    "average_winning_trade",
+                    "average_losing_trade",
+                    "outlier_pnl",
+                )},
+                "computed_at": item.get("computed_at"),
+            }
+        )
+    return {"strategy_id": rows[0].strategy_id, "symbol": rows[0].symbol, "windows": windows}
+
+
+@router.get("/w52/symbols/{symbol}")
+async def get_w52_symbol(
+    symbol: str,
+    window: str = Query(default="3Y"),
+    start_date: str | None = Query(default=None),
+    end_date: str | None = Query(default=None),
+    execution_profile: str | None = Query(default=None),
+    historical_fill_mode: str | None = Query(default=None),
+    refresh: bool = Query(default=False),
+    _: User = Depends(require_feature("advanced_scanner")),
+):
+    from datetime import date as date_cls
+
+    from ..services.strategies.breakout52w import persistence
+    from ..services.strategies.breakout52w.analytics import parse_window
+    from ..services.strategies.breakout52w.identity import STRATEGY_ID
+    from ..services.strategies.breakout52w.window_backtest import run_symbol_window_backtest
+
+    row = await persistence.load_latest(STRATEGY_ID)
+    if not row or not row.payload:
+        raise HTTPException(status_code=404, detail={"message": "No 52-Week High Breakout scan yet"})
+    payload = row.payload
+    recs = payload.get("recommendations") or []
+    match = next((r for r in recs if str(r.get("symbol", "")).upper() == symbol.upper()), None)
+    if not match:
+        raise HTTPException(status_code=404, detail={"message": "Symbol not in last 52-Week High Breakout scan"})
+    eval_raw = payload.get("evaluation_date")
+    try:
+        asof = date_cls.fromisoformat(str(eval_raw)[:10]) if eval_raw else date_cls.today()
+    except ValueError:
+        asof = date_cls.today()
+    metrics = payload.get("book_metrics") if isinstance(payload.get("book_metrics"), dict) else {}
+    start = None
+    end = None
+    try:
+        if isinstance(start_date, str) and start_date:
+            start = date_cls.fromisoformat(start_date[:10])
+        if isinstance(end_date, str) and end_date:
+            end = date_cls.fromisoformat(end_date[:10])
+    except ValueError:
+        raise HTTPException(status_code=400, detail={"message": "start_date and end_date must be YYYY-MM-DD"})
+    from ..services.strategies.breakout52w.identity import ATTRIBUTION_PERIODS
+    from ..services.strategies.breakout52w.period import PeriodRequestError
+    from ..services.strategies.breakout52w.performance_store import load_stored_dashboard, persist_dashboard
+
+    raw_win = str(window or "3Y").upper()
+    allowed = set(ATTRIBUTION_PERIODS) | {"1Y", "3Y", "5Y", "8Y", "ALL", "CUSTOM"}
+    win = raw_win if raw_win in allowed else parse_window(window)
+    if start and end and raw_win == "CUSTOM":
+        win = "CUSTOM"
+    profile = (execution_profile or "KERNEL").upper()
+    dashboard = None
+    if win != "CUSTOM" and not refresh and not start and not end:
+        dashboard = await load_stored_dashboard(
+            match["symbol"],
+            win,
+            signal=match.get("signal"),
+            technicals=match.get("technicals"),
+            asof=asof,
+            execution_profile=profile,
+        )
+    try:
+        if dashboard is None:
+            dashboard = await run_symbol_window_backtest(
+                match["symbol"],
+                win,
+                asof=asof,
+                start=start,
+                end=end,
+                initial_capital=float(payload.get("initial_capital") or metrics.get("initial_capital") or 100000),
+                signal=match.get("signal"),
+                technicals=match.get("technicals"),
+                execution_profile=execution_profile,
+                historical_fill_mode=historical_fill_mode,
+            )
+            if win != "CUSTOM":
+                try:
+                    await persist_dashboard(dashboard)
+                except Exception:
+                    logger.exception("W52_PERF_PERSIST_FAILED symbol=%s window=%s", match["symbol"], win)
+    except PeriodRequestError as exc:
+        raise HTTPException(status_code=400, detail={"message": str(exc)}) from exc
+    return {
+        "strategy_id": STRATEGY_ID,
+        "symbol": match["symbol"],
+        "window": dashboard["window"],
+        "technicals": match.get("technicals"),
+        "backtest": None,
+        "dashboard": dashboard,
+        "equity_curve": dashboard.get("equity_curve") or [],
+        "signal": match.get("signal"),
+        "limitations": payload.get("limitations"),
+        "coverage": dashboard.get("coverage"),
+        "replay_kind": dashboard.get("replay_kind") or "symbol_window",
+        "data_hash": dashboard.get("data_hash"),
+        "persisted": bool(dashboard.get("persisted")),
+        "strategy_tester": dashboard.get("strategy_tester"),
     }
 
 

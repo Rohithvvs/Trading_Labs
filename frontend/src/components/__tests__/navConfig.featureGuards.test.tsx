@@ -30,6 +30,17 @@ vi.mock("../../hooks/useFeaturePermissions", () => ({
   }),
 }));
 
+vi.mock("../../hooks/useInfrastructureHealth", () => ({
+  useInfrastructureHealth: () => ({
+    services: [
+      { label: "Render Server", key: "render", status: "active" },
+      { label: "Neon Database", key: "db", status: "active" },
+    ],
+    lastCheckedAt: null,
+    error: null,
+  }),
+}));
+
 function renderShell() {
   return render(
     <MemoryRouter>

@@ -16,6 +16,7 @@ import type {
   MarketEngineStatus,
 } from "./types";
 import { apiUrl } from "./config";
+import { W52_STRATEGY_ID } from "./utils/strategyIdentity";
 import {
   ApiClientError,
   mapHttpError,
@@ -835,11 +836,14 @@ export async function fetchLtmLatest(): Promise<Record<string, any> | null> {
 }
 
 export async function startLtmScan(mode?: string): Promise<Record<string, any>> {
-  const qs = mode ? `?mode=${encodeURIComponent(mode)}` : "";
-  const response = await fetchWithDiagnostics(`/scanner/ltm/runs${qs}`, { method: "POST" }, "Start LTM scan");
+  const params = new URLSearchParams({ strategy_id: "17_long_term_mom" });
+  if (mode) params.set("mode", mode);
+  const response = await fetchWithDiagnostics(`/scanner/ltm/runs?${params.toString()}`, { method: "POST" }, "Start LTM scan");
   if (response.status === 409) {
+    const body = await response.json().catch(() => ({}));
     const err: any = new Error("LTM scan already running");
     err.scanInProgress = true;
+    err.scanId = body?.detail?.scan_id || body?.scan_id;
     throw err;
   }
   if (!response.ok) {
@@ -854,6 +858,80 @@ export async function fetchLtmRun(scanId: string): Promise<Record<string, any>> 
   const response = await fetchWithDiagnostics(`/scanner/ltm/runs/${scanId}`, { method: "GET" }, "Poll LTM run");
   if (!response.ok) throw new Error("Unable to load LTM run status.");
   return response.json();
+}
+
+export async function fetchW52Latest(opts?: {
+  period?: string;
+  startDate?: string;
+  endDate?: string;
+}): Promise<Record<string, any> | null> {
+  const params = new URLSearchParams();
+  if (opts?.period) params.set("period", opts.period);
+  if (opts?.startDate) params.set("start_date", opts.startDate);
+  if (opts?.endDate) params.set("end_date", opts.endDate);
+  const qs = params.toString();
+  const response = await fetchWithDiagnostics(
+    `/scanner/w52/latest${qs ? `?${qs}` : ""}`,
+    { method: "GET" },
+    `Fetch 52W latest ${opts?.period || "3Y"}`,
+  );
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error("Unable to load 52-Week High Breakout scan.");
+  return response.json();
+}
+
+export async function startW52Scan(mode?: string): Promise<Record<string, any>> {
+  const params = new URLSearchParams({ strategy_id: W52_STRATEGY_ID });
+  if (mode) params.set("mode", mode);
+  const response = await fetchWithDiagnostics(`/scanner/w52/runs?${params.toString()}`, { method: "POST" }, "Start 52W scan");
+  if (response.status === 409) {
+    const body = await response.json().catch(() => ({}));
+    const err: any = new Error("52-Week High Breakout scan already running");
+    err.scanInProgress = true;
+    err.scanId = body?.detail?.scan_id || body?.scan_id;
+    throw err;
+  }
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    const detail = body?.detail;
+    const msg =
+      (typeof detail === "string" && detail) ||
+      detail?.message ||
+      detail?.reason ||
+      body?.message ||
+      "Failed to start 52-Week High Breakout scan";
+    throw new Error(typeof msg === "string" ? msg : "Failed to start 52-Week High Breakout scan");
+  }
+  return response.json();
+}
+
+export async function fetchW52Run(scanId: string): Promise<Record<string, any>> {
+  const response = await fetchWithDiagnostics(`/scanner/w52/runs/${scanId}`, { method: "GET" }, "Poll 52W run");
+  if (!response.ok) throw new Error("Unable to load 52-Week High Breakout run status.");
+  return response.json();
+}
+
+export async function fetchW52SymbolDetail(
+  symbol: string,
+  window = "3Y",
+  opts?: { startDate?: string; endDate?: string; executionProfile?: string; historicalFillMode?: string },
+): Promise<Record<string, any>> {
+  const params = new URLSearchParams({ window });
+  if (opts?.startDate) params.set("start_date", opts.startDate);
+  if (opts?.endDate) params.set("end_date", opts.endDate);
+  if (opts?.executionProfile) params.set("execution_profile", opts.executionProfile);
+  if (opts?.historicalFillMode) params.set("historical_fill_mode", opts.historicalFillMode);
+  const response = await fetchWithDiagnostics(
+    `/scanner/w52/symbols/${encodeURIComponent(symbol)}?${params.toString()}`,
+    { method: "GET", cache: "no-store" },
+    `Fetch 52W symbol detail ${symbol} ${window} ${opts?.startDate || ""} ${opts?.endDate || ""}`,
+  );
+  if (!response.ok) throw new Error("Unable to load 52-Week High Breakout symbol detail.");
+  const body = await response.json();
+  if (body?.symbol && String(body.symbol).toUpperCase() !== symbol.toUpperCase()) {
+    throw new Error(`Backtest response symbol ${body.symbol} did not match ${symbol}.`);
+  }
+  return body;
 }
 
 export async function fetchLtmSymbolDetail(symbol: string, window = "3Y"): Promise<Record<string, any>> {
@@ -1438,6 +1516,38 @@ export async function exchangeFyersAuthCode(authCode: string): Promise<{ status:
     throw new Error(message || 'Failed to exchange FYERS auth code');
   }
   return response.json();
+}
+
+export type UniverseInstrument = {
+  symbol: string;
+  universe_symbol: string;
+  company_name: string | null;
+  exchange: string;
+  series: string | null;
+  broker_symbol: string;
+  isin: string | null;
+  is_active: boolean;
+  universe: string | null;
+  stock_id?: number | null;
+};
+
+export async function fetchUniverseInstruments(
+  universe = "NIFTY500",
+): Promise<UniverseInstrument[]> {
+  return cachedFetch(
+    CACHE_KEYS.universeInstruments,
+    async () => {
+      const response = await fetchWithDiagnostics(
+        `/workstation/universe-instruments?universe=${encodeURIComponent(universe)}`,
+        undefined,
+        "Universe instruments",
+      );
+      if (!response.ok) throw new Error((await response.text()) || "Failed to load universe instruments");
+      const body = await response.json();
+      return Array.isArray(body) ? body : [];
+    },
+    { swr: true, ttlMs: 30 * 60 * 1000 },
+  );
 }
 
 export async function fetchUniverses(): Promise<{ name: string; symbols: string[]; count: number }[]> {

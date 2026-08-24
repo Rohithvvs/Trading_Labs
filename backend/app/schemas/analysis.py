@@ -90,6 +90,8 @@ class ArticleItem(BaseModel):
 
 
 class BacktestResult(BaseModel):
+    symbol: str | None = None
+    company_name: str | None = None
     mode: AnalysisMode
     strategy_name: str
     total_return: float
@@ -244,6 +246,7 @@ class StockAnalysisResult(BaseModel):
     # Overview/company metadata (optional)
     year52_high: float | None = None
     year52_low: float | None = None
+    company_name: str | None = None
     sector: str | None = None
     industry: str | None = None
     market_cap: float | None = None
@@ -257,6 +260,7 @@ class RankingItem(BaseModel):
     overall_score: float
     recommendation: str
     best_for_mode: str | None = None
+    company_name: str | None = None
 
 
 class RankingsResponse(BaseModel):
@@ -281,6 +285,7 @@ class FullAnalysisResponse(AnalysisResponse):
 class ScreenerConditionResult(BaseModel):
     symbol: str
     close: float
+    company_name: str | None = None
     ema_20: float
     ema_50: float = 0.0
     ema50_available: bool = False

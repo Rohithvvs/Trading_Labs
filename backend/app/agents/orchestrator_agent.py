@@ -32,6 +32,7 @@ from ..schemas import (
 from ..services.fyers_service import FyersService
 from ..services.screener_service import ScreenerService
 from ..utils import advisory_payload, get_logger, safe_int
+from ..utils.symbol import canonical_symbol
 from .backtest_agent import BacktestAgent
 from .news_analysis_agent import NewsAnalysisAgent
 from .ranking_agent import RankingAgent
@@ -415,13 +416,13 @@ class OrchestratorAgent:
                 len(request.symbols),
                 ",".join(request.symbols),
             )
-            return (await self._run_screener_stage(
+            return await self._run_screener_stage(
                 request=request,
                 stage_name="Custom symbols",
                 source_universe=request.symbols,
                 duplicate_symbols_skipped=0,
                 progress_callback=progress_callback,
-            ))[0]
+            )
 
         seen_symbols: set[str] = set()
         duplicate_symbols_skipped = 0
@@ -438,18 +439,6 @@ class OrchestratorAgent:
             len(universes),
             ",".join(name for name, _ in universes),
         )
-
-        all_screener_results = []
-        all_prefetched_frames = {}
-        master_universe = []
-        master_seen = set()
-        for stage_name, syms in universes:
-            for s in syms:
-                c = self._canonical_symbol(s)
-                if c not in master_seen:
-                    master_seen.add(c)
-                    master_universe.append(s)
-
 
         for stage_name, source_universe in universes:
             self.logger.info(
@@ -478,15 +467,13 @@ class OrchestratorAgent:
                 )
                 continue
 
-            stage_response, s_res, s_frames = await self._run_screener_stage(
+            stage_response = await self._run_screener_stage(
                 request=request,
                 stage_name=stage_name,
                 source_universe=unique_symbols,
                 duplicate_symbols_skipped=skipped,
                 progress_callback=progress_callback,
             )
-            all_screener_results.extend(s_res)
-            all_prefetched_frames.update(s_frames)
             scan_stages.extend(stage_response.scan_stages)
             final_response = stage_response
             if stage_response.buy_candidate_symbols:
@@ -533,7 +520,7 @@ class OrchestratorAgent:
         source_universe: list[str],
         duplicate_symbols_skipped: int,
         progress_callback=None,
-    ) -> tuple[ScreenerResponse, list, dict]:
+    ) -> ScreenerResponse:
         if progress_callback:
             progress_callback({"stage": "Downloading candles...", "progress": 35, "heartbeat": True})
         self.logger.info(
@@ -844,10 +831,18 @@ class OrchestratorAgent:
         return unique_symbols, duplicates_skipped
 
     def _canonical_symbol(self, symbol: str) -> str:
-        normalized = symbol.strip().upper()
-        if ":" in normalized:
-            _, normalized = normalized.split(":", 1)
-        return normalized.replace("-EQ", "")
+        return canonical_symbol(symbol)
+
+    async def _resolve_company_name(self, symbol: str) -> str | None:
+        canon = canonical_symbol(symbol)
+        if not hasattr(self, "_company_names_cache") or self._company_names_cache is None:
+            try:
+                from ..services.universe_service import UniverseService
+                self._company_names_cache = await UniverseService.get_company_name_map()
+            except Exception as e:
+                self.logger.warning("Failed to load company_names_map: %s", e)
+                self._company_names_cache = {}
+        return self._company_names_cache.get(canon) or self._company_names_cache.get(symbol)
 
     def _empty_screener_response(self) -> ScreenerResponse:
         self.logger.warning("Screener flow returned empty response | no universes available or nothing scanned")
@@ -977,6 +972,8 @@ class OrchestratorAgent:
         market_regime: Any = None,
     ) -> StockAnalysisResult:
         import asyncio
+        canon_symbol = canonical_symbol(symbol)
+        comp_name = await self._resolve_company_name(symbol)
         if stock_id is None:
             stock_id = await self._get_or_create_stock(symbol)
         modes = self._resolve_modes(request.mode)
@@ -1034,11 +1031,14 @@ class OrchestratorAgent:
                             composite_uses_realistic=use_realistic_for_composite,
                             skip_on_missing_next_bar=skip_on_missing_next_bar,
                             feat008_enabled=settings.feat008_enabled,
+                            company_name=comp_name,
                         ))
                     except Exception as e:
                         self.logger.error("Backtest agent failed for %s in %s mode: %s", symbol, mode.value, e)
                         from ..schemas.analysis import BacktestResult
                         results.append(BacktestResult(
+                            symbol=canon_symbol,
+                            company_name=comp_name,
                             mode=mode,
                             strategy_name="error_fallback",
                             total_return=0.0,
@@ -1317,7 +1317,8 @@ class OrchestratorAgent:
         )
 
         return StockAnalysisResult(
-            symbol=symbol,
+            symbol=canon_symbol,
+            company_name=comp_name,
             ohlcv=self._primary_candle_set(candles_by_mode),
             technical=technical_results,
             news_articles=articles,
@@ -1744,8 +1745,17 @@ class OrchestratorAgent:
             summary=f"{symbol} could not be analyzed because no live market data was available.",
         )
 
+        canon_symbol = canonical_symbol(symbol)
+        comp_name = None
+        if hasattr(self, "_company_names_cache") and self._company_names_cache:
+            comp_name = self._company_names_cache.get(canon_symbol) or self._company_names_cache.get(symbol)
+        for b in backtests:
+            b.symbol = canon_symbol
+            b.company_name = comp_name
+
         return StockAnalysisResult(
-            symbol=symbol,
+            symbol=canon_symbol,
+            company_name=comp_name,
             ohlcv=self._primary_candle_set(candles_by_mode),
             technical=technical_results,
             news_articles=[],

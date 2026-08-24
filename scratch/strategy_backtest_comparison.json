@@ -1,0 +1,62 @@
+[
+  {
+    "strategy": "LTM",
+    "score": 73.0,
+    "grade": "B",
+    "trades": 10,
+    "win_rate": 0.6,
+    "pf": 4.255187606997968,
+    "avg_trade": 0.14751599993290945,
+    "cagr": 0.1264773720225556,
+    "total_return": 0.14751599993290965,
+    "max_dd": -0.10267905705163771,
+    "calmar": 1.2317737974448832,
+    "avg_cash": 82458.47426707913,
+    "avg_exposure": 0.1758957654723127,
+    "best": 1.197116720558661,
+    "worst": -0.2655530761299312,
+    "period_start": "2025-06-18",
+    "period_end": "2026-08-14",
+    "sessions": 307,
+    "invested_sessions": 54,
+    "ending_equity": 114751.59999329096,
+    "initial": 100000.0,
+    "reasons": {
+      "eod_liquidation": 10
+    },
+    "closed_trades": 10,
+    "open_trades": 0,
+    "invalid_excluded": 0
+  },
+  {
+    "strategy": "52W",
+    "score": 45.2,
+    "grade": "D",
+    "trades": 29,
+    "win_rate": 0.3103448275862069,
+    "pf": 2.338784671580594,
+    "avg_trade": 0.047717062759488546,
+    "cagr": 0.04626712887921047,
+    "total_return": 0.05364548007122005,
+    "max_dd": -0.1351141902384554,
+    "calmar": 0.34242982767062613,
+    "avg_cash": 82555.89476054888,
+    "avg_exposure": 0.1791530944625407,
+    "best": 1.1435448577680525,
+    "worst": -0.2055544154866954,
+    "period_start": "2025-06-18",
+    "period_end": "2026-08-14",
+    "sessions": 307,
+    "invested_sessions": 55,
+    "ending_equity": 105364.54800712201,
+    "initial": 100000.0,
+    "reasons": {
+      "atr_trail": 14,
+      "eod_liquidation": 10,
+      "open_mtm": 6
+    },
+    "closed_trades": 24,
+    "open_trades": 6,
+    "invalid_excluded": 1
+  }
+]

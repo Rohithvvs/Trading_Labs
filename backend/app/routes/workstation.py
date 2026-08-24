@@ -3,7 +3,13 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import get_db
-from ..schemas.workstation import AlertCreate, RiskSettingsRequest, SavedScanCreate, MarketOverviewResponse
+from ..schemas.workstation import (
+    AlertCreate,
+    RiskSettingsRequest,
+    SavedScanCreate,
+    MarketOverviewResponse,
+    UniverseInstrument,
+)
 from ..services.workstation_service import WorkstationService
 from ..utils import sanitize_for_json
 
@@ -18,6 +24,21 @@ def service(db: AsyncSession = Depends(get_db)) -> WorkstationService:
 @router.get("/universes")
 async def list_universes(svc: WorkstationService = Depends(service)):
     return JSONResponse(content=sanitize_for_json([item.model_dump(mode="json") for item in await svc.list_universes()]))
+
+
+@router.get("/universe-instruments", response_model=list[UniverseInstrument])
+async def list_universe_instruments(
+    universe: str | None = Query(default="NIFTY500"),
+    svc: WorkstationService = Depends(service),
+):
+    """Canonical ticker + company name for the active trading universe.
+
+    ``symbol`` is the display/canonical form (360ONE). ``universe_symbol`` is the
+    stored identity used for OHLCV/backtest lookup (360ONE-EQ). ``broker_symbol``
+    is the FYERS instrument id (NSE:360ONE-EQ).
+    """
+    items = await svc.list_universe_instruments(universe)
+    return JSONResponse(content=sanitize_for_json([item.model_dump(mode="json") for item in items]))
 
 
 @router.get("/market-overview", response_model=MarketOverviewResponse)

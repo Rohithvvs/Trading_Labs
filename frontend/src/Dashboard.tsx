@@ -4,6 +4,7 @@ import {
   cacheLatestScanFromScreenerResponse,
   fetchSavedScans,
   fetchUniverses,
+  fetchUniverseInstruments,
   getLatestScan,
   invalidateLatestScanCaches,
   loadTodayCandidates,
@@ -35,6 +36,12 @@ import type {
   StockAnalysisResult,
   ThemeMode,
 } from "./types";
+import { displayCanonicalSymbol } from "./utils/canonicalSymbol";
+import {
+  attachInstrumentMetadata,
+  indexUniverseInstruments,
+  type UniverseInstrument,
+} from "./utils/universeInstruments";
 
 const DEFAULT_FILTERS: DashboardFilters = {
   signal: "ALL",
@@ -52,6 +59,7 @@ export default function Dashboard() {
   const [topN, setTopN] = useState(20);
   const [selectedUniverse, setSelectedUniverse] = useState("NIFTY500");
   const [universes, setUniverses] = useState<{ name: string; symbols: string[]; count: number }[]>([]);
+  const [universeInstruments, setUniverseInstruments] = useState<UniverseInstrument[]>([]);
   const [savedScanName, setSavedScanName] = useState("");
   const [filters, setFilters] = useState<DashboardFilters>(DEFAULT_FILTERS);
   const [screenerResult, setScreenerResult] = useState<ScreenerResponse | null>(null);
@@ -221,12 +229,19 @@ export default function Dashboard() {
 
   useEffect(() => {
     void fetchUniverses().then(setUniverses).catch((err) => console.warn("Failed to load universes", err));
+    void fetchUniverseInstruments()
+      .then(setUniverseInstruments)
+      .catch((err) => console.warn("Failed to load universe instruments", err));
   }, []);
 
   const analysisItems = screenerResult?.analysis?.items ?? [];
+  const instrumentIndex = useMemo(
+    () => indexUniverseInstruments(universeInstruments),
+    [universeInstruments],
+  );
   const shortlistRows = useMemo(
-    () => buildCandidateRows(screenerResult),
-    [screenerResult],
+    () => attachInstrumentMetadata(buildCandidateRows(screenerResult), instrumentIndex),
+    [screenerResult, instrumentIndex],
   );
 
   const filteredRows = useMemo(() => {
@@ -247,7 +262,13 @@ export default function Dashboard() {
         return row.score >= filters.scoreRange[0] && row.score <= filters.scoreRange[1];
       })
       .filter((row) => (filters.onlyHighConfidence ? (row.confidence ?? 0) >= 0.7 : true))
-      .filter((row) => (searchTerm ? row.symbol.includes(searchTerm) : true))
+      .filter((row) => {
+        if (!searchTerm) return true;
+        const haystack = [row.symbol, displayCanonicalSymbol(row.symbol), row.companyName ?? ""]
+          .join(" ")
+          .toUpperCase();
+        return haystack.includes(searchTerm);
+      })
       .sort((left, right) => compareRows(left, right, filters.sortBy));
   }, [filters, shortlistRows]);
 
@@ -480,6 +501,7 @@ export default function Dashboard() {
         ) : detailViewOpen && selectedRow ? (
           <main className="detail-screen-layout">
             <StockDetailPanel
+              key={`${selectedRow.strategyId || "row"}:${selectedRow.symbol}`}
               row={selectedRow}
               onBack={() => setDetailViewOpen(false)}
                 onSendToPaperTrading={(row, suggestedEntry, side) =>
@@ -559,7 +581,10 @@ export default function Dashboard() {
 
             {!isLoading && !error ? (
               showAllAnalyzedStocks ? (
-                <AllAnalyzedStocksTable stocks={screenerResult?.all_analyzed_stocks ?? []} />
+                <AllAnalyzedStocksTable
+                  stocks={screenerResult?.all_analyzed_stocks ?? []}
+                  instruments={instrumentIndex}
+                />
               ) : (
                 <CandidateTable
                   rows={filteredRows}
