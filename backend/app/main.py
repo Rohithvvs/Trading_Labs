@@ -358,6 +358,28 @@ async def lifespan(app: FastAPI):
     except Exception:
         pass
     logger.info("APP_LIFESPAN_INITIALIZED | Lifespan initialization started")
+
+    # Windows + WSL: redis-py cannot use the localhost port relay. Resolve the
+    # WSL IP off the event loop during startup so the first /health probe is cheap.
+    redis_wsl_prewarm: asyncio.Task | None = None
+    if settings.app_env != "test":
+        try:
+            from .core.redis import discover_wsl_ipv4
+
+            redis_wsl_prewarm = asyncio.create_task(
+                asyncio.to_thread(discover_wsl_ipv4),
+                name="redis-wsl-ip-prewarm",
+            )
+        except Exception:
+            redis_wsl_prewarm = None
+
+    async def _await_redis_wsl_prewarm() -> None:
+        if redis_wsl_prewarm is None:
+            return
+        try:
+            await redis_wsl_prewarm
+        except Exception:
+            logger.debug("Redis WSL IP prewarm failed", exc_info=True)
     
     log_process_event("PROCESS_START")
     
@@ -487,6 +509,7 @@ async def lifespan(app: FastAPI):
                 logger.critical("API-only pod migration/admin bootstrap failed fatally: %s", e)
                 raise
             logger.warning("API-only pod migration/admin bootstrap check failed: %s", e)
+        await _await_redis_wsl_prewarm()
         yield
         return
     try:
@@ -925,6 +948,8 @@ async def lifespan(app: FastAPI):
             print(f"[GAP_REPLAY] Startup replay failed: {e}")
     else:
         logger.info("QUARANTINE MODE: Offline gap replay bypassed.")
+
+    await _await_redis_wsl_prewarm()
 
     logger.info("APP_LIFESPAN_COMPLETED | Lifespan startup fully completed")
     # yield control to the application

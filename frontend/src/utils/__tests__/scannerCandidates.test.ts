@@ -170,7 +170,7 @@ describe("52W scanner rows", () => {
     expect(rows.map((r) => r.symbol)).toEqual(["GLAXO-EQ", "CHENNPETRO-EQ", "ACE-EQ"]);
   });
 
-  it("hides universe REJECT rows and keeps TradingView-style gate passers", () => {
+  it("hides universe REJECT rows from Favorites and keeps TradingView-style gate passers", () => {
     const rows = buildW52CandidateRows({
       recommendations_final: true,
       recommendations: [
@@ -183,6 +183,53 @@ describe("52W scanner rows", () => {
     });
     expect(rows.map((r) => r.symbol)).toEqual(["BALRAMCHIN", "EPL", "WELCORP"]);
     expect(rows.find((r) => r.symbol === "360ONE")).toBeUndefined();
+  });
+
+  it("puts every evaluated name on Scan results with BUY when the strategy matches and REJECT otherwise", () => {
+    const rows = buildW52CandidateRows(
+      {
+        recommendations_final: true,
+        recommendations: [
+          { symbol: "BALRAMCHIN", signal: "BUY", mom60: 0.38, entry: 767.1, screener_pass: true, rank: 1 },
+          { symbol: "EPL", signal: "WATCH", mom60: 0.25, entry: 270.1, screener_pass: true, rank: 2 },
+          { symbol: "ACE-EQ", signal: "HOLD", mom60: 0.3, entry: 1184, buy_signal: false },
+          { symbol: "WELCORP", signal: "REJECT", first_failure: "sold_today", screener_pass: true, mom60: 0.61, close: 2005.2 },
+          { symbol: "360ONE", signal: "REJECT", first_failure: "close_below_prior_high", screener_pass: false, mom60: 0.11 },
+          { symbol: "3MINDIA", signal: "REJECT", first_failure: "close_below_prior_high", screener_pass: false, mom60: 0.02 },
+        ],
+      },
+      { includeUniverseRejects: true },
+    );
+    expect(rows.map((r) => r.symbol)).toEqual([
+      "BALRAMCHIN",
+      "EPL",
+      "ACE-EQ",
+      "360ONE",
+      "3MINDIA",
+      "WELCORP",
+    ]);
+    expect(rows.find((r) => r.symbol === "BALRAMCHIN")?.signal).toBe("BUY");
+    expect(rows.find((r) => r.symbol === "360ONE")?.signal).toBe("REJECT");
+    expect(rows.find((r) => r.symbol === "3MINDIA")?.signal).toBe("REJECT");
+    expect(rows.find((r) => r.symbol === "360ONE")?.entryLow).toBeNull();
+  });
+
+  it("keeps last completed Scan results while a new run is still in flight", () => {
+    const rows = buildW52CandidateRows(
+      {
+        recommendations_final: false,
+        completed_at: "2026-08-21T10:00:00Z",
+        run_status: "evaluating",
+        recommendations: [
+          { symbol: "GLAXO-EQ", signal: "BUY", mom60: 0.4, entry: 3015, screener_pass: true },
+          { symbol: "360ONE", signal: "REJECT", first_failure: "close_below_prior_high", screener_pass: false },
+        ],
+      },
+      { includeUniverseRejects: true },
+    );
+    expect(rows.map((r) => r.symbol)).toEqual(["GLAXO-EQ", "360ONE"]);
+    expect(rows[0].signal).toBe("BUY");
+    expect(rows[1].signal).toBe("REJECT");
   });
 
   it("keeps Trade Plan and Backtest on the same registered strategy ID", () => {

@@ -27,6 +27,26 @@ def test_never_selected_excluded_from_boards():
     assert all(r["symbol"] != "FAIL" for r in least5)
 
 
+def test_profit_factor_survives_breakeven_trades():
+    """Zero PnL must not be treated as a loss with a zero denominator."""
+    asof = date(2026, 8, 14)
+    trades = [
+        Trade("AAA", date(2026, 1, 1), date(2026, 2, 1), 100.0, 110.0, 1.0, 0.10, "atr_trail", False),
+        Trade("AAA", date(2026, 3, 1), date(2026, 4, 1), 110.0, 110.0, 1.0, 0.0, "time_stop", False),
+        Trade("BBB", date(2026, 1, 1), date(2026, 2, 1), 50.0, 50.0, 1.0, 0.0, "time_stop", False),
+        Trade("CCC", date(2026, 1, 1), date(2026, 2, 1), 80.0, 72.0, 1.0, -0.10, "stop", False),
+        Trade("DDD", date(2026, 1, 1), date(2026, 2, 1), 100.0, 120.0, 1.0, 0.20, "atr_trail", False),
+        Trade("DDD", date(2026, 3, 1), date(2026, 4, 1), 120.0, 108.0, 1.0, -0.10, "stop", False),
+    ]
+    reports = per_name_backtests(
+        trades, asof=asof, years=1, history_valid={"AAA", "BBB", "CCC", "DDD"}
+    )
+    assert reports["AAA"]["profit_factor"] == float("inf")
+    assert reports["BBB"]["profit_factor"] is None
+    assert reports["CCC"]["profit_factor"] == 0.0
+    assert abs(reports["DDD"]["profit_factor"] - 2.0) < 1e-9
+
+
 def test_open_mtm_counts():
     asof = date(2026, 8, 14)
     trades = [

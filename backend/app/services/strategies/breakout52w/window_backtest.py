@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import time
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from ....config.settings import settings
@@ -20,8 +21,24 @@ from .analytics import (
     resolve_window_bounds,
 )
 from .book_engine import replay_book, snapshot_open_trades
-from .execution import parse_execution_profile
-from .identity import DEFAULT_CAPITAL, HIGH_LOOKBACK, STRATEGY_ID, STRATEGY_VERSION, TIMEFRAME, WARMUP_CALENDAR_DAYS
+from .execution import TV_TESTER_CAPITAL, parse_execution_profile
+from .tv_ohlc_csv import (
+    csv_fingerprint,
+    load_tv_tester_session_dates,
+    maps_from_ohlc_rows,
+    parse_tv_ohlc_csv,
+    resolve_tv_tester_ohlc_csv,
+)
+from .tv_tester_tape import replay_tv_tester_tape
+from .identity import (
+    DEFAULT_CAPITAL,
+    DISPLAY_NAME,
+    HIGH_LOOKBACK,
+    STRATEGY_ID,
+    STRATEGY_VERSION,
+    TIMEFRAME,
+    WARMUP_CALENDAR_DAYS,
+)
 from .period import (
     PeriodRequestError,
     backtest_cache_key,
@@ -75,6 +92,7 @@ def _trade_dict(tr) -> dict[str, Any]:
         "entry_fill_time": tr.entry_fill_time.isoformat() if getattr(tr, "entry_fill_time", None) else None,
         "exit_fill_time": tr.exit_fill_time.isoformat() if getattr(tr, "exit_fill_time", None) else None,
         "exit_reason": getattr(tr, "exit_reason_canonical", None) or tr.reason,
+        "entry_signal": getattr(tr, "entry_signal", None),
     }
 
 
@@ -133,7 +151,28 @@ async def load_symbol_window_bars(
     start: date,
     end: date,
     window: str,
+    ohlc_csv: Path | str | None = None,
 ) -> tuple[list[date], dict, dict, dict, dict, dict[date, float], dict]:
+    if ohlc_csv is not None:
+        path = Path(ohlc_csv)
+        from_date = fetch_start_for_window(start, window)
+        rows = parse_tv_ohlc_csv(path)
+        packed = maps_from_ohlc_rows(symbol, rows, start=from_date, end=end)
+        dates = packed[0]
+        logger.info(
+            "BACKTEST_DATA_LOAD symbol=%s window=%s source=tv_ohlc_csv path=%s "
+            "requested_start=%s requested_end=%s candle_count=%s first=%s last=%s",
+            symbol,
+            window,
+            str(path),
+            start.isoformat(),
+            end.isoformat(),
+            len(dates),
+            dates[0].isoformat() if dates else None,
+            dates[-1].isoformat() if dates else None,
+        )
+        return packed
+
     from ...market_data_ingestion.repository import fetch_equity_history, fetch_index_history
 
     from_date = fetch_start_for_window(start, window)
@@ -317,6 +356,8 @@ async def run_symbol_window_backtest(
     technicals: dict[str, Any] | None = None,
     execution_profile: str | None = None,
     historical_fill_mode: str | None = None,
+    session_dates: set[date] | None = None,
+    ohlc_csv: Path | str | None = None,
 ) -> dict[str, Any]:
     """Load stored daily bars and replay 52W rules across the requested window."""
     started = time.perf_counter()
@@ -325,6 +366,8 @@ async def run_symbol_window_backtest(
     profile = execution_profile or getattr(settings, "w52_execution_profile", None) or "KERNEL"
     fill_mode = historical_fill_mode or getattr(settings, "w52_historical_fill_mode", None)
     cfg = parse_execution_profile(profile, fill_mode=fill_mode)
+    if cfg.profile == "TV_TESTER" and abs(float(initial_capital) - float(DEFAULT_CAPITAL)) < 1e-9:
+        initial_capital = float(TV_TESTER_CAPITAL)
     try:
         key, start, end = resolve_window_bounds(asof, window, start=start, end=end)
     except PeriodRequestError as exc:
@@ -339,6 +382,9 @@ async def run_symbol_window_backtest(
         end_date=end,
         execution_config_hash=cfg.hash(),
     )
+    csv_path = resolve_tv_tester_ohlc_csv(cfg.profile, path=ohlc_csv, symbol=symbol)
+    if csv_path is not None:
+        cache_key = f"{cache_key}:csv:{csv_fingerprint(csv_path)}"
     logger.info(
         "BACKTEST_STARTED backtest_id=%s strategy_id=%s symbol=%s timestamp=%s "
         "window=%s start_date=%s end_date=%s profile=%s fill_mode=%s",
@@ -365,9 +411,21 @@ async def run_symbol_window_backtest(
         cfg.profile,
     )
     logger.info("BACKTEST_SYMBOL_STARTED backtest_id=%s strategy_id=%s symbol=%s timestamp=%s", cache_key[:16], STRATEGY_ID, symbol, asof.isoformat())
+    # TV_TESTER must replay the full golden tape then filter trades to the
+    # requested window. Loading only the window desyncs the enter/exit phase.
+    load_window = "ALL" if cfg.profile == "TV_TESTER" and csv_path is not None else key
     dates, high_m, low_m, close_m, vol_m, index, open_m = await load_symbol_window_bars(
-        symbol, start=start, end=end, window=key
+        symbol, start=start, end=end, window=load_window, ohlc_csv=csv_path
     )
+    if cfg.profile == "TV_TESTER" and not index:
+        index = dict(close_m.get(symbol, {}))
+    if cfg.profile == "TV_TESTER" and session_dates is None:
+        session_dates = load_tv_tester_session_dates(symbol=symbol, ohlc_dates=dates)
+    if session_dates and cfg.profile == "TV_TESTER":
+        sess_fp = hashlib.sha256(
+            ",".join(d.isoformat() for d in sorted(session_dates)).encode("utf-8")
+        ).hexdigest()[:16]
+        cache_key = f"{cache_key}:sess:{sess_fp}"
     coverage = assess_window_coverage(
         [d for d in dates if d in close_m.get(symbol, {})],
         start=start,
@@ -414,7 +472,11 @@ async def run_symbol_window_backtest(
         fp.get("last_close"),
         fp.get("data_hash"),
     )
-    sliced = slice_replay_dates(dates, period_start=start, period_end=end)
+    if cfg.profile == "TV_TESTER":
+        tape_start = dates[0] if dates else start
+        sliced = slice_replay_dates(dates, period_start=tape_start, period_end=end, warmup_sessions=0)
+    else:
+        sliced = slice_replay_dates(dates, period_start=start, period_end=end)
     replay_dates = sliced["dates"] or dates
     logger.info(
         "BACKTEST_WARMUP_APPLIED symbol=%s window=%s warmup_sessions=%s "
@@ -447,20 +509,37 @@ async def run_symbol_window_backtest(
                 "err=lower_timeframe_missing fallback=DEFAULT_OHLC",
                 result_key[:16], STRATEGY_ID, symbol, asof.isoformat(),
             )
-    replay = replay_book(
-        replay_dates,
-        high_m,
-        low_m,
-        close_m,
-        vol_m,
-        index,
-        {symbol},
-        initial_capital=float(initial_capital),
-        open_m=open_m,
-        execution=cfg,
-        backtest_id=result_key[:16],
-        lower_tf=lower_tf,
-    )
+    if cfg.profile == "TV_TESTER":
+        replay = replay_tv_tester_tape(
+            replay_dates,
+            high_m,
+            low_m,
+            close_m,
+            vol_m,
+            index,
+            {symbol},
+            initial_capital=float(initial_capital),
+            open_m=open_m,
+            execution=cfg,
+            backtest_id=result_key[:16],
+            lower_tf=lower_tf,
+            session_dates=session_dates,
+        )
+    else:
+        replay = replay_book(
+            replay_dates,
+            high_m,
+            low_m,
+            close_m,
+            vol_m,
+            index,
+            {symbol},
+            initial_capital=float(initial_capital),
+            open_m=open_m,
+            execution=cfg,
+            backtest_id=result_key[:16],
+            lower_tf=lower_tf,
+        )
     if replay.get("diagnostics", {}).get("lower_timeframe_fallback") or (
         cfg.historical_fill_mode == "LOWER_TIMEFRAME" and not lower_tf
     ):
@@ -503,6 +582,9 @@ async def run_symbol_window_backtest(
         execution_config=cfg,
     )
     dash["replay_kind"] = "symbol_window"
+    dash["tester_tape"] = cfg.profile == "TV_TESTER"
+    dash["strategy_name"] = "52W Breakout - Test" if cfg.profile == "TV_TESTER" else DISPLAY_NAME
+    dash["ohlc_source"] = "tv_ohlc_csv" if csv_path is not None else "daily_ohlcv"
     dash["symbol"] = symbol
     dash["data_hash"] = fp["data_hash"]
     dash["first_close"] = fp["first_close"]

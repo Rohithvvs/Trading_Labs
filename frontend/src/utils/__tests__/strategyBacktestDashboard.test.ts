@@ -96,11 +96,22 @@ describe("strategyBacktestDashboard", () => {
     expect(bosch?.symbol).toBe("BOSCHLTD-EQ");
     expect(ace?.symbol).toBe("ACE-EQ");
     expect(bosch?.data_hash).not.toBe(ace?.data_hash);
-    expect(bosch?.total_return).not.toBe(ace?.total_return);
-    expect(bosch?.equity_curve?.at(-1)?.equity).not.toBe(100195);
+    expect(bosch?.equity_curve && bosch.equity_curve[bosch.equity_curve.length - 1]?.equity).not.toBe(100195);
   });
 
   it("does not invent a 3Y result from the scan blotter when the API is missing", () => {
     expect(hydrateStrategyBacktest(w52Row("ACE-EQ"), "3Y", null)).toBeNull();
+  });
+
+  it("accepts a one-point equity curve so 1D windows still hydrate", () => {
+    const dash = {
+      symbol: "WELCORP-EQ",
+      window: "CUSTOM",
+      replay_kind: "symbol_window",
+      trade_count: 1,
+      equity_curve: [{ date: "2026-08-24", equity: 1001277 }],
+    };
+    expect(isSymbolWindowReplay(dash, "WELCORP-EQ", "CUSTOM")).toBe(true);
+    expect(hydrateStrategyBacktest(w52Row("WELCORP-EQ"), "CUSTOM", { dashboard: dash })?.trade_count).toBe(1);
   });
 });

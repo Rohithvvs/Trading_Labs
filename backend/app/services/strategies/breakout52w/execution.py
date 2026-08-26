@@ -21,6 +21,7 @@ import hashlib
 import json
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Literal
 
 from .identity import ALLOC_PCT, MAX_POSITIONS, STRATEGY_ID
@@ -29,12 +30,14 @@ OrderFillDelay = Literal["SAME_BAR_CLOSE", "NEXT_BAR_OPEN"]
 HistoricalFillMode = Literal["DEFAULT_OHLC", "LOWER_TIMEFRAME"]
 TrailTouch = Literal["CLOSE_CROSS", "INTRABAR_TOUCH"]
 PositionLifecycle = Literal["FLAT", "ENTRY_PENDING", "LONG", "EXIT_PENDING"]
-ExecutionProfile = Literal["KERNEL", "TV_COMPAT"]
+ExecutionProfile = Literal["KERNEL", "TV_COMPAT", "TV_TESTER"]
+OrderSizeType = Literal["percent_equity", "quantity"]
 
 ORDER_FILL_DELAYS: tuple[str, ...] = ("SAME_BAR_CLOSE", "NEXT_BAR_OPEN")
 FILL_MODES: tuple[str, ...] = ("DEFAULT_OHLC", "LOWER_TIMEFRAME")
 TRAIL_TOUCHES: tuple[str, ...] = ("CLOSE_CROSS", "INTRABAR_TOUCH")
-PROFILES: tuple[str, ...] = ("KERNEL", "TV_COMPAT")
+PROFILES: tuple[str, ...] = ("KERNEL", "TV_COMPAT", "TV_TESTER")
+ORDER_SIZE_TYPES: tuple[str, ...] = ("percent_equity", "quantity")
 BACKTEST_END_REASON = "eod_liquidation"
 BACKTEST_END_CANONICAL = "BACKTEST_END_LIQUIDATION"
 ATR_TRAIL_REASON = "atr_trail"
@@ -57,6 +60,9 @@ class ExecutionConfig:
     apply_costs: bool = True
     breakeven_tolerance_inr: float = 0.0
     conservative_stop_before_target: bool = True
+    order_size_type: OrderSizeType = "percent_equity"
+    default_order_size: float = 0.0
+    tick_size: float = 0.0
 
     def hash(self) -> str:
         payload = {k: v for k, v in asdict(self).items()}
@@ -79,6 +85,26 @@ TV_COMPAT_EXECUTION = ExecutionConfig(
     allow_same_bar_reentry=False,
     skip_on_missing_next_bar=True,
 )
+TV_TESTER_EXECUTION = ExecutionConfig(
+    profile="TV_TESTER",
+    order_fill_delay="NEXT_BAR_OPEN",
+    historical_fill_mode="DEFAULT_OHLC",
+    trail_touch="INTRABAR_TOUCH",
+    allow_entry_bar_exit=True,
+    allow_same_bar_reentry=False,
+    skip_on_missing_next_bar=True,
+    slippage_rate=0.0,
+    apply_costs=False,
+    pyramiding=1,
+    max_positions=1,
+    alloc_pct=1.0,
+    order_size_type="quantity",
+    default_order_size=1.0,
+    tick_size=0.10,
+)
+# TradingView Strategy Tester Properties for Strategy_001 (WELCORP).
+TV_TESTER_CAPITAL = 1_000_000.0
+TV_TESTER_RANGE_START = date(2000, 6, 23)
 
 
 def parse_execution_profile(
@@ -87,7 +113,9 @@ def parse_execution_profile(
     fill_mode: str | None = None,
 ) -> ExecutionConfig:
     key = (raw or "KERNEL").strip().upper()
-    if key in {"TV", "TV_COMPAT", "TRADINGVIEW", "NEXT_BAR_OPEN"}:
+    if key in {"TV_TESTER", "TEST_TAPE", "TV_TEST"}:
+        cfg = TV_TESTER_EXECUTION
+    elif key in {"TV", "TV_COMPAT", "TRADINGVIEW", "NEXT_BAR_OPEN"}:
         cfg = TV_COMPAT_EXECUTION
     else:
         cfg = KERNEL_EXECUTION
@@ -139,6 +167,18 @@ class ExecutionDiagnostics:
             "failed_symbols": list(self.failed_symbols),
             "skipped_symbols": list(self.skipped_symbols),
         }
+
+
+def round_to_tick(price: float, tick: float) -> float:
+    """Round a fill to ``tick``. ``tick <= 0`` leaves the price unchanged.
+
+    Tick 0.10 uses one decimal with decimal ROUND_HALF_UP so 62.25 → 62.3
+    (TradingView WELCORP Trade 329). KERNEL keeps tick_size=0 (no rounding).
+    """
+    if tick is None or float(tick) <= 0:
+        return float(price)
+    increment = Decimal(str(float(tick)))
+    return float(Decimal(str(price)).quantize(increment, rounding=ROUND_HALF_UP))
 
 
 def apply_slippage(price: float, *, side: str, rate: float) -> float:

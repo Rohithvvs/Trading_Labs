@@ -27,7 +27,7 @@ from .execution import (
 )
 from .identity import ALLOC_PCT, DEFAULT_CAPITAL, HIGH_LOOKBACK, RANK_LOOKBACK, STRATEGY_ID, VOL_SMA_PERIOD, WARMUP_SESSIONS
 from .indicators import atr14, market_ok, market_sma50, momentum_60, prior_high_252, vol_sma20
-from .portfolio import free_slots, shares_from_notional, take_ranked, target_notional
+from .portfolio import free_slots, shares_for_order, shares_from_notional, take_ranked, target_notional
 from .signal import buy_signal, first_failure, rank_candidates, screener_pass
 from .trail import initial_tsl, should_exit, update_trail
 
@@ -196,6 +196,7 @@ class Trade:
     fill_reason: str | None = None
     outcome: str | None = None
     exit_reason_canonical: str | None = None
+    entry_signal: str | None = None
 
 
 @dataclass
@@ -677,11 +678,17 @@ def replay_book(
         if occupied >= cfg.max_positions:
             return None
         equity = _mark_equity(state, {**prices, symbol: fill})
-        alloc = min(target_notional(equity, alloc_pct=cfg.alloc_pct), max(state.cash, 0.0))
         exec_px = apply_slippage(float(fill), side="BUY", rate=cfg.slippage_rate)
-        fee_est = alloc * 0.002 if cfg.apply_costs else 0.0
-        investable = max(0.0, min(state.cash - fee_est, alloc))
-        sh = shares_from_notional(investable, exec_px, whole_shares=whole_shares)
+        sh = shares_for_order(
+            exec_px,
+            order_size_type=cfg.order_size_type,
+            default_order_size=cfg.default_order_size,
+            equity=equity,
+            cash=state.cash,
+            alloc_pct=cfg.alloc_pct,
+            apply_costs=cfg.apply_costs,
+            whole_shares=whole_shares,
+        )
         if sh <= 0:
             return None
         turnover = sh * exec_px

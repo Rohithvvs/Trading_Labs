@@ -356,6 +356,8 @@ def dashboard_from_stored(
     dash["replay_kind"] = "symbol_window"
     dash["symbol"] = symbol
     dash["window"] = window
+    profile = str(stored.get("execution_profile") or KERNEL_EXECUTION.profile)
+    dash["execution"] = parse_execution_profile(profile).as_public_dict()
     return dash
 
 

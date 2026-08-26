@@ -36,6 +36,8 @@ type CandidateTableProps = {
   liveTicks?: Record<string, number>;
   /** Optional export filename prefix. */
   exportFilePrefix?: string;
+  sectionLabel?: string;
+  heading?: string;
 };
 
 export const CandidateTable = memo(function CandidateTable({
@@ -45,6 +47,8 @@ export const CandidateTable = memo(function CandidateTable({
   onBuy,
   liveTicks,
   exportFilePrefix = "scan_results",
+  sectionLabel = "Favorites",
+  heading = "Scan results",
 }: CandidateTableProps) {
   const { handlePrefetch } = useResearchPrefetch();
   const isCompact = useIsCompactViewport();
@@ -109,8 +113,8 @@ export const CandidateTable = memo(function CandidateTable({
     <section className="panel table-panel">
       <div className="panel-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <div>
-          <p className="section-label">Favorites</p>
-          <h2>Scan results</h2>
+          <p className="section-label">{sectionLabel}</p>
+          <h2>{heading}</h2>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
           <p className="panel-helper">

@@ -100,8 +100,8 @@ export function AppShell({ children, topActions, title }: Props) {
   const { canAccess } = useFeaturePermissions();
 
   const initials = (user?.full_name || user?.email || "U").slice(0, 1).toUpperCase();
-  // Sprint 4: admin destinations by real role; Sprint 5: filter by feature permissions
-  const baseNavItems = isAdmin ? [...RETAIL_NAV, ...ADMIN_NAV] : RETAIL_NAV;
+  // Sidebar rail uses retail nav; Admin settings (Admin, Central Command, System Logs, Diagnostics) live inside Profile
+  const baseNavItems = RETAIL_NAV;
   const navItems = baseNavItems.filter((item) => {
     if (item.featureKey && !canAccess(item.featureKey)) return false;
     return true;
@@ -257,17 +257,59 @@ export function AppShell({ children, topActions, title }: Props) {
                     Paper Desk
                   </button>
                   {isAdmin ? (
-                    <button
-                      type="button"
-                      role="menuitem"
-                      data-testid="nav-admin-panel-profile"
-                      onClick={() => {
-                        setProfileOpen(false);
-                        navigate("/admin");
-                      }}
-                    >
-                      Admin
-                    </button>
+                    <>
+                      <div className="nav-profile-divider" data-testid="nav-profile-admin-divider" />
+                      {canAccess("admin_panel") ? (
+                        <button
+                          type="button"
+                          role="menuitem"
+                          data-testid="nav-admin-panel-profile"
+                          onClick={() => {
+                            setProfileOpen(false);
+                            navigate("/admin");
+                          }}
+                        >
+                          Admin
+                        </button>
+                      ) : null}
+                      {canAccess("central_command") ? (
+                        <button
+                          type="button"
+                          role="menuitem"
+                          data-testid="nav-central-command-profile"
+                          onClick={() => {
+                            setProfileOpen(false);
+                            navigate("/admin/command");
+                          }}
+                        >
+                          Central Command
+                        </button>
+                      ) : null}
+                      {canAccess("system_logs") ? (
+                        <button
+                          type="button"
+                          role="menuitem"
+                          data-testid="nav-system-logs-profile"
+                          onClick={() => {
+                            setProfileOpen(false);
+                            navigate("/admin/logs");
+                          }}
+                        >
+                          System Logs
+                        </button>
+                      ) : null}
+                      <button
+                        type="button"
+                        role="menuitem"
+                        data-testid="nav-diagnostics-profile"
+                        onClick={() => {
+                          setProfileOpen(false);
+                          navigate("/diagnostics");
+                        }}
+                      >
+                        Diagnostics
+                      </button>
+                    </>
                   ) : null}
                   <button
                     type="button"

@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "purpose": "Cryptographic integrity tracking for TradingView golden reference files. A hash mismatch is REFERENCE_CHANGED. Do not auto-replace. Require user confirmation.",
+  "audit_timestamp_utc": "2026-08-24T06:44:30.205632+00:00",
+  "reference_root": "hermes-research/tradingview_reference",
+  "integrity_policy": {
+    "on_change": "REFERENCE_CHANGED",
+    "auto_replace": false,
+    "user_confirmation_required": true
+  },
+  "identity_investigation": {
+    "status": "EXACT_STRATEGY_NOT_FOUND",
+    "tester_name": "52W Breakout - Test",
+    "current_strategy_pine": "indicator",
+    "candidates_promoted_to_golden": false,
+    "note": "Golden file hashes below are unchanged. No candidate Pine was added to tradingview_reference."
+  },
+  "expected_files_per_strategy": [
+    "strategy.pine",
+    "strategy_report.xlsx",
+    "trades.csv",
+    "test_config.yaml"
+  ],
+  "strategies": [
+    {
+      "strategy": "Strategy_001",
+      "display_name_from_config": "52W Breakout - Test",
+      "files": [
+        {
+          "filename": "strategy.pine",
+          "relative_path": "hermes-research/tradingview_reference/Strategy_001/strategy.pine",
+          "sha256": "6b715e65ad06bcf6aa5c7346f7bd735c3e571c261cbff218cfbb57275f452128",
+          "size_bytes": 2825,
+          "row_count": null
+        },
+        {
+          "filename": "strategy_report.xlsx",
+          "relative_path": "hermes-research/tradingview_reference/Strategy_001/strategy_report.xlsx",
+          "sha256": "21d5fbad0e6da329f9160a166d3c7003525cce55fea1654a7e7c2690a1f8f7ea",
+          "size_bytes": 1294346,
+          "row_count": null
+        },
+        {
+          "filename": "test_config.yaml",
+          "relative_path": "hermes-research/tradingview_reference/Strategy_001/test_config.yaml",
+          "sha256": "e4c18fd33d717b7c31fbc58c1c41aaac741bf2d4fefe47b75b1439b2ee5be9c2",
+          "size_bytes": 986,
+          "row_count": null
+        },
+        {
+          "filename": "trades.csv",
+          "relative_path": "hermes-research/tradingview_reference/Strategy_001/trades.csv",
+          "sha256": "069153b3ce3fe0287730892794d5558122004fdbda6d9738ba48fc69d103f1b7",
+          "size_bytes": 582713,
+          "row_count": 5908
+        }
+      ]
+    }
+  ]
+}

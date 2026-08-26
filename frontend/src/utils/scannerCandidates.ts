@@ -54,12 +54,21 @@ function isW52ScreenerRow(r: any): boolean {
   return signal === "BUY" || signal === "WATCH" || signal === "HOLD";
 }
 
-export function buildW52CandidateRows(payload: Record<string, any> | null): CandidateRow[] {
+export type W52CandidateRowOptions = {
+  /** Scan results tab: every evaluated name, including universe REJECT. */
+  includeUniverseRejects?: boolean;
+};
+
+export function buildW52CandidateRows(
+  payload: Record<string, any> | null,
+  opts: W52CandidateRowOptions = {},
+): CandidateRow[] {
   if (!Array.isArray(payload?.recommendations)) return [];
   if (!payload.recommendations_final && !payload.completed_at) return [];
   const order: Record<string, number> = { BUY: 0, WATCH: 1, HOLD: 2, REJECT: 3 };
+  const includeUniverseRejects = Boolean(opts.includeUniverseRejects);
   return payload.recommendations
-    .filter(isW52ScreenerRow)
+    .filter((r: any) => includeUniverseRejects || isW52ScreenerRow(r))
     .map((r: any) => {
     const close = pos(r.entry ?? r.close ?? r.technicals?.close_t);
     const stop = pos(r.stop_loss ?? r.technicals?.tsl);

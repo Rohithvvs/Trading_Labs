@@ -673,7 +673,14 @@ async def get_w52_symbol(
     win = raw_win if raw_win in allowed else parse_window(window)
     if start and end and raw_win == "CUSTOM":
         win = "CUSTOM"
-    profile = (execution_profile or "KERNEL").upper()
+    profile = (execution_profile or "KERNEL").strip().upper()
+    if profile in {"TV_TEST", "TEST_TAPE"}:
+        profile = "TV_TESTER"
+    from ..services.strategies.breakout52w.execution import TV_TESTER_CAPITAL
+
+    capital = float(payload.get("initial_capital") or metrics.get("initial_capital") or 100000)
+    if profile == "TV_TESTER":
+        capital = float(TV_TESTER_CAPITAL)
     dashboard = None
     if win != "CUSTOM" and not refresh and not start and not end:
         dashboard = await load_stored_dashboard(
@@ -684,6 +691,9 @@ async def get_w52_symbol(
             asof=asof,
             execution_profile=profile,
         )
+        stored_profile = str(((dashboard or {}).get("execution") or {}).get("profile") or "KERNEL").upper()
+        if dashboard is not None and stored_profile != profile:
+            dashboard = None
     try:
         if dashboard is None:
             dashboard = await run_symbol_window_backtest(
@@ -692,10 +702,10 @@ async def get_w52_symbol(
                 asof=asof,
                 start=start,
                 end=end,
-                initial_capital=float(payload.get("initial_capital") or metrics.get("initial_capital") or 100000),
+                initial_capital=capital,
                 signal=match.get("signal"),
                 technicals=match.get("technicals"),
-                execution_profile=execution_profile,
+                execution_profile=profile,
                 historical_fill_mode=historical_fill_mode,
             )
             if win != "CUSTOM":

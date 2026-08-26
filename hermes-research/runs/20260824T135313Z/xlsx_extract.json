@@ -1,0 +1,727 @@
+{
+  "sheet_names": [
+    "Performance",
+    "Trades analysis",
+    "Risk-adjusted performance",
+    "Trades",
+    "Properties"
+  ],
+  "performance_pairs": {
+    "Initial capital": "1000000",
+    "Open PnL": "0",
+    "Net profit": "1278.2",
+    "Gross profit": "8147",
+    "Gross loss": "6868.8",
+    "Expected payoff": "0.43",
+    "Commission paid": "0",
+    "Buy and hold PnL": "144955417.2",
+    "Buy and hold % gain": "",
+    "Strategy outperformance": "-144954139",
+    "Max contracts held": "1",
+    "Annualized return (CAGR)": "",
+    "Return on initial capital": "",
+    "Account size required": "2976.3",
+    "Return on account size required": "",
+    "Average margin used": "109.12",
+    "Max margin used": "2348.9",
+    "Margin efficiency": "11.71",
+    "Total liquidated volume": "0",
+    "Largest liquidated volume": "0",
+    "Average run-up duration (close-to-close)": "277 days",
+    "Average run-up (close-to-close)": "283.99",
+    "Max run-up (close-to-close)": "812",
+    "Max run-up (intrabar)": "1841.8",
+    "Max run-up as % of initial capital (intrabar)": "",
+    "Average drawdown duration (close-to-close)": "778 days",
+    "Average drawdown (close-to-close)": "159.71",
+    "Return of max drawdown": "2.04",
+    "Max drawdown (close-to-close)": "627",
+    "Max drawdown (intrabar)": "627.4",
+    "Max drawdown as % of initial capital (intrabar)": "",
+    "Net PnL as % of largest loss": "",
+    "Largest profit as % of gross profit": "",
+    "Largest loss as % of gross loss": ""
+  },
+  "trades_analysis_pairs": {
+    "Total open trades": "0",
+    "Total trades": "2954",
+    "Total winners": "1352",
+    "Total losers": "1449",
+    "Even trades": "153",
+    "Percent profitable": "",
+    "Average PnL": "0.43",
+    "Average profit": "6.03",
+    "Average loss": "4.74",
+    "Average profit / average loss": "1.271",
+    "Largest profit": "132",
+    "Largest profit %": "",
+    "Largest loss": "65.8",
+    "Largest loss %": "",
+    "Outliers": "159",
+    "Outliers P&L": "359",
+    "Average bars in trades": "2",
+    "Average bars in winners": "2",
+    "Average bars in losers": "2"
+  },
+  "risk_pairs": {
+    "Sharpe ratio": "-40.6",
+    "Sortino ratio": "-1",
+    "Profit factor": "1.186",
+    "Margin calls": "0"
+  },
+  "properties_pairs": {
+    "name": "value",
+    "Trading range": "Aug 22, 2002 \u2014 Aug 24, 2026",
+    "Backtesting range": "Jun 23, 2000 \u2014 Aug 24, 2026",
+    "Symbol": "NSE:WELCORP",
+    "Timeframe": "1 day",
+    "Point value": "1",
+    "Chart type": "Candles",
+    "Currency": "INR",
+    "Tick size": "0.10",
+    "Precision": "Default",
+    "Initial capital": "1000000",
+    "Default order size": "1 contracts",
+    "Pyramiding": "1 orders",
+    "Bar detalization": "Default (4 ticks per bar)",
+    "Script execution": "On bar close",
+    "Commission": "0",
+    "Long leverage": "1x",
+    "Short leverage": "1x",
+    "Slippage": "0 ticks",
+    "Limit order execution": "Requested price",
+    "Order execution delay": "One tick"
+  },
+  "performance_raw_head": [
+    [
+      "",
+      "All INR",
+      "All %",
+      "Long INR",
+      "Long %",
+      "Short INR",
+      "Short %"
+    ],
+    [
+      "Initial capital",
+      "1000000",
+      "",
+      "",
+      "",
+      "",
+      ""
+    ],
+    [
+      "Open PnL",
+      "0",
+      "0",
+      "",
+      "",
+      "",
+      ""
+    ],
+    [
+      "Net profit",
+      "1278.2",
+      "0.13",
+      "1278.2",
+      "0.13",
+      "0",
+      "0"
+    ],
+    [
+      "Gross profit",
+      "8147",
+      "0.81",
+      "8147",
+      "0.81",
+      "0",
+      "0"
+    ],
+    [
+      "Gross loss",
+      "6868.8",
+      "0.69",
+      "6868.8",
+      "0.69",
+      "0",
+      "0"
+    ],
+    [
+      "Expected payoff",
+      "0.43",
+      "",
+      "0.43",
+      "",
+      "0",
+      ""
+    ],
+    [
+      "Commission paid",
+      "0",
+      "",
+      "0",
+      "",
+      "0",
+      ""
+    ],
+    [
+      "Buy and hold PnL",
+      "144955417.2",
+      "14495.54",
+      "",
+      "",
+      "",
+      ""
+    ],
+    [
+      "Buy and hold % gain",
+      "",
+      "14495.71",
+      "",
+      "",
+      "",
+      ""
+    ],
+    [
+      "Strategy outperformance",
+      "-144954139",
+      "-14495.41",
+      "",
+      "",
+      "",
+      ""
+    ],
+    [
+      "Max contracts held",
+      "1",
+      "",
+      "1",
+      "",
+      "0",
+      ""
+    ],
+    [
+      "Annualized return (CAGR)",
+      "",
+      "0",
+      "",
+      "0",
+      "",
+      "0"
+    ],
+    [
+      "Return on initial capital",
+      "",
+      "0.13",
+      "",
+      "0.13",
+      "",
+      "0"
+    ],
+    [
+      "Account size required",
+      "2976.3",
+      "",
+      "",
+      "",
+      "",
+      ""
+    ],
+    [
+      "Return on account size required",
+      "",
+      "42.95",
+      "",
+      "42.95",
+      "",
+      "0"
+    ],
+    [
+      "Average margin used",
+      "109.12",
+      "",
+      "",
+      "",
+      "",
+      ""
+    ],
+    [
+      "Max margin used",
+      "2348.9",
+      "",
+      "",
+      "",
+      "",
+      ""
+    ],
+    [
+      "Margin efficiency",
+      "11.71",
+      "",
+      "11.71",
+      "",
+      "0",
+      ""
+    ],
+    [
+      "Total liquidated volume",
+      "0",
+      "",
+      "0",
+      "",
+      "0",
+      ""
+    ],
+    [
+      "Largest liquidated volume",
+      "0",
+      "",
+      "0",
+      "",
+      "0",
+      ""
+    ],
+    [
+      "Average run-up duration (close-to-close)",
+      "277 days",
+      "",
+      "",
+      "",
+      "",
+      ""
+    ],
+    [
+      "Average run-up (close-to-close)",
+      "283.99",
+      "0.03",
+      "",
+      "",
+      "",
+      ""
+    ],
+    [
+      "Max run-up (close-to-close)",
+      "812",
+      "0.08",
+      "",
+      "",
+      "",
+      ""
+    ],
+    [
+      "Max run-up (intrabar)",
+      "1841.8",
+      "0.18",
+      "",
+      "",
+      "",
+      ""
+    ],
+    [
+      "Max run-up as % of initial capital (intrabar)",
+      "",
+      "0.18",
+      "",
+      "",
+      "",
+      ""
+    ],
+    [
+      "Average drawdown duration (close-to-close)",
+      "778 days",
+      "",
+      "",
+      "",
+      "",
+      ""
+    ],
+    [
+      "Average drawdown (close-to-close)",
+      "159.71",
+      "0.02",
+      "",
+      "",
+      "",
+      ""
+    ],
+    [
+      "Return of max drawdown",
+      "2.04",
+      "",
+      "2.04",
+      "",
+      "0",
+      ""
+    ],
+    [
+      "Max drawdown (close-to-close)",
+      "627",
+      "0.06",
+      "",
+      "",
+      "",
+      ""
+    ],
+    [
+      "Max drawdown (intrabar)",
+      "627.4",
+      "0.06",
+      "",
+      "",
+      "",
+      ""
+    ],
+    [
+      "Max drawdown as % of initial capital (intrabar)",
+      "",
+      "0.06",
+      "",
+      "",
+      "",
+      ""
+    ],
+    [
+      "Net PnL as % of largest loss",
+      "",
+      "1942.55",
+      "",
+      "1942.55",
+      "",
+      "0"
+    ],
+    [
+      "Largest profit as % of gross profit",
+      "",
+      "1.62",
+      "",
+      "1.62",
+      "",
+      "0"
+    ],
+    [
+      "Largest loss as % of gross loss",
+      "",
+      "0.96",
+      "",
+      "0.96",
+      "",
+      "0"
+    ]
+  ],
+  "analysis_raw_head": [
+    [
+      "",
+      "All INR",
+      "All %",
+      "Long INR",
+      "Long %",
+      "Short INR",
+      "Short %"
+    ],
+    [
+      "Total open trades",
+      "0",
+      "",
+      "0",
+      "",
+      "0",
+      ""
+    ],
+    [
+      "Total trades",
+      "2954",
+      "",
+      "2954",
+      "",
+      "0",
+      ""
+    ],
+    [
+      "Total winners",
+      "1352",
+      "",
+      "1352",
+      "",
+      "0",
+      ""
+    ],
+    [
+      "Total losers",
+      "1449",
+      "",
+      "1449",
+      "",
+      "0",
+      ""
+    ],
+    [
+      "Even trades",
+      "153",
+      "",
+      "153",
+      "",
+      "0",
+      ""
+    ],
+    [
+      "Percent profitable",
+      "",
+      "45.77",
+      "",
+      "45.77",
+      "",
+      ""
+    ],
+    [
+      "Average PnL",
+      "0.43",
+      "0.03",
+      "0.43",
+      "0.03",
+      "",
+      ""
+    ],
+    [
+      "Average profit",
+      "6.03",
+      "2.92",
+      "6.03",
+      "2.92",
+      "",
+      ""
+    ],
+    [
+      "Average loss",
+      "4.74",
+      "2.66",
+      "4.74",
+      "2.66",
+      "",
+      ""
+    ],
+    [
+      "Average profit / average loss",
+      "1.271",
+      "",
+      "1.271",
+      "",
+      "",
+      ""
+    ],
+    [
+      "Largest profit",
+      "132",
+      "",
+      "132",
+      "",
+      "",
+      ""
+    ],
+    [
+      "Largest profit %",
+      "",
+      "25.15",
+      "",
+      "25.15",
+      "",
+      ""
+    ],
+    [
+      "Largest loss",
+      "65.8",
+      "",
+      "65.8",
+      "",
+      "",
+      ""
+    ],
+    [
+      "Largest loss %",
+      "",
+      "21.39",
+      "",
+      "21.39",
+      "",
+      ""
+    ],
+    [
+      "Outliers",
+      "159",
+      "",
+      "159",
+      "",
+      "0",
+      ""
+    ],
+    [
+      "Outliers P&L",
+      "359",
+      "0.04",
+      "359",
+      "0.04",
+      "0",
+      "0"
+    ],
+    [
+      "Average bars in trades",
+      "2",
+      "",
+      "2",
+      "",
+      "0",
+      ""
+    ],
+    [
+      "Average bars in winners",
+      "2",
+      "",
+      "2",
+      "",
+      "0",
+      ""
+    ],
+    [
+      "Average bars in losers",
+      "2",
+      "",
+      "2",
+      "",
+      "0",
+      ""
+    ]
+  ],
+  "risk_raw_head": [
+    [
+      "",
+      "All INR",
+      "All %",
+      "Long INR",
+      "Long %",
+      "Short INR",
+      "Short %"
+    ],
+    [
+      "Sharpe ratio",
+      "-40.6",
+      "",
+      "",
+      "",
+      "",
+      ""
+    ],
+    [
+      "Sortino ratio",
+      "-1",
+      "",
+      "",
+      "",
+      "",
+      ""
+    ],
+    [
+      "Profit factor",
+      "1.186",
+      "",
+      "1.186",
+      "",
+      "",
+      ""
+    ],
+    [
+      "Margin calls",
+      "0",
+      "",
+      "0",
+      "",
+      "0",
+      ""
+    ]
+  ],
+  "properties_raw_head": [
+    [
+      "name",
+      "value"
+    ],
+    [
+      "Trading range",
+      "Aug 22, 2002 \u2014 Aug 24, 2026"
+    ],
+    [
+      "Backtesting range",
+      "Jun 23, 2000 \u2014 Aug 24, 2026"
+    ],
+    [
+      "Symbol",
+      "NSE:WELCORP"
+    ],
+    [
+      "Timeframe",
+      "1 day"
+    ],
+    [
+      "Point value",
+      "1"
+    ],
+    [
+      "Chart type",
+      "Candles"
+    ],
+    [
+      "Currency",
+      "INR"
+    ],
+    [
+      "Tick size",
+      "0.10"
+    ],
+    [
+      "Precision",
+      "Default"
+    ],
+    [
+      "Initial capital",
+      "1000000"
+    ],
+    [
+      "Default order size",
+      "1 contracts"
+    ],
+    [
+      "Pyramiding",
+      "1 orders"
+    ],
+    [
+      "Bar detalization",
+      "Default (4 ticks per bar)"
+    ],
+    [
+      "Script execution",
+      "On bar close"
+    ],
+    [
+      "Commission",
+      "0"
+    ],
+    [
+      "Long leverage",
+      "1x"
+    ],
+    [
+      "Short leverage",
+      "1x"
+    ],
+    [
+      "Slippage",
+      "0 ticks"
+    ],
+    [
+      "Limit order execution",
+      "Requested price"
+    ],
+    [
+      "Order execution delay",
+      "One tick"
+    ]
+  ]
+}

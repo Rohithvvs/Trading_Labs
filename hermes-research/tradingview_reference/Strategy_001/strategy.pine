@@ -1,0 +1,129 @@
+//@version=6
+indicator("STR-001 | 52W High Breakout Scanner", overlay=false)
+
+// ============================================================
+// STR-001: 52-Week High Breakout
+// Universe: External TradingView Watchlist
+// Timeframe: Daily
+// ============================================================
+
+// ---------- Parameters ----------
+int LOOKBACK_52W = 252
+int VOLUME_LENGTH = 20
+int ATR_LENGTH = 14
+int MARKET_SMA_LENGTH = 50
+float ATR_MULTIPLIER = 3.0
+
+// ---------- Prior 252-session high ----------
+// [1] is critical:
+// today's candle must NOT be included in the breakout reference.
+float prior252High = ta.highest(high, LOOKBACK_52W)[1]
+
+// ---------- Volume confirmation ----------
+float volumeSMA20 = ta.sma(volume, VOLUME_LENGTH)
+bool volumeOK = volume > volumeSMA20
+
+// ---------- True Range ----------
+float previousClose = close[1]
+
+float trueRange = math.max(
+     high - low,
+     math.max(
+         math.abs(high - previousClose),
+         math.abs(low - previousClose)
+     )
+)
+
+// ---------- ATR = SMA(True Range, 14) ----------
+// IMPORTANT:
+// This is NOT ta.atr(14).
+// Strategy specification requires SMA of True Range.
+float atr14 = ta.sma(trueRange, ATR_LENGTH)
+
+// ---------- NIFTY 500 market filter ----------
+float nifty500Close = request.security(
+     "NSE:CNX500",
+     "1D",
+     close
+)
+
+float nifty500SMA50 = request.security(
+     "NSE:CNX500",
+     "1D",
+     ta.sma(close, MARKET_SMA_LENGTH)
+)
+
+bool marketOK = nifty500Close > nifty500SMA50
+
+// ---------- Breakout ----------
+bool breakout = close >= prior252High
+
+// ---------- Final STR-001 signal ----------
+bool breakoutSignal = breakout and volumeOK and marketOK
+
+// ============================================================
+// PINE SCREENER OUTPUTS
+// ============================================================
+
+// 1 = signal exists, 0 = no signal
+plot(
+     breakoutSignal ? 1 : 0,
+     title="STR-001 Signal",
+     display=display.all
+)
+
+// Breakout condition
+plot(
+     breakout ? 1 : 0,
+     title="Breakout",
+     display=display.all
+)
+
+// Volume confirmation
+plot(
+     volumeOK ? 1 : 0,
+     title="Volume OK",
+     display=display.all
+)
+
+// Market regime
+plot(
+     marketOK ? 1 : 0,
+     title="Market OK",
+     display=display.all
+)
+
+// Current close
+plot(
+     close,
+     title="Close",
+     display=display.all
+)
+
+// Previous 252-session high
+plot(
+     prior252High,
+     title="Prior 252 High",
+     display=display.all
+)
+
+// Volume
+plot(
+     volume,
+     title="Volume",
+     display=display.all
+)
+
+// 20-day average volume
+plot(
+     volumeSMA20,
+     title="Volume SMA20",
+     display=display.all
+)
+
+// ATR14
+plot(
+     atr14,
+     title="ATR14",
+     display=display.all
+)

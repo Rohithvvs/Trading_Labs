@@ -1,0 +1,51 @@
+strategy_name: "52W Breakout - Test"
+
+symbol:
+  exchange: "NSE"
+  ticker: "WELCORP"
+  full_symbol: "NSE:WELCORP"
+
+timeframe: "1D"
+
+backtest:
+  mode: "deep_backtesting"
+  start_date: "2000-06-23"
+  end_date: "2026-08-24"
+
+capital:
+  initial_capital: 1000000
+  currency: "INR"
+
+position_sizing:
+  default_order_size: 1
+  order_size_type: "quantity"
+
+pyramiding: 1
+
+execution:
+  bar_detailization: "default"
+  ticks_per_bar: 4
+  script_execution: "on_bar_close"
+  order_execution_delay: "one_tick"
+
+broker_emulator:
+  commission:
+    value: 0
+    type: "percent"
+
+  long_leverage: "1x"
+  short_leverage: "1x"
+
+  slippage:
+    value: 0
+    unit: "ticks"
+
+  limit_order_execution: "requested_price"
+
+# These settings were not visible in the supplied Properties screenshot.
+# Do not guess their values.
+additional_execution_settings:
+  process_orders_on_close: null
+  calc_on_order_fills: null
+  calc_on_every_tick: null
+  bar_magnifier: null

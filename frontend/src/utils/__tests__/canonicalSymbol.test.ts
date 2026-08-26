@@ -40,6 +40,6 @@ describe("universe instrument lookup", () => {
   it("attaches company names without changing the scan identity symbol", () => {
     const rows = attachInstrumentMetadata([{ symbol: "360ONE-EQ" }], instruments);
     expect(rows[0].symbol).toBe("360ONE-EQ");
-    expect(rows[0].companyName).toBe("360 ONE WAM Ltd.");
+    expect((rows[0] as any).companyName).toBe("360 ONE WAM Ltd.");
   });
 });

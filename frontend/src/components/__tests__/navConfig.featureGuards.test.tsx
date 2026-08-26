@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import React from "react";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it, vi, beforeEach } from "vitest";
@@ -167,7 +167,7 @@ describe("AppShell Dynamic Navigation Filtering (Sprint 5)", () => {
     expect(screen.getByTestId("nav-scanner")).toBeTruthy();
   });
 
-  it("filters admin navigation items based on role and feature permissions", () => {
+  it("filters admin navigation items inside profile based on role and feature permissions", () => {
     mockUseAuth.mockReturnValue({
       isAuthenticated: true,
       isLoading: false,
@@ -182,12 +182,20 @@ describe("AppShell Dynamic Navigation Filtering (Sprint 5)", () => {
 
     renderShell();
 
-    expect(screen.getByTestId("nav-admin-panel")).toBeTruthy();
-    expect(screen.getByTestId("nav-system-logs")).toBeTruthy();
-    expect(screen.queryByTestId("nav-central-command")).toBeNull();
+    // Sidebar rail has only retail navigation
+    expect(screen.getByTestId("nav-markets")).toBeTruthy();
+    expect(screen.queryByTestId("nav-admin-panel")).toBeNull();
+
+    // Open profile dropdown menu
+    fireEvent.click(screen.getByTestId("nav-profile-menu"));
+
+    expect(screen.getByTestId("nav-admin-panel-profile")).toBeTruthy();
+    expect(screen.getByTestId("nav-system-logs-profile")).toBeTruthy();
+    expect(screen.getByTestId("nav-diagnostics-profile")).toBeTruthy();
+    expect(screen.queryByTestId("nav-central-command-profile")).toBeNull();
   });
 
-  it("hides all feature-gated admin nav items when canAccess denies admin features", () => {
+  it("hides all feature-gated admin items inside profile when canAccess denies admin features", () => {
     mockUseAuth.mockReturnValue({
       isAuthenticated: true,
       isLoading: false,
@@ -202,14 +210,17 @@ describe("AppShell Dynamic Navigation Filtering (Sprint 5)", () => {
 
     renderShell();
 
-    expect(screen.queryByTestId("nav-admin-panel")).toBeNull();
-    expect(screen.queryByTestId("nav-central-command")).toBeNull();
-    expect(screen.queryByTestId("nav-system-logs")).toBeNull();
-    // Diagnostics has no featureKey — still visible for admin role
-    expect(screen.getByTestId("nav-diagnostics")).toBeTruthy();
+    // Open profile menu
+    fireEvent.click(screen.getByTestId("nav-profile-menu"));
+
+    expect(screen.queryByTestId("nav-admin-panel-profile")).toBeNull();
+    expect(screen.queryByTestId("nav-central-command-profile")).toBeNull();
+    expect(screen.queryByTestId("nav-system-logs-profile")).toBeNull();
+    // Diagnostics has no featureKey — still visible for admin role inside profile
+    expect(screen.getByTestId("nav-diagnostics-profile")).toBeTruthy();
   });
 
-  it("trader role never receives admin nav items regardless of canAccess", () => {
+  it("trader role never receives admin nav items inside profile regardless of canAccess", () => {
     mockUseAuth.mockReturnValue({
       isAuthenticated: true,
       isLoading: false,
@@ -221,10 +232,13 @@ describe("AppShell Dynamic Navigation Filtering (Sprint 5)", () => {
 
     renderShell();
 
-    expect(screen.queryByTestId("nav-admin-panel")).toBeNull();
-    expect(screen.queryByTestId("nav-central-command")).toBeNull();
-    expect(screen.queryByTestId("nav-system-logs")).toBeNull();
-    expect(screen.queryByTestId("nav-diagnostics")).toBeNull();
+    // Open profile menu
+    fireEvent.click(screen.getByTestId("nav-profile-menu"));
+
+    expect(screen.queryByTestId("nav-admin-panel-profile")).toBeNull();
+    expect(screen.queryByTestId("nav-central-command-profile")).toBeNull();
+    expect(screen.queryByTestId("nav-system-logs-profile")).toBeNull();
+    expect(screen.queryByTestId("nav-diagnostics-profile")).toBeNull();
   });
 
   it("does not call canAccess for nav items without featureKey", () => {
@@ -263,8 +277,11 @@ describe("AppShell Dynamic Navigation Filtering (Sprint 5)", () => {
     expect(screen.getByTestId("nav-profile")).toBeTruthy();
     expect(screen.queryByTestId("nav-scanner")).toBeNull();
     expect(screen.queryByTestId("nav-performance")).toBeNull();
-    expect(screen.queryByTestId("nav-admin-panel")).toBeNull();
-    expect(screen.queryByTestId("nav-system-logs")).toBeNull();
-    expect(screen.queryByTestId("nav-central-command")).toBeNull();
+
+    // Open profile menu
+    fireEvent.click(screen.getByTestId("nav-profile-menu"));
+    expect(screen.queryByTestId("nav-admin-panel-profile")).toBeNull();
+    expect(screen.queryByTestId("nav-system-logs-profile")).toBeNull();
+    expect(screen.queryByTestId("nav-central-command-profile")).toBeNull();
   });
 });

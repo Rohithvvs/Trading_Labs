@@ -175,7 +175,7 @@ export function isSymbolWindowReplay(
   if (range !== "CUSTOM" && dash.window && String(dash.window).toUpperCase() !== range) return false;
   if (range === "CUSTOM" && dash.window && String(dash.window).toUpperCase() !== "CUSTOM") return false;
   if (dash.unavailable_reason === "insufficient_history") return true;
-  return isCompleteDashboard(dash) && Array.isArray(dash.equity_curve) && dash.equity_curve.length > 1;
+  return isCompleteDashboard(dash) && Array.isArray(dash.equity_curve) && dash.equity_curve.length >= 1;
 }
 
 /**

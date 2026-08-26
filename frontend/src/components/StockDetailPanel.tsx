@@ -1301,9 +1301,16 @@ function asofFromRow(row?: CandidateRow): Date {
   return new Date();
 }
 
-function boundsForRange(range: BacktestRange, asof: Date): { start: string; end: string } {
+const KERNEL_ALL_START = "2008-07-22";
+
+function boundsForRange(
+  range: BacktestRange,
+  asof: Date,
+): { start: string; end: string } {
   const end = isoDay(asof);
-  if (range === "ALL") return { start: "2008-07-22", end };
+  if (range === "ALL") {
+    return { start: KERNEL_ALL_START, end };
+  }
   const years = range === "1Y" ? 1 : range === "5Y" ? 5 : range === "8Y" ? 8 : 3;
   const start = new Date(asof);
   start.setFullYear(start.getFullYear() - years);
@@ -1319,7 +1326,8 @@ function BacktestTab({
   backtestDetail?: any | null;
   row?: CandidateRow;
 }) {
-  const initial = boundsForRange("3Y", asofFromRow(row));
+  const asof = asofFromRow(row);
+  const initial = boundsForRange("3Y", asof);
   const [range, setRange] = useState<BacktestRange>("3Y");
   const [startDate, setStartDate] = useState(initial.start);
   const [endDate, setEndDate] = useState(initial.end);
@@ -1327,6 +1335,14 @@ function BacktestTab({
   const [ltmLoading, setLtmLoading] = useState(false);
   const [ltmError, setLtmError] = useState<string | null>(null);
   const [niftyData, setNiftyData] = useState<{label: string, close: number}[]>([]);
+
+  useEffect(() => {
+    if (range === "ALL") {
+      const bounds = boundsForRange("ALL", asofFromRow(row));
+      setStartDate(bounds.start);
+      setEndDate(bounds.end);
+    }
+  }, [row?.symbol]);
 
   const handleRangeChange = (next: BacktestRange) => {
     const bounds = boundsForRange(next === "CUSTOM" ? "3Y" : next, asofFromRow(row));
@@ -1353,10 +1369,16 @@ function BacktestTab({
     setLtmDash(null);
     setLtmError(null);
     if (typeof console !== "undefined") {
-      console.debug("BACKTEST_UI_REQUEST", { symbol: row.symbol, period: range, startDate, endDate });
+      console.debug("BACKTEST_UI_REQUEST", {
+        symbol: row.symbol,
+        period: range,
+        startDate,
+        endDate,
+        executionProfile: row.w52 ? "KERNEL" : undefined,
+      });
     }
     const req = row.w52
-      ? fetchW52SymbolDetail(row.symbol, range, { startDate, endDate })
+      ? fetchW52SymbolDetail(row.symbol, range, { startDate, endDate, executionProfile: "KERNEL" })
       : fetchLtmSymbolDetail(row.symbol, range === "CUSTOM" ? "ALL" : range);
     req
       .then((res) => {
@@ -1410,22 +1432,34 @@ function BacktestTab({
     ? "52-Week High Breakout"
     : row?.ltm
       ? "LTM Breakout"
-      : row?.strategyName || "52-Week High Breakout";
+      : (row as any)?.strategyName || "52-Week High Breakout";
 
   return (
-    <BacktestAnalyticsDashboard
-      model={engineModel}
-      range={range}
-      onRangeChange={handleRangeChange}
-      startDate={startDate}
-      endDate={endDate}
-      onCustomRange={handleCustomRange}
-      loading={Boolean((row?.ltm || row?.w52) && ltmLoading)}
-      loadError={row?.ltm || row?.w52 ? ltmError : null}
-      symbol={row?.symbol}
-      strategyName={strategyName}
-      timeframe="1D"
-    />
+    <div>
+      {row?.w52 ? (
+        <div className="bt-range" role="group" aria-label="Backtest engine" style={{ marginBottom: 12 }}>
+          <button
+            type="button"
+            className="bt-range__btn is-active"
+          >
+            52W kernel
+          </button>
+        </div>
+      ) : null}
+      <BacktestAnalyticsDashboard
+        model={engineModel}
+        range={range}
+        onRangeChange={handleRangeChange}
+        startDate={startDate}
+        endDate={endDate}
+        onCustomRange={handleCustomRange}
+        loading={Boolean((row?.ltm || row?.w52) && ltmLoading)}
+        loadError={row?.ltm || row?.w52 ? ltmError : null}
+        symbol={row?.symbol}
+        strategyName={strategyName}
+        timeframe="1D"
+      />
+    </div>
   );
 }
 

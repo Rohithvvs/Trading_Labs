@@ -1,0 +1,30 @@
+# HERMES permission boundaries.
+# Coding workers must honor this file. User approval cannot be inferred.
+
+READ_ALLOWED:
+  - repository source code
+  - tests
+  - historical data metadata
+  - TradingView reference files
+  - research files
+  - configuration structure
+
+WRITE_ALLOWED:
+  - hermes-research/
+
+APPROVAL_REQUIRED:
+  - production backtesting code
+  - execution engine
+  - order engine
+  - portfolio engine
+  - strategy engine
+  - database schema
+  - live trading code
+
+BLOCKED:
+  - live broker orders
+  - live trading credential changes
+  - destructive database operations
+  - production deployment
+  - deleting TradingView references
+  - modifying golden reference files

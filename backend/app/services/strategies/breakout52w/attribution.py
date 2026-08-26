@@ -21,6 +21,20 @@ from .period import (
 )
 
 
+def _profit_factor(wins: list[float], losses: list[float]) -> float | None:
+    """Gross-profit / gross-loss. Break-even (0) trades are neither wins nor losses.
+
+    Infinite when there is profit and no gross loss. None when there is no
+    closed PnL to score (empty or all break-even).
+    """
+    loss_abs = abs(sum(losses))
+    if loss_abs:
+        return (sum(wins) / loss_abs) if wins else 0.0
+    if wins:
+        return float("inf")
+    return None
+
+
 def window_start(end: date, *, years: int = ATTRIBUTION_YEARS) -> date:
     try:
         return end.replace(year=end.year - years)
@@ -78,17 +92,13 @@ def per_name_backtests(
     for sym, items in by_sym.items():
         rets = [t.pnl_pct for t in items if t.pnl_pct is not None]
         wins = [r for r in rets if r > 0]
-        losses = [r for r in rets if r <= 0]
+        losses = [r for r in rets if r < 0]
         net = 1.0
         for r in rets:
             net *= 1.0 + r
         net_return = net - 1.0
         win_rate = (len(wins) / len(rets)) if rets else 0.0
-        profit_factor = None
-        if losses:
-            profit_factor = (sum(wins) / abs(sum(losses))) if wins else 0.0
-        elif wins:
-            profit_factor = float("inf")
+        profit_factor = _profit_factor(wins, losses)
         reports[sym] = {
             "window_start": start.isoformat(),
             "window_end": end.isoformat(),

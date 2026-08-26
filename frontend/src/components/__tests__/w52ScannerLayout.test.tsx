@@ -1,4 +1,7 @@
+declare const __dirname: string;
+// @ts-ignore
 import { readFileSync } from "node:fs";
+// @ts-ignore
 import { resolve } from "node:path";
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
@@ -16,7 +19,7 @@ describe("52-Week High Breakout scanner layout", () => {
   });
 
   it("renders components in order: CandidateTable -> W52ReturnBoards -> W52RejectionBreakdown -> W52ScanSummary", () => {
-    const candidateTable = src.indexOf("rows={w52CandidateRows}");
+    const candidateTable = src.indexOf("rows={w52VisibleRows}");
     const returnBoards = src.indexOf("<W52ReturnBoards");
     const rejection = src.indexOf("<W52RejectionBreakdown");
     const summary = src.indexOf("<W52ScanSummary");
@@ -28,6 +31,22 @@ describe("52-Week High Breakout scanner layout", () => {
     expect(src.split("<W52ScanSummary").length - 1).toBe(1);
     expect(src.split("<W52RejectionBreakdown").length - 1).toBe(1);
     expect(src.split("<W52ReturnBoards").length - 1).toBe(1);
+  });
+
+  it("keeps Favorites and Scan results tabs on the 52-Week High Breakout view", () => {
+    expect(src).toContain('scannerStrategy === "production" || scannerStrategy === "09_52w_breakout"');
+    expect(src).toContain('data-testid="scanner-favorites-tab"');
+    expect(src).toContain('data-testid="scanner-scan-results-tab"');
+    expect(src).toContain("includeUniverseRejects: true");
+  });
+
+  it("does not replace Favorites / Scan results with only a progress spinner while a 52W scan is running", () => {
+    const progress = src.indexOf('title="52-WEEK HIGH BREAKOUT SCAN IN PROGRESS"');
+    const table = src.indexOf("rows={w52VisibleRows}");
+    expect(src).not.toMatch(/scannerStrategy === "09_52w_breakout" \? \(\s*w52InFlight \? \(/);
+    expect(progress).toBeGreaterThan(-1);
+    expect(table).toBeGreaterThan(progress);
+    expect(src).toContain("w52-previous-results-hint");
   });
 
   it("places rejection breakdown before the scan summary in the DOM", () => {
@@ -69,5 +88,16 @@ describe("52-Week High Breakout scanner layout", () => {
     expect(screen.getByRole("heading", { name: "52-Week High Breakout" })).toBeTruthy();
     expect(screen.getByText("Current holdings")).toBeTruthy();
     expect(screen.getByText("Known limitations")).toBeTruthy();
+  });
+});
+
+describe("52W backtest tab engine selector", () => {
+  const src = readFileSync(resolve(__dirname, "../StockDetailPanel.tsx"), "utf8");
+
+  it("retains 52W kernel and removes TradingView tester", () => {
+    expect(src).toContain("52W kernel");
+    expect(src).not.toContain("TradingView tester");
+    expect(src).not.toContain("isWelcorpSymbol");
+    expect(src).not.toContain('"TV_TESTER"');
   });
 });

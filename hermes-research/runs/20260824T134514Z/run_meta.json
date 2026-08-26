@@ -1,0 +1,171 @@
+{
+  "run_id": "20260824T134514Z",
+  "tv_summary": {
+    "total_trades": 2954,
+    "winners": 1352,
+    "losers": 1449,
+    "even": 153,
+    "net_profit": 1278.2,
+    "gross_profit": 8147.0,
+    "gross_loss": 6868.8,
+    "profit_factor": 1.186088,
+    "avg_trade": 0.432701,
+    "win_rate": 45.7684,
+    "duration_counts": {
+      "8": 1,
+      "1": 2953
+    },
+    "unique_qty": [
+      1.0
+    ],
+    "unique_commission": [
+      0.0
+    ],
+    "directions": [
+      "LONG"
+    ],
+    "entry_signals": {
+      "TEST": 2954
+    },
+    "exit_reasons": {
+      "Close entry(s) order TEST": 2954
+    },
+    "first_entry": "2002-08-22",
+    "last_exit": "2026-08-24"
+  },
+  "xlsx_sheet_names": [
+    "Performance",
+    "Trades analysis",
+    "Risk-adjusted performance",
+    "Trades",
+    "Properties"
+  ],
+  "test_config": {
+    "strategy_name": "52W Breakout - Test",
+    "symbol": {
+      "exchange": "NSE",
+      "ticker": "WELCORP",
+      "full_symbol": "NSE:WELCORP"
+    },
+    "timeframe": "1D",
+    "backtest": {
+      "mode": "deep_backtesting",
+      "start_date": "2000-06-23",
+      "end_date": "2026-08-24"
+    },
+    "capital": {
+      "initial_capital": 1000000,
+      "currency": "INR"
+    },
+    "position_sizing": {
+      "default_order_size": 1,
+      "order_size_type": "quantity"
+    },
+    "pyramiding": 1,
+    "execution": {
+      "bar_detailization": "default",
+      "ticks_per_bar": 4,
+      "script_execution": "on_bar_close",
+      "order_execution_delay": "one_tick"
+    },
+    "broker_emulator": {
+      "commission": {
+        "value": 0,
+        "type": "percent"
+      },
+      "long_leverage": "1x",
+      "short_leverage": "1x",
+      "slippage": {
+        "value": 0,
+        "unit": "ticks"
+      },
+      "limit_order_execution": "requested_price"
+    },
+    "additional_execution_settings": {
+      "process_orders_on_close": null,
+      "calc_on_order_fills": null,
+      "calc_on_every_tick": null,
+      "bar_magnifier": null
+    }
+  },
+  "ohlc_span": {
+    "symbol": "WELCORP-EQ",
+    "rows": 5628,
+    "min": "2003-12-10",
+    "max": "2026-08-24"
+  },
+  "fill_stats": {
+    "tv_trades": 2954,
+    "tv_entries_with_labs_bar": 2793,
+    "tv_entries_without_labs_bar": 161,
+    "entry_fill_vs_ohlc": {
+      "unmatched": 886,
+      "open": 1573,
+      "open+high": 161,
+      "open+low": 141,
+      "close": 7,
+      "open+close": 12,
+      "low": 2,
+      "high": 7,
+      "open+low+close": 1,
+      "open+high+low+close": 1,
+      "open+high+close": 2
+    },
+    "exit_fill_vs_ohlc": {
+      "unmatched": 898,
+      "open": 1561,
+      "open+high": 153,
+      "open+low": 152,
+      "close": 5,
+      "open+close": 10,
+      "high": 5,
+      "low": 6,
+      "open+low+close": 1,
+      "open+high+low+close": 1,
+      "open+high+close": 1
+    }
+  },
+  "tl_error": null,
+  "tl_kernel_trade_count": 17,
+  "tl_tvcompat_trade_count": 18,
+  "tl_tester_trade_count": 2795,
+  "tl_kernel_metrics": {
+    "total_return": 15.4008,
+    "cagr": 0.4362,
+    "max_drawdown": -6.3351,
+    "win_rate": 47.0588,
+    "trade_count": 17,
+    "profit_factor": 2.9296,
+    "initial_capital": 1000000.0,
+    "ending_capital": 1154007.9,
+    "unavailable_reason": null,
+    "period_start": "2003-12-10",
+    "period_end": "2026-08-24"
+  },
+  "tl_tvcompat_metrics": {
+    "total_return": 15.6623,
+    "cagr": 0.4431,
+    "max_drawdown": -5.5237,
+    "win_rate": 44.4444,
+    "trade_count": 18,
+    "profit_factor": 2.7466,
+    "initial_capital": 1000000.0,
+    "ending_capital": 1156622.81,
+    "unavailable_reason": null,
+    "period_start": "2003-12-10",
+    "period_end": "2026-08-24"
+  },
+  "tl_tester_metrics": {
+    "total_return": 0.1297,
+    "cagr": 0.0039,
+    "max_drawdown": -0.0627,
+    "win_rate": 47.2272,
+    "trade_count": 2795,
+    "profit_factor": 1.0229,
+    "initial_capital": 1000000.0,
+    "ending_capital": 1001297.0,
+    "unavailable_reason": null,
+    "period_start": "2003-12-10",
+    "period_end": "2026-08-24"
+  }
+}

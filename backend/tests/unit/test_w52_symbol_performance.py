@@ -304,6 +304,57 @@ def test_get_w52_symbol_serves_stored_dashboard():
     assert body["dashboard"]["trade_distribution"]["losers"] == 3
 
 
+def test_get_w52_symbol_tv_tester_uses_tester_capital():
+    from app.routes.scanner import get_w52_symbol
+    from app.services.strategies.breakout52w.execution import TV_TESTER_CAPITAL
+
+    latest = SimpleNamespace(
+        payload={
+            "evaluation_date": "2026-08-24",
+            "recommendations": [{"symbol": "WELCORP-EQ", "signal": "BUY", "technicals": {}}],
+            "initial_capital": 100000,
+        }
+    )
+    replay = AsyncMock(return_value={"window": "ALL", "trade_count": 2954, "execution": {"profile": "TV_TESTER"}})
+
+    async def _run():
+        with (
+            patch(
+                "app.services.strategies.breakout52w.persistence.load_latest",
+                new=AsyncMock(return_value=latest),
+            ),
+            patch(
+                "app.services.strategies.breakout52w.performance_store.load_stored_dashboard",
+                new=AsyncMock(return_value=None),
+            ),
+            patch(
+                "app.services.strategies.breakout52w.performance_store.persist_dashboard",
+                new=AsyncMock(),
+            ),
+            patch(
+                "app.services.strategies.breakout52w.window_backtest.run_symbol_window_backtest",
+                new=replay,
+            ),
+        ):
+            return await get_w52_symbol(
+                "WELCORP-EQ",
+                window="ALL",
+                start_date="2000-06-23",
+                end_date="2026-08-24",
+                execution_profile="TV_TESTER",
+                historical_fill_mode=None,
+                refresh=False,
+                _=SimpleNamespace(),
+            )
+
+    body = asyncio.run(_run())
+    replay.assert_awaited()
+    kwargs = replay.await_args.kwargs
+    assert kwargs["initial_capital"] == TV_TESTER_CAPITAL
+    assert kwargs["execution_profile"] == "TV_TESTER"
+    assert body["window"] == "ALL"
+
+
 def test_row_to_dict_exposes_tester_block():
     stored = metrics_from_dashboard(_dash())
     skip = {

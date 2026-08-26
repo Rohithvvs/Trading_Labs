@@ -86,7 +86,24 @@ describe("CandidateTable Component", () => {
 
     expect(screen.getAllByText("TCS.NS").length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText("BUY").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText("Favorites")).toBeTruthy();
+    expect(screen.getByText("Scan results")).toBeTruthy();
     expect(screen.queryByText("System Alpha Overview")).toBeNull();
+  });
+
+  it("labels the Scan results tab as all analyzed stocks including REJECT", () => {
+    const rejectRow = { ...mockRow, symbol: "360ONE-EQ", signal: "REJECT" as const, score: null };
+    render(
+      <CandidateTable
+        rows={[rejectRow]}
+        selectedSymbol={null}
+        onSelect={vi.fn()}
+        sectionLabel="Scan results"
+        heading="All analyzed stocks"
+      />,
+    );
+    expect(screen.getByText("All analyzed stocks")).toBeTruthy();
+    expect(screen.getAllByText("REJECT").length).toBeGreaterThanOrEqual(1);
   });
 
   it("renders the Regime Badge based on sentiment", () => {

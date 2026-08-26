@@ -262,6 +262,7 @@ def _trade_payload(tr: Trade) -> dict[str, Any]:
         "holding_days": hold,
         "reason": tr.reason,
         "exit_reason": tr.exit_reason_canonical or tr.reason,
+        "entry_signal": tr.entry_signal or ("TEST" if "TEST" in (tr.reason or "") else "BuySignal"),
         "open": tr.open,
         "signal_time": _iso(tr.signal_time),
         "entry_order_time": _iso(tr.entry_order_time),

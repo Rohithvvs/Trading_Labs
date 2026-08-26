@@ -9,6 +9,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { useNavigate } from "react-router-dom";
 
 import {
   authMe,
@@ -69,7 +70,11 @@ type SectionId =
   | "activity"
   | "privacy"
   | "support"
-  | "about";
+  | "about"
+  | "admin"
+  | "command"
+  | "logs"
+  | "diagnostics";
 
 type Props = {
   onNavigate?: (view: "scanner" | "paper-trading" | "home") => void;
@@ -124,15 +129,33 @@ function MetricSkeleton() {
 }
 
 export function UserProfilePage({ onNavigate, retailMode = false }: Props) {
-  const { user, logout, updateUser } = useAuth();
+  const { user, logout, updateUser, role } = useAuth();
+  const isAdmin = role === "admin";
+  const navigate = useNavigate();
   const { theme, setTheme } = useTheme();
   const { canAccess } = useFeaturePermissions();
   const toast = useToast();
   const SIDEBAR = useMemo(() => {
     const base = retailMode ? SIDEBAR_RETAIL : SIDEBAR_FULL;
     // Sprint 5: hide watchlist nav when feature permission denied
-    return base.filter((item) => item.id !== "watchlist" || canAccess("watchlist"));
-  }, [retailMode, canAccess]);
+    const filteredBase = base.filter((item) => item.id !== "watchlist" || canAccess("watchlist"));
+    if (!isAdmin) return filteredBase;
+
+    // 4 settings inside Profile for admin users
+    const adminItems: { id: SectionId; label: string; badge?: string }[] = [];
+    if (canAccess("admin_panel")) {
+      adminItems.push({ id: "admin", label: "Admin", badge: "Admin" });
+    }
+    if (canAccess("central_command")) {
+      adminItems.push({ id: "command", label: "Central Command", badge: "Admin" });
+    }
+    if (canAccess("system_logs")) {
+      adminItems.push({ id: "logs", label: "System Logs", badge: "Admin" });
+    }
+    adminItems.push({ id: "diagnostics", label: "Diagnostics", badge: "Ops" });
+
+    return [...filteredBase, ...adminItems];
+  }, [retailMode, canAccess, isAdmin]);
   const [section, setSection] = useState<SectionId>(() => {
     try {
       const q = new URLSearchParams(window.location.search).get("section") as SectionId | null;
@@ -483,6 +506,22 @@ export function UserProfilePage({ onNavigate, retailMode = false }: Props) {
   }
 
   function selectSection(id: SectionId) {
+    if (id === "admin") {
+      navigate("/admin");
+      return;
+    }
+    if (id === "command") {
+      navigate("/admin/command");
+      return;
+    }
+    if (id === "logs") {
+      navigate("/admin/logs");
+      return;
+    }
+    if (id === "diagnostics") {
+      navigate("/diagnostics");
+      return;
+    }
     setSection(id);
     setSidebarOpen(false);
   }
@@ -615,6 +654,8 @@ export function UserProfilePage({ onNavigate, retailMode = false }: Props) {
             googleConnected={googleConnected}
             fyersConnected={fyersConnected}
             userId={String(userId || "—")}
+            isAdmin={isAdmin}
+            canAccess={canAccess}
             completion={completion}
             portfolioValue={portfolioValue}
             availableCash={availableCash}
@@ -641,6 +682,10 @@ export function UserProfilePage({ onNavigate, retailMode = false }: Props) {
             onAi={() => selectSection("ai")}
             onPortfolio={() => selectSection("portfolio")}
             onSettings={() => selectSection("preferences")}
+            onAdmin={() => navigate("/admin")}
+            onCommand={() => navigate("/admin/command")}
+            onLogs={() => navigate("/admin/logs")}
+            onDiagnostics={() => navigate("/diagnostics")}
           />
         ) : null}
 
@@ -669,9 +714,15 @@ export function UserProfilePage({ onNavigate, retailMode = false }: Props) {
           <PreferencesSection
             prefs={prefs}
             theme={theme}
+            isAdmin={isAdmin}
+            canAccess={canAccess}
             onTheme={setTheme}
             onChange={markPrefsDraft}
             onSave={() => void persistPrefs(prefs)}
+            onAdmin={() => navigate("/admin")}
+            onCommand={() => navigate("/admin/command")}
+            onLogs={() => navigate("/admin/logs")}
+            onDiagnostics={() => navigate("/diagnostics")}
           />
         ) : null}
 
@@ -737,6 +788,10 @@ function navIcon(id: SectionId): string {
     privacy: "🔒",
     support: "?",
     about: "ℹ",
+    admin: "⚡",
+    command: "🎛",
+    logs: "📜",
+    diagnostics: "🩺",
   };
   return map[id] || "•";
 }
@@ -754,6 +809,8 @@ const OverviewSection = memo(function OverviewSection(props: {
   googleConnected: boolean;
   fyersConnected: boolean;
   userId: string;
+  isAdmin?: boolean;
+  canAccess?: (featureKey: any) => boolean;
   completion: { items: { label: string; done: boolean }[]; pct: number };
   portfolioValue: number;
   availableCash: number;
@@ -780,6 +837,10 @@ const OverviewSection = memo(function OverviewSection(props: {
   onAi: () => void;
   onPortfolio: () => void;
   onSettings: () => void;
+  onAdmin?: () => void;
+  onCommand?: () => void;
+  onLogs?: () => void;
+  onDiagnostics?: () => void;
 }) {
   const {
     fullName,
@@ -944,6 +1005,78 @@ const OverviewSection = memo(function OverviewSection(props: {
           <button type="button" className="button ghost-button" onClick={props.onScanner}>Run scanner</button>
         </div>
       </section>
+
+      {props.isAdmin ? (
+        <section className="profile-admin-grid glass-card" aria-label="Administration Settings" data-testid="profile-admin-settings-section">
+          <div className="profile-card-head" style={{ marginBottom: 12 }}>
+            <div>
+              <p className="ds-label" style={{ margin: 0 }}>System Management</p>
+              <h3 style={{ margin: "2px 0 0" }}>Administration Settings</h3>
+            </div>
+            <span className="profile-chip plan">Admin</span>
+          </div>
+          <div className="profile-admin-tiles">
+            {(!props.canAccess || props.canAccess("admin_panel")) && (
+              <article className="glass-card profile-admin-tile" data-testid="profile-overview-admin">
+                <div className="profile-admin-tile__header">
+                  <span className="profile-admin-tile__icon">⚡</span>
+                  <div>
+                    <strong>Admin</strong>
+                    <span className="muted">User & Feature Access</span>
+                  </div>
+                </div>
+                <p className="ds-caption muted">Manage platform accounts, roles, feature gates, and permissions.</p>
+                <button type="button" className="button primary-button small-button" onClick={props.onAdmin}>
+                  Open Admin
+                </button>
+              </article>
+            )}
+            {(!props.canAccess || props.canAccess("central_command")) && (
+              <article className="glass-card profile-admin-tile" data-testid="profile-overview-central-command">
+                <div className="profile-admin-tile__header">
+                  <span className="profile-admin-tile__icon">🎛</span>
+                  <div>
+                    <strong>Central Command</strong>
+                    <span className="muted">Operations & Governance</span>
+                  </div>
+                </div>
+                <p className="ds-caption muted">Operational command routing, backfill management, and emergency controls.</p>
+                <button type="button" className="button primary-button small-button" onClick={props.onCommand}>
+                  Open Command
+                </button>
+              </article>
+            )}
+            {(!props.canAccess || props.canAccess("system_logs")) && (
+              <article className="glass-card profile-admin-tile" data-testid="profile-overview-system-logs">
+                <div className="profile-admin-tile__header">
+                  <span className="profile-admin-tile__icon">📜</span>
+                  <div>
+                    <strong>System Logs</strong>
+                    <span className="muted">Live Logs & Audits</span>
+                  </div>
+                </div>
+                <p className="ds-caption muted">Real-time log streaming, scanner execution logs, and background worker status.</p>
+                <button type="button" className="button primary-button small-button" onClick={props.onLogs}>
+                  View Logs
+                </button>
+              </article>
+            )}
+            <article className="glass-card profile-admin-tile" data-testid="profile-overview-diagnostics">
+              <div className="profile-admin-tile__header">
+                <span className="profile-admin-tile__icon">🩺</span>
+                <div>
+                  <strong>Diagnostics</strong>
+                  <span className="muted">Health, Metrics & Alerts</span>
+                </div>
+              </div>
+              <p className="ds-caption muted">Real-time system health checks, CPU/memory usage, and active alerts.</p>
+              <button type="button" className="button primary-button small-button" onClick={props.onDiagnostics}>
+                Run Diagnostics
+              </button>
+            </article>
+          </div>
+        </section>
+      ) : null}
 
       {/* Metric strip */}
       <section className="profile-metrics">
@@ -1400,15 +1533,27 @@ function SecuritySection({ email, googleConnected }: { email: string; googleConn
 function PreferencesSection({
   prefs,
   theme,
+  isAdmin,
+  canAccess,
   onTheme,
   onChange,
   onSave,
+  onAdmin,
+  onCommand,
+  onLogs,
+  onDiagnostics,
 }: {
   prefs: ProfilePreferences;
   theme: string;
+  isAdmin?: boolean;
+  canAccess?: (featureKey: any) => boolean;
   onTheme: (t: "dark" | "light") => void;
   onChange: (p: ProfilePreferences) => void;
   onSave: () => void;
+  onAdmin?: () => void;
+  onCommand?: () => void;
+  onLogs?: () => void;
+  onDiagnostics?: () => void;
 }) {
   return (
     <section className="glass-card profile-form-card animate-fade-in">
@@ -1469,6 +1614,25 @@ function PreferencesSection({
           Save Preferences
         </button>
       </div>
+
+      {isAdmin ? (
+        <div className="profile-admin-prefs-section" style={{ marginTop: 24, paddingTop: 16, borderTop: "1px solid var(--border)" }}>
+          <h3 style={{ margin: "0 0 4px" }}>Administration Settings</h3>
+          <p className="muted" style={{ margin: "0 0 12px" }}>Direct access to system administration and operations controls.</p>
+          <div className="profile-quick-btns">
+            {(!canAccess || canAccess("admin_panel")) && (
+              <button type="button" className="button ghost-button" onClick={onAdmin}>⚡ Admin</button>
+            )}
+            {(!canAccess || canAccess("central_command")) && (
+              <button type="button" className="button ghost-button" onClick={onCommand}>🎛 Central Command</button>
+            )}
+            {(!canAccess || canAccess("system_logs")) && (
+              <button type="button" className="button ghost-button" onClick={onLogs}>📜 System Logs</button>
+            )}
+            <button type="button" className="button ghost-button" onClick={onDiagnostics}>🩺 Diagnostics</button>
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }

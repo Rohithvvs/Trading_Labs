@@ -425,6 +425,14 @@ export default function App() {
         : EMPTY_CANDIDATES,
     [scannerStrategy, w52Payload, instrumentIndex],
   );
+  const w52ScanResultRows = useMemo(
+    () =>
+      scannerStrategy === "09_52w_breakout"
+        ? attachInstrumentMetadata(buildW52CandidateRows(w52Payload, { includeUniverseRejects: true }), instrumentIndex)
+        : EMPTY_CANDIDATES,
+    [scannerStrategy, w52Payload, instrumentIndex],
+  );
+  const w52VisibleRows = showAllAnalyzedStocks ? w52ScanResultRows : w52CandidateRows;
 
   const filteredRows = useMemo(() => {
     const searchTerm = filters.search.trim().toUpperCase();
@@ -464,11 +472,13 @@ export default function App() {
       scannerStrategy === "17_long_term_mom"
         ? ltmCandidateRows
         : scannerStrategy === "09_52w_breakout"
-          ? w52CandidateRows
+          ? w52ScanResultRows.length
+            ? w52ScanResultRows
+            : w52CandidateRows
           : filteredRows;
     if (!pool.length) return null;
     return pool.find((row) => row.symbol === selectedSymbol) ?? pool[0];
-  }, [filteredRows, ltmCandidateRows, w52CandidateRows, scannerStrategy, selectedSymbol]);
+  }, [filteredRows, ltmCandidateRows, w52CandidateRows, w52ScanResultRows, scannerStrategy, selectedSymbol]);
 
   const summaryMetrics = useMemo(() => {
     const src = screenerResult;
@@ -975,6 +985,7 @@ export default function App() {
               const next = s.id as "production" | "17_long_term_mom" | "09_52w_breakout";
               storeScannerStrategy(next);
               setScannerStrategy(next);
+              setShowAllAnalyzedStocks(false);
             }}
             data-testid={`scanner-strategy-${s.id}`}
           >
@@ -984,7 +995,7 @@ export default function App() {
         ))}
       </div>
 
-      {scannerStrategy === "production" ? (
+      {scannerStrategy === "production" || scannerStrategy === "09_52w_breakout" ? (
       <div className="scanner-result-tabs" role="tablist" aria-label="Result views">
         <button
           type="button"
@@ -992,9 +1003,12 @@ export default function App() {
           aria-selected={!showAllAnalyzedStocks}
           className={`button ${!showAllAnalyzedStocks ? "primary-button" : "ghost-button"}`}
           onClick={() => setShowAllAnalyzedStocks(false)}
+          data-testid="scanner-favorites-tab"
         >
           Favorites (
-          {screenerResult?.shortlisted_symbols.length ?? 0}
+          {scannerStrategy === "09_52w_breakout"
+            ? w52CandidateRows.length
+            : screenerResult?.shortlisted_symbols.length ?? 0}
           )
         </button>
         <button
@@ -1006,9 +1020,11 @@ export default function App() {
           data-testid="scanner-scan-results-tab"
         >
           Scan results (
-          {screenerResult?.all_analyzed_stocks?.length ??
-            screenerResult?.shortlisted_symbols?.length ??
-            0}
+          {scannerStrategy === "09_52w_breakout"
+            ? w52ScanResultRows.length
+            : screenerResult?.all_analyzed_stocks?.length ??
+              screenerResult?.shortlisted_symbols?.length ??
+              0}
           )
         </button>
       </div>
@@ -1039,17 +1055,18 @@ export default function App() {
       ) : null}
 
       {scannerStrategy === "09_52w_breakout" ? (
-        w52InFlight ? (
-          <ScannerProgress
-            title="52-WEEK HIGH BREAKOUT SCAN IN PROGRESS"
-            data={w52Progress}
-            error={null}
-            startTime={w52StartTime}
-          />
-        ) : !w52Hydrated ? (
+        !w52Hydrated ? (
           <ViewFallback />
         ) : (
           <>
+            {w52InFlight ? (
+              <ScannerProgress
+                title="52-WEEK HIGH BREAKOUT SCAN IN PROGRESS"
+                data={w52Progress}
+                error={null}
+                startTime={w52StartTime}
+              />
+            ) : null}
             {w52Run.error || isStrategyRunFailed(w52Payload) ? (
               <ScannerProgress
                 title="52-WEEK HIGH BREAKOUT SCAN IN PROGRESS"
@@ -1061,29 +1078,58 @@ export default function App() {
             ) : null}
             {hasDisplayableStrategyResults(w52Payload, { inFlight: false }) ? (
               <>
-                {w52CandidateRows.length ? (
+                {w52InFlight && w52VisibleRows.length ? (
+                  <p className="ds-muted" data-testid="w52-previous-results-hint">
+                    Showing last completed Favorites and Scan results while this 52-Week High Breakout run finishes.
+                    New BUY and REJECT signals publish when the scan completes.
+                  </p>
+                ) : null}
+                {w52VisibleRows.length ? (
                   <CandidateTable
-                    rows={w52CandidateRows}
+                    rows={w52VisibleRows}
                     selectedSymbol={selectedRow?.symbol ?? null}
                     onSelect={handleSelectSymbol}
                     onBuy={sendRowToPaperTrading}
                     exportFilePrefix="w52-scan"
+                    sectionLabel={showAllAnalyzedStocks ? "Scan results" : "Favorites"}
+                    heading={showAllAnalyzedStocks ? "All analyzed stocks" : "Scan results"}
                   />
                 ) : (
                   <EmptyState
-                    title="No 52-Week High Breakout recommendations yet"
-                    description="Run a 52-Week High Breakout scan to populate this table."
+                    title={
+                      showAllAnalyzedStocks
+                        ? "No 52-Week High Breakout scan results yet"
+                        : "No 52-Week High Breakout favorites yet"
+                    }
+                    description={
+                      w52InFlight
+                        ? "Scan is running. Names that satisfy 52-Week High Breakout become BUY; all others become REJECT when this run finishes."
+                        : showAllAnalyzedStocks
+                          ? "Run a 52-Week High Breakout scan to classify every name as BUY or REJECT."
+                          : "Names that satisfy 52-Week High Breakout appear here as BUY (HOLD if already in the book, WATCH if no free slot). Open Scan results for REJECT names."
+                    }
                   />
                 )}
-                <W52ReturnBoards payload={w52Payload} />
-                <W52RejectionBreakdown buckets={w52Payload?.rejection_breakdown || []} />
-                <W52ScanSummary payload={w52Payload} />
-                <W52OrderList orders={w52Payload?.orders || []} />
+                {!w52InFlight ? (
+                  <>
+                    <W52ReturnBoards payload={w52Payload} />
+                    <W52RejectionBreakdown buckets={w52Payload?.rejection_breakdown || []} />
+                    <W52ScanSummary payload={w52Payload} />
+                    <W52OrderList orders={w52Payload?.orders || []} />
+                  </>
+                ) : null}
               </>
-            ) : w52Run.error || isStrategyRunFailed(w52Payload) ? null : (
+            ) : w52InFlight || w52Run.error || isStrategyRunFailed(w52Payload) ? (
+              w52InFlight && !w52VisibleRows.length ? (
+                <EmptyState
+                  title="52-Week High Breakout scan in progress"
+                  description="Favorites and Scan results will appear here when evaluation finishes. Names that satisfy the strategy become BUY; all others become REJECT."
+                />
+              ) : null
+            ) : (
               <EmptyState
                 title="No 52-Week High Breakout scan yet"
-                description="Run a 52-Week High Breakout scan to populate this table."
+                description="Run a 52-Week High Breakout scan to populate Favorites and Scan results."
               />
             )}
           </>
@@ -1190,7 +1236,7 @@ export default function App() {
     analysisItems, filteredRows, shortlistRows, selectedRow?.symbol,
     progressData, scanStartTime, lastScanDuration,
     sendRowToPaperTrading, scannerStrategy, ltmPayload, ltmCandidateRows, ltmStrategies,
-    w52Payload, w52CandidateRows, w52InFlight, ltmInFlight, ltmRun, w52Run,
+    w52Payload, w52CandidateRows, w52ScanResultRows, w52VisibleRows, w52InFlight, ltmInFlight, ltmRun, w52Run,
     ltmProgress, w52Progress, ltmStartTime, w52StartTime, ltmHydrated, w52Hydrated,
   ]);
 

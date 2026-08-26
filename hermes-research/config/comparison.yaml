@@ -1,0 +1,48 @@
+# HERMES comparison categories.
+# Configuration only in PART 1. Do not treat this file as an implemented engine.
+
+comparison:
+  summary_metrics:
+    - net_profit
+    - gross_profit
+    - gross_loss
+    - profit_factor
+    - max_drawdown
+    - total_trades
+    - win_rate
+    - average_trade
+    - sharpe
+    - sortino
+    - buy_and_hold
+
+  trade_level:
+    - trade_number
+    - direction
+    - entry_time
+    - entry_price
+    - entry_quantity
+    - exit_time
+    - exit_price
+    - exit_quantity
+    - profit
+    - commission
+    - slippage
+
+  order_level:
+    - order_type
+    - creation_time
+    - fill_time
+    - requested_price
+    - fill_price
+    - quantity
+
+  portfolio_level:
+    - cash
+    - equity
+    - position
+    - realized_pnl
+    - unrealized_pnl
+    - drawdown
+
+  first_divergence:
+    enabled: true
