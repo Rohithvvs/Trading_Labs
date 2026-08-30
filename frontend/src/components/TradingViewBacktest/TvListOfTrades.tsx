@@ -329,7 +329,7 @@ export const TvListOfTrades: React.FC<TvListOfTradesProps> = ({
       {/* TradingView-Style 2-Subrow Table */}
       {sortedTrades.length ? (
         <div className="tv-table-responsive-container">
-          <table className="tv-trades-table">
+          <table className="tv-trades-table" data-testid="table-backtest-trades">
             <thead>
               <tr>
                 {visibleCols.trade_number && (

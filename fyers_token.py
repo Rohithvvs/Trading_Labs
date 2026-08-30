@@ -42,6 +42,8 @@ from __future__ import annotations
 
 import base64
 import concurrent.futures
+import datetime
+import email.utils
 import logging
 import os
 import random
@@ -54,6 +56,31 @@ from typing import Any
 import pyotp
 import requests
 from fyers_apiv3 import fyersModel
+
+# Module-level clock drift estimation (server_time - local_time) in seconds
+_SERVER_TIME_DRIFT: float = 0.0
+
+
+def _extract_server_time_drift(resp: requests.Response | None) -> float | None:
+    """Extract clock drift in seconds (server_time - local_time) from response Date header."""
+    if resp is None:
+        return None
+    date_str = resp.headers.get("Date") or resp.headers.get("date")
+    if not date_str:
+        return None
+    try:
+        server_dt = email.utils.parsedate_to_datetime(date_str)
+        server_ts = server_dt.timestamp()
+        local_ts = time.time()
+        return server_ts - local_ts
+    except Exception:
+        return None
+
+
+def _record_server_drift(drift: float | None) -> None:
+    global _SERVER_TIME_DRIFT
+    if drift is not None:
+        _SERVER_TIME_DRIFT = drift
 
 # -----------------------------------------------------------------------------
 # Logging (library-safe: no stdout handler; host / CLI configures sinks)
@@ -364,6 +391,7 @@ def _post_json(
             headers=headers,
             timeout=REQUEST_TIMEOUT_SEC,
         )
+        _record_server_drift(_extract_server_time_drift(resp))
         resp.raise_for_status()
         return resp.json()
     except requests.Timeout as e:
@@ -372,11 +400,21 @@ def _post_json(
         ) from e
     except requests.HTTPError as e:
         status = getattr(getattr(e, "response", None), "status_code", None)
+        err_detail = ""
+        if getattr(e, "response", None) is not None:
+            _record_server_drift(_extract_server_time_drift(e.response))
+            try:
+                err_data = e.response.json()
+                if isinstance(err_data, dict):
+                    err_detail = err_data.get("message") or err_data.get("error") or ""
+            except Exception:
+                pass
+        err_msg = f"HTTP client error during {step} (status={status})"
+        if err_detail:
+            err_msg += f": {err_detail}"
         # 5xx + 429 are transient (retry); other 4xx are permanent client/auth errors.
         if status is not None and 400 <= int(status) < 500 and int(status) != 429:
-            raise FyersAuthError(
-                f"HTTP client error during {step} (status={status})"
-            ) from e
+            raise FyersAuthError(err_msg) from e
         raise FyersConnectionError(
             f"HTTP error during {step} (status={status if status is not None else '?'}): {e}"
         ) from e
@@ -698,7 +736,13 @@ def generate_fyers_access_token() -> str:
             logger.info("step=totp_verify attempt=%s outcome=start", attempt)
             try:
                 totp_generator = pyotp.TOTP(totp_secret)
-                totp_code = totp_generator.now()
+                totp_time = time.time() + _SERVER_TIME_DRIFT
+                if abs(_SERVER_TIME_DRIFT) > 5.0:
+                    logger.warning(
+                        "step=totp_verify clock_drift_detected offset=%.1fs outcome=using_server_time",
+                        _SERVER_TIME_DRIFT,
+                    )
+                totp_code = totp_generator.at(totp_time)
             except Exception as e:
                 raise FyersConfigError(f"Invalid TOTP secret format: {e}") from e
 
@@ -718,7 +762,7 @@ def generate_fyers_access_token() -> str:
                     attempt,
                     _redact_sensitive(str(fail_msg), max_len=80),
                 )
-                time_remaining = 30 - (int(time.time()) % 30)
+                time_remaining = 30 - (int(time.time() + _SERVER_TIME_DRIFT) % 30)
                 sleep_for = min(
                     time_remaining + 1,
                     MAX_TOTP_WINDOW_SLEEP_SEC,
@@ -731,7 +775,7 @@ def generate_fyers_access_token() -> str:
                 )
                 _sleep_capped(sleep_for, deadline)
 
-                retry_code = totp_generator.now()
+                retry_code = totp_generator.at(time.time() + _SERVER_TIME_DRIFT)
                 data_totp = _post_json(
                     url_verify_totp,
                     {"request_key": request_key_1, "otp": retry_code},

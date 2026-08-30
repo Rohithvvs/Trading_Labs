@@ -58,6 +58,7 @@ const PIE_COLORS = ["#3b82f6", "#06b6d4", "#a855f7", "#64748b"];
 type SectionId =
   | "overview"
   | "personal"
+  | "scanner"
   | "security"
   | "preferences"
   | "notifications"
@@ -85,6 +86,7 @@ type Props = {
 const SIDEBAR_FULL: { id: SectionId; label: string; badge?: string }[] = [
   { id: "overview", label: "Overview" },
   { id: "personal", label: "Personal Information" },
+  { id: "scanner", label: "Scanner Dashboard", badge: "Tools" },
   { id: "security", label: "Security" },
   { id: "preferences", label: "Trading Preferences" },
   { id: "notifications", label: "Notifications" },
@@ -104,6 +106,7 @@ const SIDEBAR_FULL: { id: SectionId; label: string; badge?: string }[] = [
 const SIDEBAR_RETAIL: { id: SectionId; label: string; badge?: string }[] = [
   { id: "overview", label: "Profile Overview" },
   { id: "personal", label: "Personal Info" },
+  { id: "scanner", label: "Scanner Dashboard" },
   { id: "brokers", label: "Broker Connections" },
   { id: "security", label: "Security" },
   { id: "preferences", label: "Preferences & Appearance" },
@@ -137,8 +140,12 @@ export function UserProfilePage({ onNavigate, retailMode = false }: Props) {
   const toast = useToast();
   const SIDEBAR = useMemo(() => {
     const base = retailMode ? SIDEBAR_RETAIL : SIDEBAR_FULL;
-    // Sprint 5: hide watchlist nav when feature permission denied
-    const filteredBase = base.filter((item) => item.id !== "watchlist" || canAccess("watchlist"));
+    // Filter base items when feature permission denied
+    const filteredBase = base.filter((item) => {
+      if (item.id === "watchlist" && !canAccess("watchlist")) return false;
+      if (item.id === "scanner" && !canAccess("advanced_scanner")) return false;
+      return true;
+    });
     if (!isAdmin) return filteredBase;
 
     // 4 settings inside Profile for admin users
@@ -505,7 +512,16 @@ export function UserProfilePage({ onNavigate, retailMode = false }: Props) {
     }
   }
 
+  function openScannerDashboard() {
+    if (onNavigate) onNavigate("scanner");
+    else navigate("/scanner");
+  }
+
   function selectSection(id: SectionId) {
+    if (id === "scanner") {
+      openScannerDashboard();
+      return;
+    }
     if (id === "admin") {
       navigate("/admin");
       return;
@@ -571,6 +587,7 @@ export function UserProfilePage({ onNavigate, retailMode = false }: Props) {
               key={item.id}
               type="button"
               className={`profile-nav-item ${section === item.id ? "is-active" : ""}`}
+              data-testid={`profile-nav-${item.id}`}
               onClick={() => selectSection(item.id)}
             >
               <span className="profile-nav-icon" aria-hidden>
@@ -678,7 +695,7 @@ export function UserProfilePage({ onNavigate, retailMode = false }: Props) {
             onEdit={() => selectSection("personal")}
             onPassword={() => selectSection("security")}
             onPaper={() => onNavigate?.("paper-trading") || selectSection("paper")}
-            onScanner={() => onNavigate?.("scanner")}
+            onScanner={openScannerDashboard}
             onAi={() => selectSection("ai")}
             onPortfolio={() => selectSection("portfolio")}
             onSettings={() => selectSection("preferences")}
@@ -724,6 +741,17 @@ export function UserProfilePage({ onNavigate, retailMode = false }: Props) {
             onLogs={() => navigate("/admin/logs")}
             onDiagnostics={() => navigate("/diagnostics")}
           />
+        ) : null}
+
+        {section === "scanner" ? (
+          <FeatureGuard feature="advanced_scanner" fallback={<AccessDenied />}>
+            <ScannerSection
+              prefs={prefs}
+              onLaunchScanner={openScannerDashboard}
+              onChange={markPrefsDraft}
+              onSave={() => void persistPrefs(prefs)}
+            />
+          </FeatureGuard>
         ) : null}
 
         {section === "notifications" ? (
@@ -775,6 +803,7 @@ function navIcon(id: SectionId): string {
   const map: Record<SectionId, string> = {
     overview: "▣",
     personal: "👤",
+    scanner: "📡",
     security: "🛡",
     preferences: "⚙",
     notifications: "🔔",
@@ -992,6 +1021,20 @@ const OverviewSection = memo(function OverviewSection(props: {
           <strong>{holdingsCount}</strong>
           <button type="button" className="button ghost-button small-button" onClick={props.onPaper}>Paper Desk</button>
         </article>
+        {(!props.canAccess || props.canAccess("advanced_scanner")) && (
+          <article className="glass-card profile-status-tile" data-testid="profile-overview-scanner">
+            <span className="muted">Scanner Dashboard</span>
+            <strong>Quantitative Screen</strong>
+            <button
+              type="button"
+              className="button ghost-button small-button"
+              onClick={props.onScanner}
+              data-testid="profile-overview-scanner-btn"
+            >
+              Open Dashboard
+            </button>
+          </article>
+        )}
       </section>
 
       <section className="profile-quick-actions-bar glass-card" aria-label="Quick actions">
@@ -1002,7 +1045,14 @@ const OverviewSection = memo(function OverviewSection(props: {
           <button type="button" className="button ghost-button" onClick={props.onSettings}>Notifications</button>
           <button type="button" className="button ghost-button" onClick={props.onSettings}>Appearance</button>
           <button type="button" className="button ghost-button" onClick={props.onPaper}>Paper trading</button>
-          <button type="button" className="button ghost-button" onClick={props.onScanner}>Run scanner</button>
+          <button
+            type="button"
+            className="button ghost-button"
+            data-testid="profile-quick-scanner-btn"
+            onClick={props.onScanner}
+          >
+            Run scanner
+          </button>
         </div>
       </section>
 
@@ -1822,6 +1872,103 @@ function WatchlistSection({ prefs, onSave }: { prefs: ProfilePreferences; onSave
         ))}
         {!list.length ? <li className="muted">No favourites yet.</li> : null}
       </ul>
+    </section>
+  );
+}
+
+function ScannerSection({
+  prefs,
+  onLaunchScanner,
+  onChange,
+  onSave,
+}: {
+  prefs: ProfilePreferences;
+  onLaunchScanner: () => void;
+  onChange: (p: ProfilePreferences) => void;
+  onSave: () => void;
+}) {
+  return (
+    <section className="glass-card profile-form-card animate-fade-in" data-testid="profile-scanner-section">
+      <div className="profile-card-head" style={{ marginBottom: 16 }}>
+        <div>
+          <p className="ds-label" style={{ margin: 0 }}>Quantitative Screening</p>
+          <h2 style={{ margin: "2px 0 0" }}>Scanner Controls & Configuration</h2>
+        </div>
+        <button
+          type="button"
+          className="button primary-button"
+          onClick={onLaunchScanner}
+          data-testid="profile-launch-scanner-btn"
+        >
+          Launch Full Scanner ↗
+        </button>
+      </div>
+      <p className="muted" style={{ margin: "0 0 20px" }}>
+        Configure default parameters for stock screener runs, universe filtering, and model presets.
+      </p>
+
+      <div className="profile-form-grid">
+        <label className="profile-field">
+          <span>Scanner Mode</span>
+          <select
+            value={prefs.scannerMode || "swing"}
+            onChange={(e) => onChange({ ...prefs, scannerMode: e.target.value as any })}
+            data-testid="profile-scanner-mode-select"
+          >
+            <option value="swing">Swing (Multi-Day Momentum)</option>
+            <option value="intraday">Intraday (Fast Trend)</option>
+            <option value="positional">Positional (Long Term)</option>
+          </select>
+        </label>
+
+        <label className="profile-field">
+          <span>Default Universe</span>
+          <select
+            value={prefs.defaultUniverse || "NIFTY500"}
+            onChange={(e) => onChange({ ...prefs, defaultUniverse: e.target.value })}
+            data-testid="profile-scanner-universe-select"
+          >
+            <option value="NIFTY50">NIFTY 50</option>
+            <option value="NIFTY100">NIFTY 100</option>
+            <option value="NIFTY500">NIFTY 500</option>
+          </select>
+        </label>
+
+        <label className="profile-field">
+          <span>Default Timeframe</span>
+          <select
+            value={prefs.defaultTimeframe || "1d"}
+            onChange={(e) => onChange({ ...prefs, defaultTimeframe: e.target.value })}
+            data-testid="profile-scanner-timeframe-select"
+          >
+            <option value="1d">1 Day (1D)</option>
+            <option value="4h">4 Hours (4H)</option>
+            <option value="1h">1 Hour (1H)</option>
+            <option value="1W">1 Week (1W)</option>
+          </select>
+        </label>
+
+        <label className="profile-field">
+          <span>Dashboard Layout</span>
+          <select
+            value={prefs.dashboardLayout || "comfortable"}
+            onChange={(e) => onChange({ ...prefs, dashboardLayout: e.target.value as any })}
+            data-testid="profile-scanner-layout-select"
+          >
+            <option value="comfortable">Comfortable</option>
+            <option value="compact">Compact</option>
+          </select>
+        </label>
+      </div>
+
+      <div className="profile-form-actions" style={{ marginTop: 24 }}>
+        <button type="button" className="button primary-button" onClick={onSave} data-testid="profile-save-scanner-prefs-btn">
+          Save Scanner Preferences
+        </button>
+        <button type="button" className="button ghost-button" onClick={onLaunchScanner}>
+          Open Scanner Dashboard
+        </button>
+      </div>
     </section>
   );
 }

@@ -107,6 +107,12 @@ const MarketsPage = lazy(() =>
 const PerformancePage = lazy(() =>
   import("./pages/PerformancePage").then((m) => ({ default: m.PerformancePage })),
 );
+const StrategyTesterPage = lazy(() =>
+  import("./pages/StrategyTesterPage").then((m) => ({ default: m.StrategyTesterPage })),
+);
+const StockDetailsPage = lazy(() =>
+  import("./pages/StockDetailsPage").then((m) => ({ default: m.StockDetailsPage })),
+);
 
 const DiagnosticsPage = lazy(() =>
   import("./pages/Diagnostics").then((m) => ({ default: m.DiagnosticsPage })),
@@ -1329,6 +1335,36 @@ export default function App() {
                 element={
                   <FeatureGuard feature="advanced_scanner" fallback={<AccessDenied />}>
                     {scannerView}
+                  </FeatureGuard>
+                }
+              />
+              <Route
+                path="/strategy-tester"
+                element={
+                  <FeatureGuard feature="advanced_scanner" fallback={<AccessDenied />}>
+                    <Suspense fallback={<ViewFallback />}>
+                      <StrategyTesterPage />
+                    </Suspense>
+                  </FeatureGuard>
+                }
+              />
+              <Route
+                path="/stock/:symbol"
+                element={
+                  <FeatureGuard feature="advanced_scanner" fallback={<AccessDenied />}>
+                    <Suspense fallback={<ViewFallback />}>
+                      <StockDetailsPage />
+                    </Suspense>
+                  </FeatureGuard>
+                }
+              />
+              <Route
+                path="/stocks/:symbol"
+                element={
+                  <FeatureGuard feature="advanced_scanner" fallback={<AccessDenied />}>
+                    <Suspense fallback={<ViewFallback />}>
+                      <StockDetailsPage />
+                    </Suspense>
                   </FeatureGuard>
                 }
               />

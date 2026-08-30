@@ -35,7 +35,7 @@ function readSidebarCollapsed(): boolean {
 
 export function AppShell({ children, topActions, title }: Props) {
   const { user, logout, role } = useAuth();
-  const { theme } = useTheme();
+  const { theme, toggleTheme } = useTheme();
   const { density, setDensity } = useDensity();
   const location = useLocation();
   const isAdmin = role === "admin";
@@ -107,12 +107,17 @@ export function AppShell({ children, topActions, title }: Props) {
     return true;
   });
 
+  const isStrategyTester =
+    location.pathname.startsWith("/strategy-tester") ||
+    location.pathname.startsWith("/stock");
+
   return (
     <div
       className={[
         "app-shell-v2",
         sidebarCollapsed ? "app-shell-v2--collapsed" : "app-shell-v2--expanded",
         mobileMenuOpen ? "app-shell-v2--mobile-open" : "",
+        isStrategyTester ? "app-shell-v2--strategy-tester" : "",
       ]
         .filter(Boolean)
         .join(" ")}
@@ -153,33 +158,61 @@ export function AppShell({ children, topActions, title }: Props) {
                 title={item.label}
               >
                 <span className="app-sidebar__icon">{item.icon}</span>
-                <span className="app-sidebar__label">{item.label}</span>
+                <span className="app-sidebar__label-wrap">
+                  <span className="app-sidebar__label">{item.label}</span>
+                  {item.badge ? <span className="app-sidebar__badge">{item.badge}</span> : null}
+                </span>
               </NavLink>
             );
           })}
         </nav>
 
         <div className="app-sidebar__footer">
-          <div className="app-sidebar__meta">
-            <label className="app-density-toggle">
-              <span className="ds-caption app-sidebar__meta-label">Density</span>
-              <select
-                value={density}
-                onChange={(e) => setDensity(e.target.value as "comfortable" | "compact")}
-                aria-label="UI density"
-              >
-                <option value="comfortable">Comfortable</option>
-                <option value="compact">Compact</option>
-              </select>
-            </label>
-            {/* Developer mode toggle hidden (Sprint 4): unused for routes; never unlocks /admin/* */}
+          <div className="sidebar-universe-card">
+            <div className="sidebar-universe-label">Universe</div>
+            <div className="sidebar-universe-box">
+              <span className="sidebar-universe-icon">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+              </span>
+              <div className="sidebar-universe-text">
+                <div className="sidebar-universe-count">755 Stocks</div>
+                <div className="sidebar-universe-name">All Stocks</div>
+              </div>
+            </div>
           </div>
-          <ThemeToggle />
+          <div className="sidebar-theme-card">
+            <span className="sidebar-theme-title">Theme</span>
+            <button
+              type="button"
+              className="sidebar-theme-toggle"
+              onClick={toggleTheme}
+              aria-label="Toggle theme"
+              title="Toggle theme"
+            >
+              <span className={`sidebar-theme-icon ${theme === "light" ? "is-active" : ""}`}>☼</span>
+              <span className={`sidebar-theme-icon ${theme === "dark" ? "is-active" : ""}`}>●</span>
+            </button>
+          </div>
+          <div
+            className="sidebar-user-card"
+            onClick={() => navigate("/profile")}
+            role="button"
+            tabIndex={0}
+            aria-label="User profile"
+          >
+            <div className="sidebar-user-avatar">{initials}</div>
+            <div className="sidebar-user-info">
+              <div className="sidebar-user-name">{user?.full_name || "Demn"}</div>
+              <div className="sidebar-user-email">{user?.email || "demo@tradedesk.com"}</div>
+            </div>
+            <div className="sidebar-user-chevron">⌄</div>
+          </div>
         </div>
       </aside>
 
       {/* Main column */}
       <div className="app-main-column">
+        {!isStrategyTester ? (
         <header className="app-topbar">
           <div className="app-topbar__left">
             <button
@@ -256,6 +289,19 @@ export function AppShell({ children, topActions, title }: Props) {
                   <button type="button" role="menuitem" onClick={() => { setProfileOpen(false); navigate("/paper"); }}>
                     Paper Desk
                   </button>
+                  {canAccess("advanced_scanner") ? (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      data-testid="nav-scanner-profile"
+                      onClick={() => {
+                        setProfileOpen(false);
+                        navigate("/scanner");
+                      }}
+                    >
+                      Scanner Dashboard
+                    </button>
+                  ) : null}
                   {isAdmin ? (
                     <>
                       <div className="nav-profile-divider" data-testid="nav-profile-admin-divider" />
@@ -327,6 +373,7 @@ export function AppShell({ children, topActions, title }: Props) {
             </div>
           </div>
         </header>
+        ) : null}
 
         <div className="app-content">{children}</div>
       </div>
@@ -354,7 +401,7 @@ export function AppShell({ children, topActions, title }: Props) {
 
       {/* Mobile bottom navigation */}
       <nav className="app-bottom-nav" aria-label="Primary">
-        {RETAIL_NAV.slice(0, 4).map((item) => {
+        {RETAIL_NAV.filter((item) => item.mobilePrimary && item.id !== "profile").map((item) => {
           const active = isNavActive(location.pathname, item);
           return (
             <NavLink

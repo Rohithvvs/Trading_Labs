@@ -46,51 +46,56 @@ export const TvKeyStats: React.FC<TvKeyStatsProps> = ({
   }
 
   return (
-    <section className="tv-keystats-card" data-testid="tv-keystats">
-      <h3 className="tv-keystats-title">Key stats</h3>
-      <div className="tv-keystats-grid">
-        {/* 1. Total PnL */}
-        <div className="tv-keystat-col">
-          <span className="tv-keystat-label">Total PnL</span>
-          <div className="tv-keystat-value-row">
-            <span className={`tv-keystat-value ${pnlFormatted.isPositive ? "is-pos" : pnlFormatted.isNegative ? "is-neg" : ""}`}>
-              {pnlFormatted.formatted}
-              <span className="tv-keystat-currency">{currency}</span>
-            </span>
-            <span className={`tv-keystat-sub-pct ${pnlPctFormatted.isPositive ? "is-pos" : pnlPctFormatted.isNegative ? "is-neg" : ""}`}>
-              {pnlPctFormatted.formatted}
-            </span>
+    <section className="tv-keystats-card" data-testid="tv-keystats" id="card-detail-backtest-summary">
+      <div data-testid="card-detail-backtest-summary" style={{ display: "contents" }}>
+        <h3 className="tv-keystats-title">Key stats</h3>
+        <div className="tv-keystats-grid">
+          {/* 1. Total PnL */}
+          <div className="tv-keystat-col" data-testid="backtest-total-pnl">
+            <span className="tv-keystat-label">Total PnL</span>
+            <div className="tv-keystat-value-row">
+              <span className={`tv-keystat-value ${pnlFormatted.isPositive ? "is-pos" : pnlFormatted.isNegative ? "is-neg" : ""}`}>
+                {pnlFormatted.formatted}
+                <span className="tv-keystat-currency">{currency}</span>
+              </span>
+              <span
+                className={`tv-keystat-sub-pct ${pnlPctFormatted.isPositive ? "is-pos" : pnlPctFormatted.isNegative ? "is-neg" : ""}`}
+                data-testid="backtest-total-return"
+              >
+                {pnlPctFormatted.formatted}
+              </span>
+            </div>
           </div>
-        </div>
 
-        {/* 2. Max Drawdown */}
-        <div className="tv-keystat-col">
-          <span className="tv-keystat-label">Max drawdown</span>
-          <div className="tv-keystat-value-row">
-            <span className="tv-keystat-value">
-              {ddPnlFormatted.formatted}
-              {ddPnlFormatted.formatted !== "--" && <span className="tv-keystat-currency">{currency}</span>}
-            </span>
-            <span className="tv-keystat-sub-pct">
-              {ddPctFormatted.formatted}
-            </span>
+          {/* 2. Max Drawdown */}
+          <div className="tv-keystat-col" data-testid="backtest-max-drawdown">
+            <span className="tv-keystat-label">Max drawdown</span>
+            <div className="tv-keystat-value-row">
+              <span className="tv-keystat-value">
+                {ddPnlFormatted.formatted}
+                {ddPnlFormatted.formatted !== "--" && <span className="tv-keystat-currency">{currency}</span>}
+              </span>
+              <span className="tv-keystat-sub-pct">
+                {ddPctFormatted.formatted}
+              </span>
+            </div>
           </div>
-        </div>
 
-        {/* 3. Profitable Trades */}
-        <div className="tv-keystat-col">
-          <span className="tv-keystat-label">Profitable trades</span>
-          <div className="tv-keystat-value-row">
-            <span className="tv-keystat-value">{winPctFormatted.formatted}</span>
-            <span className="tv-keystat-sub-pct">{winFraction}</span>
+          {/* 3. Profitable Trades */}
+          <div className="tv-keystat-col">
+            <span className="tv-keystat-label">Profitable trades</span>
+            <div className="tv-keystat-value-row">
+              <span className="tv-keystat-value" data-testid="backtest-win-rate">{winPctFormatted.formatted}</span>
+              <span className="tv-keystat-sub-pct" data-testid="backtest-total-trades">{winFraction}</span>
+            </div>
           </div>
-        </div>
 
-        {/* 4. Profit Factor */}
-        <div className="tv-keystat-col">
-          <span className="tv-keystat-label">Profit factor</span>
-          <div className="tv-keystat-value-row">
-            <span className="tv-keystat-value">{pfDisplay}</span>
+          {/* 4. Profit Factor */}
+          <div className="tv-keystat-col" data-testid="backtest-profit-factor">
+            <span className="tv-keystat-label">Profit factor</span>
+            <div className="tv-keystat-value-row">
+              <span className="tv-keystat-value">{pfDisplay}</span>
+            </div>
           </div>
         </div>
       </div>

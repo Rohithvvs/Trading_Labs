@@ -83,8 +83,17 @@ def _authcode_redirect(
     return resp
 
 
+def _token_post(
+    url: str = DEFAULT_REDIRECT,
+    auth_code: str = AUTH_CODE,
+) -> mock.Mock:
+    return _json_response(
+        {"s": "ok", "code": 200, "Url": f"{url}?auth_code={auth_code}&state=sample_state"}
+    )
+
+
 def _success_posts() -> list:
-    return [_otp_ok(), _totp_ok(), _pin_ok()]
+    return [_otp_ok(), _totp_ok(), _pin_ok(), _token_post()]
 
 
 @pytest.fixture
@@ -98,6 +107,7 @@ def mock_totp():
     with mock.patch("fyers_token.pyotp.TOTP") as mock_cls:
         inst = mock.Mock()
         inst.now.return_value = "123456"
+        inst.at.return_value = "123456"
         mock_cls.return_value = inst
         yield mock_cls, inst
 
@@ -176,9 +186,8 @@ class TestGenerateSuccessNoRetry:
         assert token == FINAL_TOKEN
         mock_sleep.assert_not_called()
         mock_uniform.assert_not_called()
-        # Single attempt: OTP + TOTP + PIN
-        assert mock_post.call_count == 3
-        assert mock_get.call_count == 1
+        # Single attempt: OTP + TOTP + PIN + Token/Authcode
+        assert mock_post.call_count == 4
 
 
 # -----------------------------------------------------------------------------
@@ -285,12 +294,18 @@ class TestTransientRetry:
         resp_503.headers = {}
         resp_503.text = "Service Unavailable"
         resp_503.close = mock.Mock()
-        mock_get.side_effect = [resp_503, _authcode_redirect()]
+        mock_post.side_effect = [
+            _otp_ok(),
+            _totp_ok(),
+            _pin_ok(),
+            resp_503,
+            *_success_posts(),
+        ]
+        mock_get.return_value = _authcode_redirect()
 
         token = generate_fyers_access_token()
         assert token == FINAL_TOKEN
         mock_sleep.assert_called_once_with(6.0)
-        assert mock_get.call_count == 2
 
     @mock.patch("fyers_token.time.sleep")
     @mock.patch("fyers_token.random.uniform")
@@ -406,14 +421,14 @@ class TestPermanentFailFast:
     def test_missing_redirect_is_permanent_fail_fast(
         self, mock_get, mock_post, mock_uniform, mock_sleep, valid_env, mock_totp
     ):
-        mock_post.side_effect = _success_posts()
-        resp = mock.Mock()
-        resp.status_code = 200
-        resp.headers = {}
-        resp.json.return_value = {}
-        resp.text = "landing"
-        resp.close = mock.Mock()
-        mock_get.return_value = resp
+        resp_empty = mock.Mock()
+        resp_empty.status_code = 200
+        resp_empty.headers = {}
+        resp_empty.json.return_value = {}
+        resp_empty.text = "landing"
+        resp_empty.close = mock.Mock()
+        mock_post.side_effect = [_otp_ok(), _totp_ok(), _pin_ok(), resp_empty]
+        mock_get.return_value = resp_empty
 
         with pytest.raises(FyersAuthError) as exc:
             generate_fyers_access_token()
@@ -462,9 +477,10 @@ class TestFreshTotpPerAttempt:
         valid_env,
         mock_session_success,
     ):
-        """FR-007: each outer attempt creates a new TOTP and calls now()."""
+        """FR-007: each outer attempt creates a new TOTP and calls at()/now()."""
         with mock.patch("fyers_token.pyotp.TOTP") as mock_totp_cls:
             inst = mock.Mock()
+            inst.at.side_effect = ["111111", "222222", "333333"]
             inst.now.side_effect = ["111111", "222222", "333333"]
             mock_totp_cls.return_value = inst
 
@@ -480,9 +496,8 @@ class TestFreshTotpPerAttempt:
             assert token == FINAL_TOKEN
             # New TOTP instance per successful attempt path that reaches step 2
             # Attempt 3 reaches TOTP; attempts 1–2 fail at OTP before TOTP.
-            # So now() called once on attempt 3 only in this scenario.
             assert mock_totp_cls.call_count == 1
-            assert inst.now.call_count >= 1
+            assert (inst.at.call_count + inst.now.call_count) >= 1
 
     @mock.patch("fyers_token.time.sleep")
     @mock.patch("fyers_token.random.uniform", return_value=5.0)
@@ -497,33 +512,34 @@ class TestFreshTotpPerAttempt:
         valid_env,
         mock_session_success,
     ):
-        """When each attempt reaches TOTP verify, now() is invoked per attempt."""
+        """When each attempt reaches TOTP verify, at()/now() is invoked per attempt."""
         with mock.patch("fyers_token.pyotp.TOTP") as mock_totp_cls:
             inst = mock.Mock()
+            inst.at.side_effect = ["111111", "222222"]
             inst.now.side_effect = ["111111", "222222"]
             mock_totp_cls.return_value = inst
 
-            # Attempt 1: OTP ok, TOTP ok, PIN ok, then GET 503 (transient)
+            # Attempt 1: OTP ok, TOTP ok, PIN ok, token post 503 (transient)
             # Attempt 2: full success
-            mock_post.side_effect = [
-                _otp_ok(),
-                _totp_ok(),
-                _pin_ok(),
-                _otp_ok(),
-                _totp_ok(),
-                _pin_ok(),
-            ]
             resp_503 = mock.Mock()
             resp_503.status_code = 503
             resp_503.headers = {}
             resp_503.text = "down"
             resp_503.close = mock.Mock()
-            mock_get.side_effect = [resp_503, _authcode_redirect()]
+
+            mock_post.side_effect = [
+                _otp_ok(),
+                _totp_ok(),
+                _pin_ok(),
+                resp_503,
+                *_success_posts(),
+            ]
+            mock_get.return_value = _authcode_redirect()
 
             token = generate_fyers_access_token()
             assert token == FINAL_TOKEN
             assert mock_totp_cls.call_count == 2
-            assert inst.now.call_count == 2
+            assert (inst.at.call_count + inst.now.call_count) == 2
             # Capture OTP values sent on verify_otp posts
             totp_otps = [
                 c.kwargs["json"]["otp"]

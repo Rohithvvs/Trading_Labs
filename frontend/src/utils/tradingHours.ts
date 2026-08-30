@@ -32,9 +32,10 @@ const KNOWN_HOLIDAYS: Record<string, string[]> = {
     "2025-10-02", "2025-10-20", "2025-10-21", "2025-11-05", "2025-12-25",
   ],
   "2026": [
-    "2026-01-26", "2026-02-17", "2026-03-03", "2026-03-20", "2026-04-02",
-    "2026-04-03", "2026-04-06", "2026-04-14", "2026-05-01", "2026-08-15",
-    "2026-08-28", "2026-10-02", "2026-10-19", "2026-10-20", "2026-11-11", "2026-12-25",
+    "2026-01-15", "2026-01-26", "2026-02-15", "2026-03-03", "2026-03-21",
+    "2026-03-26", "2026-03-31", "2026-04-03", "2026-04-14", "2026-05-01",
+    "2026-05-28", "2026-06-26", "2026-08-15", "2026-09-14", "2026-10-02",
+    "2026-10-20", "2026-11-08", "2026-11-10", "2026-11-24", "2026-12-25",
   ],
   "2027": [
     "2027-01-26", "2027-02-26", "2027-03-12", "2027-03-29", "2027-04-02",
@@ -74,6 +75,37 @@ function getISTDateParts(d: Date = new Date()) {
 function isKnownHoliday(dateStr: string, year: string): boolean {
   const list = KNOWN_HOLIDAYS[year] || [];
   return list.includes(dateStr);
+}
+
+function shiftIsoDate(iso: string, days: number): string {
+  const [year, month, day] = iso.split("-").map(Number);
+  const cursor = new Date(Date.UTC(year, month - 1, day + days));
+  return cursor.toISOString().slice(0, 10);
+}
+
+export function isNseHolidayISO(iso: string): boolean {
+  return isKnownHoliday(iso, iso.slice(0, 4));
+}
+
+export function isTradingDayISO(iso: string): boolean {
+  const [year, month, day] = iso.split("-").map(Number);
+  const weekday = new Date(Date.UTC(year, month - 1, day)).getUTCDay();
+  if (weekday === 0 || weekday === 6) return false;
+  return !isNseHolidayISO(iso);
+}
+
+/** Last completed NSE cash session in IST (weekends + holidays skipped). */
+export function lastCompletedTradingDayIST(now: Date = new Date()): string {
+  const { dateStr, minutesSinceMidnight } = getISTDateParts(now);
+  if (isTradingDayISO(dateStr) && minutesSinceMidnight >= MARKET_CLOSE_MINUTES) {
+    return dateStr;
+  }
+  let cursor = isTradingDayISO(dateStr) ? shiftIsoDate(dateStr, -1) : dateStr;
+  for (let i = 0; i < 20; i += 1) {
+    if (isTradingDayISO(cursor)) return cursor;
+    cursor = shiftIsoDate(cursor, -1);
+  }
+  return cursor;
 }
 
 /** Whether NSE cash market is currently open (client clock / IST). */

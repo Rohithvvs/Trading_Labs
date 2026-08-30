@@ -8,9 +8,11 @@ test.beforeEach(async ({ request }) => {
 
 test("app loads and main navigation is available", async ({ page }) => {
   await page.goto("/");
-  await expect(page.getByTestId("nav-home")).toBeVisible();
-  await expect(page.getByTestId("nav-scanner")).toBeVisible();
+  await expect(page.getByTestId("nav-markets")).toBeVisible();
+  await expect(page.getByTestId("nav-scanner")).toHaveCount(0);
+  await expect(page.getByTestId("nav-strategy-tester")).toBeVisible();
   await expect(page.getByTestId("nav-paper-trading")).toBeVisible();
+  await expect(page.getByTestId("nav-profile")).toBeVisible();
 });
 
 test("token management saves a token and backend confirms SQLite persistence", async ({ page, request }) => {
@@ -50,7 +52,6 @@ test("scanner flow renders results and records browser localStorage history", as
     await expect(page.getByText("Scan Complete! Rendering Dashboard.")).toBeVisible();
   }
 
-  await page.getByTestId("nav-scanner").click();
   await expect(page.getByText("INFY-EQ").first()).toBeVisible();
   const scanHistory = await page.evaluate(() => window.localStorage.getItem("scanHistory"));
   expect(scanHistory).toContain("INFY-EQ");

@@ -149,3 +149,68 @@ describe("Profile Page 4 Settings (Admin, Central Command, System Logs, Diagnost
     expect(screen.queryByTestId("profile-overview-central-command")).toBeNull();
   });
 });
+
+describe("Scanner Section inside Profile", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("renders scanner in profile navigation and overview when feature is allowed", async () => {
+    mockUseAuth.mockReturnValue({
+      user: { id: "2", email: "trader@test.com", full_name: "Trader User", role: "trader" },
+      role: "trader",
+      logout: vi.fn(),
+      updateUser: vi.fn(),
+    });
+    mockCanAccess.mockReturnValue(true);
+
+    renderProfile();
+
+    // Verify Scanner Dashboard is in profile overview
+    expect(screen.getByTestId("profile-overview-scanner")).toBeTruthy();
+    expect(screen.getByTestId("profile-overview-scanner-btn")).toBeTruthy();
+    expect(screen.getByTestId("profile-quick-scanner-btn")).toBeTruthy();
+
+    // Verify Scanner Dashboard is in sidebar navigation
+    expect(screen.getByTestId("profile-nav-scanner")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /scanner dashboard/i })).toBeTruthy();
+  });
+
+  it("opens Scanner Dashboard from profile sidebar and overview actions", async () => {
+    mockUseAuth.mockReturnValue({
+      user: { id: "2", email: "trader@test.com", full_name: "Trader User", role: "trader" },
+      role: "trader",
+      logout: vi.fn(),
+      updateUser: vi.fn(),
+    });
+    mockCanAccess.mockReturnValue(true);
+
+    renderProfile();
+
+    fireEvent.click(screen.getByTestId("profile-nav-scanner"));
+    expect(mockNavigate).toHaveBeenCalledWith("/scanner");
+
+    mockNavigate.mockClear();
+    fireEvent.click(screen.getByTestId("profile-overview-scanner-btn"));
+    expect(mockNavigate).toHaveBeenCalledWith("/scanner");
+  });
+
+  it("hides scanner from profile navigation when advanced_scanner permission is denied", async () => {
+    mockUseAuth.mockReturnValue({
+      user: { id: "2", email: "trader@test.com", full_name: "Trader User", role: "trader" },
+      role: "trader",
+      logout: vi.fn(),
+      updateUser: vi.fn(),
+    });
+    mockCanAccess.mockImplementation((key: string) => {
+      if (key === "advanced_scanner") return false;
+      return true;
+    });
+
+    renderProfile();
+
+    expect(screen.queryByTestId("profile-overview-scanner")).toBeNull();
+    expect(screen.queryByTestId("profile-nav-scanner")).toBeNull();
+    expect(screen.queryByRole("button", { name: /scanner dashboard/i })).toBeNull();
+  });
+});

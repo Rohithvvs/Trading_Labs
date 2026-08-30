@@ -56,10 +56,14 @@ describe("navConfig featureKey annotations (schema)", () => {
     const byId = Object.fromEntries(RETAIL_NAV.map((n) => [n.id, n]));
 
     expect(byId.markets.featureKey).toBeUndefined(); // ungated core
-    expect(byId.scanner.featureKey).toBe("advanced_scanner");
+    expect(byId.scanner).toBeUndefined(); // Scanner lives inside Profile, not primary nav
+    expect(byId["strategy-tester"].featureKey).toBe("advanced_scanner");
+    expect(byId["strategy-tester"].path).toBe("/strategy-tester");
     expect(byId.performance.featureKey).toBe("portfolio_analytics");
     expect(byId.paper.featureKey).toBeUndefined();
     expect(byId.profile.featureKey).toBeUndefined();
+    const order = RETAIL_NAV.map((n) => n.id);
+    expect(order).toEqual(["markets", "strategy-tester", "paper", "performance", "profile"]);
   });
 
   it("annotates admin nav items with expected feature keys", () => {
@@ -72,14 +76,14 @@ describe("navConfig featureKey annotations (schema)", () => {
   });
 
   it("isNavActive matches path prefixes correctly for feature-gated routes", () => {
-    const scanner = RETAIL_NAV.find((n) => n.id === "scanner")!;
+    const tester = RETAIL_NAV.find((n) => n.id === "strategy-tester")!;
+    expect(isNavActive("/strategy-tester", tester)).toBe(true);
+    expect(isNavActive("/scanner", tester)).toBe(false);
     const performance = RETAIL_NAV.find((n) => n.id === "performance")!;
     const adminPanel = ADMIN_NAV.find((n) => n.id === "admin-panel")!;
     const logs = ADMIN_NAV.find((n) => n.id === "admin-logs")!;
 
     // location.pathname never includes query string; prefix match uses path only
-    expect(isNavActive("/scanner", scanner)).toBe(true);
-    expect(isNavActive("/scanner/detail", scanner)).toBe(true);
     expect(isNavActive("/performance", performance)).toBe(true);
     expect(isNavActive("/admin", adminPanel)).toBe(true);
     expect(isNavActive("/admin/logs", adminPanel)).toBe(false); // exact admin panel
@@ -117,10 +121,15 @@ describe("AppShell Dynamic Navigation Filtering (Sprint 5)", () => {
     renderShell();
 
     expect(screen.getByTestId("nav-markets")).toBeTruthy();
-    expect(screen.getByTestId("nav-scanner")).toBeTruthy();
+    expect(screen.queryByTestId("nav-scanner")).toBeNull();
+    expect(screen.getByTestId("nav-strategy-tester")).toBeTruthy();
     expect(screen.getByTestId("nav-performance")).toBeTruthy();
     expect(screen.getByTestId("nav-paper-trading")).toBeTruthy();
     expect(screen.getByTestId("nav-profile")).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("nav-profile-menu"));
+    expect(screen.getByTestId("nav-scanner-profile")).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: /scanner dashboard/i })).toBeTruthy();
   });
 
   it("filters out navigation links when feature permission is denied", () => {
@@ -164,7 +173,8 @@ describe("AppShell Dynamic Navigation Filtering (Sprint 5)", () => {
 
     expect(screen.queryByTestId("nav-performance")).toBeNull();
     expect(screen.getByTestId("nav-markets")).toBeTruthy();
-    expect(screen.getByTestId("nav-scanner")).toBeTruthy();
+    expect(screen.getByTestId("nav-strategy-tester")).toBeTruthy();
+    expect(screen.queryByTestId("nav-scanner")).toBeNull();
   });
 
   it("filters admin navigation items inside profile based on role and feature permissions", () => {

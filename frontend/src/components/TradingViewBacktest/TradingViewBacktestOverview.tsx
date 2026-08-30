@@ -162,35 +162,41 @@ export const TradingViewBacktestOverview: React.FC<TradingViewBacktestOverviewPr
       />
 
       {/* 2. Content depending on selected view */}
-      {viewMode === "chart" ? (
-        <div className="tv-chart-view-stack" data-testid="tv-chart-view-stack">
-          {/* Key stats */}
-          <TvKeyStats
-            stats={keyStats}
-            currency={currency}
-            loading={loading}
-          />
+      <div
+        className="tv-chart-view-stack"
+        style={{ display: viewMode === "chart" ? "block" : "none" }}
+        data-testid="tv-chart-view-stack"
+      >
+        {/* Key stats */}
+        <TvKeyStats
+          stats={keyStats}
+          currency={currency}
+          loading={loading}
+        />
 
-          {/* Performance chart */}
-          <TvPerformanceChart
-            points={performancePoints}
-            currency={currency}
-            loading={loading}
-            onOpenSettings={onOpenConfigModal}
-          />
-        </div>
-      ) : (
-        <div className="tv-table-view-stack" data-testid="tv-table-view-stack">
-          {/* List of trades */}
-          <TvListOfTrades
-            trades={rawTrades}
-            initialCapital={initialCapital}
-            currency={currency}
-            symbol={symbol}
-            loading={loading}
-          />
-        </div>
-      )}
+        {/* Performance chart */}
+        <TvPerformanceChart
+          points={performancePoints}
+          currency={currency}
+          loading={loading}
+          onOpenSettings={onOpenConfigModal}
+        />
+      </div>
+
+      <div
+        className="tv-table-view-stack"
+        style={{ display: viewMode === "table" ? "block" : "none" }}
+        data-testid="tv-table-view-stack"
+      >
+        {/* List of trades */}
+        <TvListOfTrades
+          trades={rawTrades}
+          initialCapital={initialCapital}
+          currency={currency}
+          symbol={symbol}
+          loading={loading}
+        />
+      </div>
     </div>
   );
 };

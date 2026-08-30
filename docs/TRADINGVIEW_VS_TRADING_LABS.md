@@ -1,5 +1,8 @@
 # TradingView vs Trading Labs — Complete Lifecycle and Comparison
 
+> **Pine Screener vs Strategy Tester scan (52W, 14 names vs 1 name):**  
+> see `docs/PINE_52W_BREAKOUT_SCAN_TV_VS_LABS.md`. This file is the WELCORP **Strategy Tester tape** vs the Labs **52W kernel**, not the last-bar Pine scan.
+
 This document explains, in plain language:
 
 1. How **TradingView** works from open-chart to Strategy Tester.

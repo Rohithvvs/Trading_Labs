@@ -39,6 +39,8 @@ from app.models import research
 from app.models import auth  # users / sessions / audit_logs
 from app.models import feature_permission  # Sprint 3 feature_permissions
 from app.models import w52_strategy  # w52_book_state, w52_symbol_performance
+from app.models import strategy_tester  # strategy tester runs/results
+from app.models import indicator_scanner  # pine-compatible indicator scanner
 
 def _prepare_asyncpg_url(raw_database_url: str) -> tuple[str, dict[str, object]]:
     """Normalize DB URL for async engines (mirrors app.db.session helper).
@@ -150,6 +152,10 @@ def do_run_migrations(connection: Connection) -> None:
 
     with context.begin_transaction():
         context.run_migrations()
+    # The width-change commit() above autobegins a new transaction on the
+    # async connection. Commit again so the version stamp cannot roll back
+    # when the outer async context exits.
+    connection.commit()
 
 
 async def run_async_migrations() -> None:
@@ -167,6 +173,7 @@ async def run_async_migrations() -> None:
 
     async with connectable.connect() as connection:
         await connection.run_sync(do_run_migrations)
+        await connection.commit()
 
     await connectable.dispose()
 
