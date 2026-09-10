@@ -30,8 +30,10 @@ function formatStepLabel(step: FunnelStep, idx: number, total: number): string {
   if (
     idx === total - 1 ||
     step.filter_id === "final" ||
-    step.label?.toLowerCase().includes("final buy")
+    step.label?.toLowerCase().includes("final buy") ||
+    step.label?.toLowerCase().includes("final matched")
   ) {
+    if (step.label?.toLowerCase().includes("matched")) return "Final MATCHED Signals";
     return "Final BUY Signals";
   }
   let label = step.label || `Filter ${idx}`;

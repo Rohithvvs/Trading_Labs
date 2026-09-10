@@ -9,6 +9,7 @@ import {
 } from "../BacktestAnalyticsDashboard";
 import { fetchSymbolDetail, fetchW52SymbolDetail, fetchLtmSymbolDetail } from "../../api";
 import { asDashboardTrade, hydrateStrategyBacktest } from "../../utils/strategyBacktestDashboard";
+import { isIndicatorScanContext } from "../../utils/indicatorScanDetail";
 import { W52_STRATEGY_ID } from "../../utils/strategyIdentity";
 
 export interface BacktestTabProps {
@@ -19,6 +20,7 @@ export interface BacktestTabProps {
   history: SymbolHistoryItem[];
   candles?: CandlePoint[];
   strategyName: string;
+  runId?: string | null;
   startDate?: string | null;
   endDate?: string | null;
   initialCapital?: number;
@@ -58,6 +60,7 @@ export const BacktestTab: React.FC<BacktestTabProps> = ({
   history = [],
   candles = [],
   strategyName,
+  runId,
   startDate,
   endDate,
   initialCapital: propInitialCapital,
@@ -65,6 +68,7 @@ export const BacktestTab: React.FC<BacktestTabProps> = ({
   error = null,
   onRetry,
 }) => {
+  const indicatorScan = isIndicatorScanContext(stock, runId || runStatus?.run_id || runStatus?.id);
   const asof = useMemo(() => {
     if (endDate) {
       const d = new Date(`${String(endDate).slice(0, 10)}T00:00:00`);
@@ -73,9 +77,11 @@ export const BacktestTab: React.FC<BacktestTabProps> = ({
     return new Date();
   }, [endDate]);
 
-  const [range, setRange] = useState<BacktestRange>("3Y");
-  const [currentStartDate, setCurrentStartDate] = useState(() => startDate || boundsForRange("3Y", asof).start);
-  const [currentEndDate, setCurrentEndDate] = useState(() => endDate || boundsForRange("3Y", asof).end);
+  const [range, setRange] = useState<BacktestRange>(() => (indicatorScan ? "1Y" : "3Y"));
+  const [currentStartDate, setCurrentStartDate] = useState(
+    () => startDate || boundsForRange(indicatorScan ? "1Y" : "3Y", asof).start,
+  );
+  const [currentEndDate, setCurrentEndDate] = useState(() => endDate || boundsForRange(indicatorScan ? "1Y" : "3Y", asof).end);
 
   const handleRangeChange = (next: BacktestRange) => {
     const bounds = boundsForRange(next === "CUSTOM" ? "3Y" : next, asof);
@@ -118,8 +124,9 @@ export const BacktestTab: React.FC<BacktestTabProps> = ({
     const isW52 = sName.includes("52-week") || sName.includes("52w") || sName.includes("breakout");
     const isLtm = sName.includes("ltm") || sName.includes("momentum") || sName.includes("buy & hold");
 
-    if (!symbol || (!isW52 && !isLtm)) {
+    if (indicatorScan || !symbol || (!isW52 && !isLtm)) {
       setKernelDash(null);
+      setKernelLoading(false);
       return;
     }
 
@@ -166,7 +173,7 @@ export const BacktestTab: React.FC<BacktestTabProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [symbol, strategyName, range, currentStartDate, currentEndDate]);
+  }, [symbol, strategyName, range, currentStartDate, currentEndDate, indicatorScan]);
 
   // Construct comprehensive BacktestDashboardModel
   const model: BacktestDashboardModel = useMemo(() => {
@@ -180,9 +187,15 @@ export const BacktestTab: React.FC<BacktestTabProps> = ({
       return kernelDash;
     }
 
-    const initCap = propInitialCapital || runStatus?.initial_capital || 1000000;
+    const initCap =
+      propInitialCapital && propInitialCapital > 0
+        ? propInitialCapital
+        : runStatus?.initial_capital && runStatus.initial_capital > 0
+          ? runStatus.initial_capital
+          : 1000000;
     const startStr = currentStartDate || startDate || runStatus?.start_date || "2024-01-01";
     const endStr = currentEndDate || endDate || runStatus?.end_date || "2026-08-26";
+    const evalDate = String(stock?.evaluation_date || endStr).slice(0, 10) || endStr;
     const cutoff = new Date(startStr);
 
     // 1. Build Trades
@@ -194,8 +207,8 @@ export const BacktestTab: React.FC<BacktestTabProps> = ({
         const pnl = h.return_pct ?? 0;
         const entryPx = h.entry_price ?? stock?.entry_price ?? 100;
         const exitPx = h.exit_price ?? entryPx * (1 + pnl / 100);
-        const exitDate = h.date ? h.date.slice(0, 10) : endStr;
-        const entryDate = h.date ? h.date.slice(0, 10) : startStr;
+        const exitDate = h.date ? h.date.slice(0, 10) : evalDate;
+        const entryDate = startStr;
         return {
           trade_id: `TR-${h.run_id || i + 1}`,
           entry_date: entryDate,
@@ -205,8 +218,8 @@ export const BacktestTab: React.FC<BacktestTabProps> = ({
           exit_price: exitPx,
           pnl_percent: pnl,
           holding_days: 14,
-          reason: h.signal || "Strategy Signal",
-          exit_reason: "Strategy Exit Rule",
+          reason: h.signal || (indicatorScan ? "Indicator scan" : "Strategy Signal"),
+          exit_reason: indicatorScan ? "Scan bar (Close t-252 → Close)" : "Strategy Exit Rule",
           open: false,
           outcome: pnl >= 0 ? "win" : "loss",
           net_pnl: (pnl / 100) * initCap,
@@ -214,22 +227,25 @@ export const BacktestTab: React.FC<BacktestTabProps> = ({
           slippage: 0,
         };
       });
-    } else if (stock && stock.entry_price != null) {
+    } else if (stock && (stock.entry_price != null || stock.return_pct != null || stock.close != null)) {
       const pnl = stock.return_pct ?? 0;
-      const entryPx = stock.entry_price;
-      const exitPx = stock.exit_price ?? entryPx * (1 + pnl / 100);
+      const exitPx = stock.exit_price ?? stock.close ?? null;
+      const entryPx =
+        stock.entry_price ??
+        (exitPx != null && pnl !== -100 ? Number((exitPx / (1 + pnl / 100)).toFixed(4)) : 100);
+      const resolvedExit = exitPx ?? entryPx * (1 + pnl / 100);
       rawTrades = [
         {
-          trade_id: `TR-${runStatus?.run_id || "STR-CURRENT"}`,
+          trade_id: `TR-${runStatus?.run_id || runId || "STR-CURRENT"}`,
           entry_date: startStr,
-          exit_date: endStr,
+          exit_date: evalDate,
           type: "LONG",
           entry_price: entryPx,
-          exit_price: exitPx,
+          exit_price: resolvedExit,
           pnl_percent: pnl,
           holding_days: 30,
-          reason: stock.signal || "Strategy Signal",
-          exit_reason: "Target / Rebalance",
+          reason: stock.signal || (indicatorScan ? "Indicator scan" : "Strategy Signal"),
+          exit_reason: indicatorScan ? "Scan bar (Close t-252 → Close)" : "Target / Rebalance",
           open: false,
           outcome: pnl >= 0 ? "win" : "loss",
           net_pnl: (pnl / 100) * initCap,
@@ -370,6 +386,8 @@ export const BacktestTab: React.FC<BacktestTabProps> = ({
       window: range,
       period_start: startStr,
       period_end: endStr,
+      never_selected_in_window: false,
+      unavailable_reason: null,
       total_return: totalReturn,
       cagr,
       max_drawdown: maxDd,
@@ -455,6 +473,8 @@ export const BacktestTab: React.FC<BacktestTabProps> = ({
     symbol,
     strategyName,
     niftyData,
+    indicatorScan,
+    runId,
   ]);
 
   if (isLoading || kernelLoading) {

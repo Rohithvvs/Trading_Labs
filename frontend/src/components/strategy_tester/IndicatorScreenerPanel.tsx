@@ -5,26 +5,52 @@ import {
   cancelIndicatorScan,
   duplicateIndicator,
   exportIndicatorScanCsv,
+  fetchIndicatorBacktest,
+  fetchIndicatorBacktestResults,
   fetchIndicatorScan,
   fetchIndicatorScanDiagnostics,
   fetchIndicatorScanResults,
   fetchIndicators,
+  startIndicatorBacktest,
   startIndicatorScan,
+  type IndicatorBacktestJob,
+  type IndicatorBacktestOptions,
   type IndicatorFilter,
   type IndicatorScanRow,
   type IndicatorScanStatus,
+  type LeanBacktestResult,
   type SavedIndicator,
 } from "../../api_indicator_scanner";
 import { fetchStrategyCatalog } from "../../api_strategy_tester";
-import { lastCompletedTradingDayIST } from "../../utils/tradingHours";
+import { currentCashSessionIST } from "../../utils/tradingHours";
 import { navigateToStock } from "../../utils/stockNavigation";
-import { absorbFromParsedDefinition } from "../../utils/indicatorAbsorb";
+import {
+  absorbFromParsedDefinition,
+  absorbScreenFilters,
+  defaultColumnFilter,
+  isAggregateSignalFilter,
+  isTvStyleSignalEqualsOneOnPricePlot,
+  normalizePineScreenerFilters,
+  preferredScreenerColumn,
+} from "../../utils/indicatorAbsorb";
 import {
   loadIndicatorScannerState,
   saveIndicatorScannerState,
   uniqueIndicatorsByIdAndName,
 } from "../../utils/indicatorScannerState";
 import { formatDateTime, formatDuration } from "./RunStatusRow";
+import { StrategyBuilderCard } from "./StrategyBuilderCard";
+import { TopReturnsCard } from "./TopReturnsCard";
+import { FilterAnalyticsCard } from "./FilterAnalyticsCard";
+import { FilterFunnelCard } from "./FilterFunnelCard";
+import { SignalDistributionCard } from "./SignalDistributionCard";
+import { AllStockResultsTable } from "./AllStockResultsTable";
+import { ColumnsConfigModal } from "./ColumnsConfigModal";
+import { IndicatorLeanBacktestModal } from "./IndicatorLeanBacktestModal";
+import { IndicatorLeanBacktestView } from "./IndicatorLeanBacktestView";
+import { mapIndicatorResultToStock } from "../../utils/indicatorScanDetail";
+import { ScreenerColumnChip } from "./signalSetup/ScreenerColumnChip";
+import type { FilterStat, FunnelStep, RankedReturn, StrategyResultRow } from "../../api_strategy_tester";
 import type { NavigateFunction } from "react-router-dom";
 
 const HEADER_SCAN_SLOT_ID = "ind-header-scan-slot";
@@ -55,23 +81,23 @@ function upsertIndicator(list: SavedIndicator[], item: SavedIndicator | null | u
   return uniqueIndicatorsByIdAndName(next);
 }
 
-/** Last completed NSE session in IST — Pine Screener's 1D bar (weekends + holidays skipped). */
-function lastCompletedSessionIST(): string {
-  return lastCompletedTradingDayIST();
+/** Today's NSE cash session from midnight IST; weekends/holidays use the last completed session. */
+function currentScanSessionIST(): string {
+  return currentCashSessionIST();
 }
 
-function formatValue(value: number | boolean | string | null | undefined, kind?: string): string {
-  if (value === null || value === undefined) return "—";
-  if (typeof value === "boolean") {
-    return value ? "1.00" : "0.00";
-  }
-  if (typeof value === "number") {
-    if (kind === "volume") {
-      return value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-    }
-    return value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  }
-  return String(value);
+const FETCHING_DATA_STAGES = new Set([
+  "preparing",
+  "fetching_current_data",
+  "loading_benchmark",
+  "repairing_market_data",
+  "loading_market_data",
+]);
+
+function isFetchingCurrentData(status: IndicatorScanStatus | null): boolean {
+  if (!status) return false;
+  if (status.status === "queued") return true;
+  return FETCHING_DATA_STAGES.has(String(status.stage || ""));
 }
 
 function scanStatusText(status: IndicatorScanStatus | null, hasIndicator: boolean): string {
@@ -82,14 +108,16 @@ function scanStatusText(status: IndicatorScanStatus | null, hasIndicator: boolea
   }
   const total = status.total_count || status.universe_size || 755;
   if (status.status === "queued" || status.stage === "preparing") return "Preparing scan…";
-  if (status.stage === "loading_benchmark" || status.stage === "loading_market_data") return "Loading market data…";
+  if (isFetchingCurrentData(status)) return "Fetching current market data…";
   if (status.status === "running" || status.stage === "scanning") {
     return `Scanning ${total} symbols: ${status.processed_count} / ${total}`;
   }
   if (status.stage === "applying_filters") return "Applying filters…";
   if (status.status === "completed") {
     const matched = status.matched_count ?? 0;
-    if (matched === 0) return "No stocks matched the current indicator and filters.";
+    if (matched === 0) {
+      return "No symbols match your filters. Ease up on those filters or reset them.";
+    }
     return `Scan complete: ${matched} stocks matched.`;
   }
   if (status.status === "failed") return status.error_detail || "Scan failed.";
@@ -102,17 +130,22 @@ function cleanFilters(filters: IndicatorFilter[]): IndicatorFilter[] {
     .filter((filter) => Boolean(filter.field))
     .map((filter) => {
       const cleaned: IndicatorFilter = { field: filter.field, operator: filter.operator || "=" };
-      if (filter.operator === "between") {
+      if (filter.condition) cleaned.condition = filter.condition;
+      if (filter.source) cleaned.source = filter.source;
+      if (filter.setup_type) cleaned.setup_type = filter.setup_type;
+      if (filter.compare_field) cleaned.compare_field = filter.compare_field;
+      if (filter.operator === "between" || filter.operator === "outside") {
         cleaned.low = filter.low;
         cleaned.high = filter.high;
-      } else if (!VALUELESS_OPS.has(filter.operator)) {
+      } else if (!VALUELESS_OPS.has(filter.operator) && !filter.compare_field) {
         cleaned.value = filter.value;
       }
       return cleaned;
     })
     .filter((filter) => {
       if (VALUELESS_OPS.has(filter.operator)) return true;
-      if (filter.operator === "between") {
+      if (filter.compare_field) return true;
+      if (filter.operator === "between" || filter.operator === "outside") {
         return filter.low !== undefined && filter.low !== null && filter.high !== undefined && filter.high !== null;
       }
       return filter.value !== undefined && filter.value !== null && filter.value !== "";
@@ -150,8 +183,21 @@ function IndicatorRunStatusCard({
   const total = scan.total_count || scan.universe_size || 755;
   const pct = scan.progress_pct ?? (total > 0 ? Math.round((processed / total) * 100) : 0);
   const matched = scan.matched_count ?? 0;
-  const failed = scan.failed_count ?? 0;
+  const failedCalc = scan.failed_count ?? 0;
   const skipped = scan.skipped_count ?? 0;
+  const unmatched = Math.max(0, (scan.success_count ?? 0) - matched);
+  const failed = unmatched + failedCalc;
+  const summary = scan.summary && typeof scan.summary === "object" ? scan.summary : {};
+  const scannedCount = Number(summary.stocks_scanned ?? scan.total_count ?? total);
+  const posCount = Number(summary.positive_returns ?? 0);
+  const negCount = Number(summary.negative_returns ?? 0);
+  const flatCount = Number(summary.flat_returns ?? Math.max(0, scannedCount - posCount - negCount));
+  const avgReturn = typeof summary.average_return === "number" ? summary.average_return : 0;
+  const matchedPct = scannedCount > 0 ? ((matched / scannedCount) * 100).toFixed(1) : "0.0";
+  const failedPct = scannedCount > 0 ? ((failed / scannedCount) * 100).toFixed(1) : "0.0";
+  const skippedPct = scannedCount > 0 ? ((skipped / scannedCount) * 100).toFixed(1) : "0.0";
+  const posPct = scannedCount > 0 ? ((posCount / scannedCount) * 100).toFixed(1) : "0.0";
+  const negPct = scannedCount > 0 ? ((negCount / scannedCount) * 100).toFixed(1) : "0.0";
   const status = scanning
     ? "running"
     : scan.status === "failed" || scan.status === "cancelled"
@@ -160,7 +206,7 @@ function IndicatorRunStatusCard({
         ? "completed"
         : scan.status;
   return (
-    <div className="ind-status-row" data-testid="indicator-scan-status">
+    <div className="st-status-row" data-testid="indicator-scan-status">
       <div className="st-card" data-testid="card-run-info">
         <div className="st-card-title">
           <span className="st-run-id-text">RUN ID: {scan.scan_id || scan.id || "—"}</span>
@@ -199,6 +245,16 @@ function IndicatorRunStatusCard({
             Symbols were evaluated on different session dates. Re-run after market data is filled so every name uses the same last 1D bar as TradingView.
           </p>
         ) : null}
+        {typeof scan.summary?.scan_bar_note === "string" && scan.summary.scan_bar_note ? (
+          <p className="st-scan-bar-note" data-testid="scan-bar-note">
+            {String(scan.summary.scan_bar_note)}
+          </p>
+        ) : null}
+        {typeof scan.summary?.scan_bar_warning === "string" && scan.summary.scan_bar_warning ? (
+          <p className="st-scan-bar-warning" data-testid="scan-bar-warning">
+            {String(scan.summary.scan_bar_warning)}
+          </p>
+        ) : null}
         {scan.status === "failed" && scan.error_detail ? (
           <p className="st-scan-bar-warning">{scan.error_detail}</p>
         ) : null}
@@ -210,8 +266,10 @@ function IndicatorRunStatusCard({
           <div className="st-progress-bar-fill" style={{ width: `${Math.max(0, Math.min(100, pct))}%` }} />
         </div>
         <div className="st-progress-sub">
-          {processed} / {total} stocks processed
-          {scanning && scan.stage && scan.stage !== "scanning"
+          {scanning && isFetchingCurrentData(scan)
+            ? "Fetching current market data…"
+            : `${processed} / ${total} stocks processed`}
+          {scanning && scan.stage && scan.stage !== "scanning" && !isFetchingCurrentData(scan)
             ? ` · ${String(scan.stage).replace(/_/g, " ")}`
             : ""}
         </div>
@@ -221,8 +279,8 @@ function IndicatorRunStatusCard({
             <span className="st-signal-chip-val buy">{matched}</span>
           </div>
           <div className="st-signal-chip">
-            <span className="st-signal-chip-label failed">○ FAILED</span>
-            <span className="st-signal-chip-val failed">{failed}</span>
+            <span className="st-signal-chip-label reject">○ REJECTED</span>
+            <span className="st-signal-chip-val reject">{failed}</span>
           </div>
           <div className="st-signal-chip">
             <span className="st-signal-chip-label watch">★ SKIPPED</span>
@@ -230,14 +288,51 @@ function IndicatorRunStatusCard({
           </div>
         </div>
       </div>
+      <div className="st-card" data-testid="card-run-summary">
+        <div className="st-card-title">Run Summary</div>
+        <div className="st-summary-grid">
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <div className="st-summary-row">
+              <span className="st-summary-label">Stocks Scanned:</span>
+              <span className="st-summary-val">{scannedCount}</span>
+            </div>
+            <div className="st-summary-row">
+              <span className="st-summary-label">MATCHED Signals:</span>
+              <span className="st-summary-val green">{matched} ({matchedPct}%)</span>
+            </div>
+            <div className="st-summary-row">
+              <span className="st-summary-label">REJECTED Signals:</span>
+              <span className="st-summary-val red">{failed} ({failedPct}%)</span>
+            </div>
+            <div className="st-summary-row">
+              <span className="st-summary-label">SKIPPED Signals:</span>
+              <span className="st-summary-val yellow">{skipped} ({skippedPct}%)</span>
+            </div>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <div className="st-summary-row">
+              <span className="st-summary-label">Positive Returns:</span>
+              <span className="st-summary-val green">{posCount} ({posPct}%)</span>
+            </div>
+            <div className="st-summary-row">
+              <span className="st-summary-label">Negative Returns:</span>
+              <span className="st-summary-val red">{negCount} ({negPct}%)</span>
+            </div>
+            <div className="st-summary-row">
+              <span className="st-summary-label">Flat Returns:</span>
+              <span className="st-summary-val" style={{ color: "#94a3b8" }}>{flatCount}</span>
+            </div>
+            <div className="st-summary-row">
+              <span className="st-summary-label">Avg Return:</span>
+              <span className={`st-summary-val ${avgReturn >= 0 ? "green" : "red"}`}>
+                {avgReturn > 0 ? `+${avgReturn.toFixed(2)}%` : `${Number(avgReturn).toFixed(2)}%`}
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   );
-}
-
-function logoHue(symbol: string): string {
-  let hue = 0;
-  for (let i = 0; i < symbol.length; i += 1) hue = (hue * 33 + symbol.charCodeAt(i)) % 360;
-  return `hsl(${hue} 62% 42%)`;
 }
 
 function parseUniverseCsv(text: string): UniverseRow[] {
@@ -284,7 +379,7 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
     savedScanner?.selectedId || appliedIndicator?.id || savedScanner?.appliedIndicator?.id || "",
   );
   const [timeframe, setTimeframe] = useState(savedScanner?.timeframe || "1D");
-  const [scanDate, setScanDate] = useState(savedScanner?.scanDate || lastCompletedSessionIST());
+  const [scanDate, setScanDate] = useState(() => currentScanSessionIST());
   const [filters, setFilters] = useState<IndicatorFilter[]>(() =>
     savedScanner?.filters?.length ? savedScanner.filters : absorbedFromIndicator(appliedIndicator || savedScanner?.appliedIndicator).filters,
   );
@@ -292,16 +387,33 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
   const [results, setResults] = useState<IndicatorScanRow[]>(savedScanner?.results || []);
   const [total, setTotal] = useState(savedScanner?.total || 0);
   const [page, setPage] = useState(savedScanner?.page || 1);
-  const [pageSize] = useState(50);
-  const [sortField, setSortField] = useState(savedScanner?.sortField || "symbol");
-  const [sortDir, setSortDir] = useState<"asc" | "desc">(savedScanner?.sortDir || "asc");
+  const [pageSize, setPageSize] = useState(25);
+  const [sortField, setSortField] = useState("signal");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const [search, setSearch] = useState(savedScanner?.search || "");
-  const [matchedOnly, setMatchedOnly] = useState(savedScanner?.matchedOnly !== false);
+  const [matchedOnly, setMatchedOnly] = useState(false);
+  const [signalFilter, setSignalFilter] = useState("ALL");
+  const [returnFilter, setReturnFilter] = useState("ALL");
+  const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null);
+  const [topPositiveRows, setTopPositiveRows] = useState<RankedReturn[]>([]);
+  const [topNegativeRows, setTopNegativeRows] = useState<RankedReturn[]>([]);
+  const [columnsOpen, setColumnsOpen] = useState(false);
+  const [visibleColumns, setVisibleColumns] = useState<Set<string>>(
+    () => new Set(["rank", "symbol", "company", "signal", "evaluation_date", "exit_price", "return_pct", "pass_count", "primary_failure"]),
+  );
   const [busy, setBusy] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [diagnostics, setDiagnostics] = useState<Record<string, unknown> | null>(savedScanner?.diagnostics || null);
   const [universeRows, setUniverseRows] = useState<UniverseRow[]>(universeRowsProp || []);
+  const [backtestModalOpen, setBacktestModalOpen] = useState(false);
+  const [leanJob, setLeanJob] = useState<IndicatorBacktestJob | null>(null);
+  const [leanResult, setLeanResult] = useState<LeanBacktestResult | null>(null);
+  const [leanLoading, setLeanLoading] = useState(false);
+  const [showBacktestView, setShowBacktestView] = useState(false);
+  const [openColumn, setOpenColumn] = useState<string | null>(null);
+  const [hiddenColumns, setHiddenColumns] = useState<string[]>([]);
+  const backtestPollRef = useRef<number | null>(null);
   const pollRef = useRef<number | null>(null);
   const scanIdRef = useRef<string | null>(savedScanner?.scan?.scan_id || null);
   const lastAppliedId = useRef<string | null>(appliedIndicator?.id || null);
@@ -342,15 +454,38 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
     return visibleIndicators[0] || (appliedIndicator?.id === selectedId ? appliedIndicator : null);
   }, [visibleIndicators, indicators, selectedId, appliedIndicator]);
 
-  const outputNames = useMemo(() => absorbedFromIndicator(selected).columns.map((col) => col.name), [selected]);
+  const absorbedSelected = useMemo(() => absorbedFromIndicator(selected), [selected]);
+  const visibleColumnsAbsorbed = useMemo(
+    () => absorbedSelected.columns.filter((col) => !hiddenColumns.includes(col.name)),
+    [absorbedSelected.columns, hiddenColumns],
+  );
+  const outputNames = absorbedSelected.columns.map((col) => col.name);
+  const entryConditions = absorbedSelected.entryConditions;
+  const screenerSignalColumn = preferredScreenerColumn(absorbedSelected.columns);
+  const tvStylePriceEqualsOne = useMemo(
+    () => filters.some((item) => isTvStyleSignalEqualsOneOnPricePlot(item, absorbedSelected.columns)),
+    [filters, absorbedSelected.columns],
+  );
 
   const syncFiltersToOutputs = useCallback((indicator: SavedIndicator | null | undefined) => {
     const absorbed = absorbedFromIndicator(indicator);
     const outputs = absorbed.columns.map((col) => col.name);
     setFilters((prev) => {
+      const extra = normalizePineScreenerFilters(
+        prev.filter((item) => outputs.includes(item.field) && !isAggregateSignalFilter(item)),
+        absorbed.columns,
+      );
+      if (absorbed.entryConditions.length) {
+        if (
+          extra.length === prev.length &&
+          extra.every((item, i) => item.field === prev[i]?.field && item.operator === prev[i]?.operator && item.value === prev[i]?.value)
+        ) {
+          return prev;
+        }
+        return extra;
+      }
       if (!outputs.length) return prev;
-      const valid = prev.filter((item) => outputs.includes(item.field));
-      const next = valid.length ? valid : absorbed.filters;
+      const next = extra.length ? extra : absorbed.filters;
       if (
         next.length === prev.length &&
         next.every((item, i) => item.field === prev[i]?.field && item.operator === prev[i]?.operator && item.value === prev[i]?.value)
@@ -410,20 +545,69 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
     syncFiltersToOutputs(selected);
   }, [selected, syncFiltersToOutputs]);
 
+  useEffect(() => {
+    setOpenColumn(null);
+    setHiddenColumns([]);
+  }, [selected?.id]);
+
+  const mapTopRow = useCallback((row: IndicatorScanRow, rank: number): RankedReturn => {
+    const stock = mapIndicatorResultToStock(row);
+    return {
+      rank,
+      symbol: row.symbol,
+      company: row.display_name || stock.company,
+      entry_price: stock.entry_price,
+      exit_price: stock.exit_price,
+      return_pct: stock.return_pct,
+      signal: stock.signal || (row.matched ? "MATCH" : "REJECT"),
+      key_filters: stock.passed_filters?.slice(0, 3),
+      passed_filters: stock.passed_filters,
+      failed_filters: stock.failed_filters,
+    };
+  }, []);
+
+  const loadTopReturns = useCallback(
+    async (scanId: string) => {
+      const [positive, negative] = await Promise.all([
+        fetchIndicatorScanResults(scanId, {
+          page: 1,
+          page_size: 5,
+          matched_only: false,
+          return_bucket: "POSITIVE",
+          sort: "return_pct",
+          direction: "desc",
+        }),
+        fetchIndicatorScanResults(scanId, {
+          page: 1,
+          page_size: 5,
+          matched_only: false,
+          return_bucket: "NEGATIVE",
+          sort: "return_pct",
+          direction: "asc",
+        }),
+      ]);
+      setTopPositiveRows((positive.results || []).map((row, index) => mapTopRow(row, index + 1)));
+      setTopNegativeRows((negative.results || []).map((row, index) => mapTopRow(row, index + 1)));
+    },
+    [mapTopRow],
+  );
+
   const loadResults = useCallback(
     async (scanId: string, nextPage = page) => {
       const payload = await fetchIndicatorScanResults(scanId, {
         page: nextPage,
         page_size: pageSize,
         search: search || undefined,
-        matched_only: matchedOnly,
-        sort: sortField,
+        matched_only: false,
+        signal: signalFilter === "ALL" ? undefined : signalFilter,
+        return_bucket: returnFilter === "ALL" ? undefined : returnFilter,
+        sort: signalFilter === "ALL" ? "signal" : sortField,
         direction: sortDir,
       });
       setResults(payload.results);
       setTotal(payload.total);
     },
-    [page, pageSize, search, matchedOnly, sortField, sortDir],
+    [page, pageSize, search, signalFilter, returnFilter, sortField, sortDir],
   );
 
   const stopPoll = useCallback(() => {
@@ -439,7 +623,13 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
       setBusy(false);
       setScan(status);
       if (status.status === "completed") {
-        await loadResults(status.scan_id, 1);
+        try {
+          const fresh = await fetchIndicatorScan(status.scan_id);
+          setScan(fresh);
+        } catch {
+          /* keep polled status */
+        }
+        await Promise.all([loadResults(status.scan_id, 1), loadTopReturns(status.scan_id)]);
         setPage(1);
         const failed = status.failed_count || 0;
         if (failed > 0) {
@@ -450,7 +640,7 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
         }
       }
     },
-    [loadResults, notify, stopPoll],
+    [loadResults, loadTopReturns, notify, stopPoll],
   );
 
   const poll = useCallback(
@@ -486,6 +676,13 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
     if (isScanActive(scan)) {
       setBusy(true);
       poll(scanId);
+    } else if (scan?.status === "completed") {
+      fetchIndicatorScan(scanId)
+        .then((status) => {
+          setScan(status);
+          return loadTopReturns(scanId);
+        })
+        .catch(() => {});
     }
     // Restore a completed run from storage; never start a new scan on mount.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -507,7 +704,7 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
         sortField,
         sortDir,
         search,
-        matchedOnly,
+        matchedOnly: signalFilter === "MATCH",
         diagnostics,
       });
     } catch {
@@ -528,7 +725,7 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
     sortField,
     sortDir,
     search,
-    matchedOnly,
+    signalFilter,
     diagnostics,
   ]);
 
@@ -536,7 +733,13 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
     if (scan?.scan_id && scan.status === "completed") {
       loadResults(scan.scan_id).catch(() => {});
     }
-  }, [page, sortField, sortDir, search, matchedOnly, scan?.scan_id, scan?.status, loadResults]);
+  }, [page, sortField, sortDir, search, signalFilter, returnFilter, scan?.scan_id, scan?.status, loadResults]);
+
+  useEffect(() => {
+    if (scan?.scan_id && scan.status === "completed") {
+      loadTopReturns(scan.scan_id).catch(() => {});
+    }
+  }, [scan?.scan_id, scan?.status, loadTopReturns]);
 
   const handleScan = async () => {
     const indicator = selected || indicators[0];
@@ -552,17 +755,26 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
       });
       return;
     }
+    const today = currentScanSessionIST();
+    const effectiveScanDate = !scanDate || scanDate > today ? today : scanDate;
+    if (effectiveScanDate !== scanDate) {
+      setScanDate(effectiveScanDate);
+    }
     setBusy(true);
     setResults([]);
+    setTopPositiveRows([]);
+    setTopNegativeRows([]);
     setTotal(0);
     setDiagnostics(null);
     setPage(1);
     try {
+      const cleaned = cleanFilters(filters);
+      const pineFilters = cleaned.length ? cleaned : absorbScreenFilters(absorbedSelected.columns);
       const started = await startIndicatorScan(indicator.id, {
         universe_id: "nse-755",
         timeframe: "1D",
-        scan_date: scanDate || lastCompletedSessionIST(),
-        filters: cleanFilters(filters),
+        scan_date: effectiveScanDate,
+        filters: pineFilters,
         sort: { field: sortField, direction: sortDir },
       });
       setScan(started);
@@ -596,6 +808,90 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
       notify({ title: "Unable to cancel scan", message: err instanceof Error ? err.message : "", type: "error" });
     }
   };
+
+  const stopBacktestPoll = useCallback(() => {
+    if (backtestPollRef.current) {
+      window.clearInterval(backtestPollRef.current);
+      backtestPollRef.current = null;
+    }
+  }, []);
+
+  const handleStartLeanBacktest = useCallback(
+    async (options: IndicatorBacktestOptions) => {
+      const indicator = selected || indicators[0];
+      if (!indicator?.id) {
+        notify({ title: "Select an indicator before starting backtest.", type: "warning" });
+        return;
+      }
+      stopBacktestPoll();
+      setLeanLoading(true);
+      setLeanResult(null);
+      setShowBacktestView(true);
+
+      try {
+        const job = await startIndicatorBacktest(indicator.id, options);
+        setLeanJob(job);
+        if (job.status === "COMPLETED" && job.result) {
+          setLeanResult(job.result);
+          setLeanLoading(false);
+          notify({ title: "LEAN Backtest completed successfully!", type: "success" });
+          return;
+        }
+        if (job.status === "FAILED") {
+          setLeanLoading(false);
+          notify({ title: "LEAN Backtest failed", message: job.error || "Execution error", type: "error" });
+          return;
+        }
+
+        const jobId = job.jobId;
+        const tick = async () => {
+          try {
+            const currentJob = await fetchIndicatorBacktest(indicator.id, jobId);
+            setLeanJob(currentJob);
+            if (currentJob.status === "COMPLETED") {
+              stopBacktestPoll();
+              setLeanLoading(false);
+              const res = await fetchIndicatorBacktestResults(indicator.id, jobId);
+              setLeanResult(res);
+              notify({ title: "LEAN Backtest completed successfully!", type: "success" });
+            } else if (currentJob.status === "FAILED" || currentJob.status === "CANCELLED") {
+              stopBacktestPoll();
+              setLeanLoading(false);
+              notify({
+                title: "LEAN Backtest finished with error",
+                message: currentJob.error || currentJob.status,
+                type: "error",
+              });
+            }
+          } catch {
+            stopBacktestPoll();
+            setLeanLoading(false);
+          }
+        };
+
+        backtestPollRef.current = window.setInterval(() => {
+          void tick();
+        }, 1500);
+      } catch (err) {
+        setLeanLoading(false);
+        notify({
+          title: "Failed to launch LEAN backtest",
+          message: err instanceof Error ? err.message : "Unknown error",
+          type: "error",
+        });
+      }
+    },
+    [selected, indicators, notify, stopBacktestPoll],
+  );
+
+  const handleCancelLeanBacktest = useCallback(() => {
+    stopBacktestPoll();
+    setLeanLoading(false);
+    setLeanJob((prev) => (prev ? { ...prev, status: "CANCELLED" } : null));
+    notify({ title: "LEAN Backtest cancelled", type: "info" });
+  }, [stopBacktestPoll, notify]);
+
+  useEffect(() => () => stopBacktestPoll(), [stopBacktestPoll]);
 
   const handleDiagnostics = async () => {
     if (!scan?.scan_id) return;
@@ -648,19 +944,17 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
     }
   };
 
-  const toggleSort = (field: string) => {
-    if (sortField === field) {
-      setSortDir((prev) => (prev === "asc" ? "desc" : "asc"));
-      return;
-    }
-    setSortField(field);
-    setSortDir(field === "symbol" ? "asc" : "desc");
-  };
-
   const scanning = busy || isScanActive(scan);
+  const fetchingData = scanning && (isFetchingCurrentData(scan) || !isScanActive(scan));
   const scanned = scan?.status === "completed";
-  const displayRows: IndicatorScanRow[] = useMemo(() => {
-    if (scanned) return results;
+  const scanSummary = (scan?.summary && typeof scan.summary === "object" ? scan.summary : {}) as Record<string, unknown>;
+  const tableRows: StrategyResultRow[] = useMemo(() => {
+    if (scanned) {
+      return results.map((row, index) => ({
+        ...mapIndicatorResultToStock(row, scan),
+        rank: (row as IndicatorScanRow & { rank?: number }).rank ?? (page - 1) * pageSize + index + 1,
+      }));
+    }
     const needle = search.trim().toUpperCase();
     return universeRows
       .filter(
@@ -669,15 +963,81 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
           row.symbol.toUpperCase().includes(needle) ||
           (row.company || "").toUpperCase().includes(needle),
       )
-      .map((row) => ({
+      .slice((page - 1) * pageSize, page * pageSize)
+      .map((row, index) => ({
+        rank: (page - 1) * pageSize + index + 1,
         symbol: row.symbol,
-        display_name: row.company || "",
+        company: row.company || "",
         status: "pending",
-        matched: false,
-        outputs: {},
+        signal: "",
+        evaluation_date: null,
+        entry_price: null,
+        exit_price: null,
+        return_pct: 0,
+        close: null,
+        volume: null,
+        avg_volume: null,
+        rsi: null,
+        sma_20: null,
+        sma_50: null,
+        sma_200: null,
+        high_252: null,
+        filters_passed: 0,
+        filters_failed: 0,
+        passed_filters: [],
+        failed_filters: [],
+        primary_failure_reason: null,
       }));
-  }, [scanned, results, universeRows, search]);
-  const listCount = scanned ? total : displayRows.length;
+  }, [scanned, results, scan, universeRows, search, page, pageSize]);
+  const listCount = scanned ? total : universeRows.length;
+  const matchedCount = scan?.matched_count ?? 0;
+  const skippedCount = scan?.skipped_count ?? 0;
+  const unmatchedCount = Math.max(0, (scan?.success_count ?? 0) - matchedCount) + (scan?.failed_count ?? 0);
+  const builderRules = entryConditions.map((name, index) => ({
+    id: `c${index + 1}`,
+    label: name,
+    join: "AND" as const,
+  }));
+  const filterStats = (Array.isArray(scanSummary.filter_analytics)
+    ? scanSummary.filter_analytics
+    : (entryConditions.length
+        ? entryConditions
+        : ["No entry conditions"]).map((name, index) => ({
+        filter_id: `c${index + 1}`,
+        label: name,
+        passed: 0,
+        failed: 0,
+        pass_pct: 0,
+        fail_pct: 0,
+      }))) as FilterStat[];
+  const funnelSteps = (Array.isArray(scanSummary.filter_funnel)
+    ? scanSummary.filter_funnel
+    : [
+        { step: 0, filter_id: null, label: "Start Universe", remaining: universeCount || 755, drop: 0, retention_pct: 100 },
+        ...entryConditions.map((name, index) => ({
+          step: index + 1,
+          filter_id: `c${index + 1}`,
+          label: name,
+          remaining: universeCount || 755,
+          drop: 0,
+          retention_pct: 100,
+        })),
+        { step: entryConditions.length + 1, filter_id: "final", label: "Final MATCHED Signals", remaining: matchedCount, drop: 0, retention_pct: 0 },
+      ]) as FunnelStep[];
+  const topPositive = (
+    topPositiveRows.length
+      ? topPositiveRows
+      : Array.isArray(scanSummary.top_positive)
+        ? scanSummary.top_positive
+        : []
+  ) as RankedReturn[];
+  const topNegative = (
+    topNegativeRows.length
+      ? topNegativeRows
+      : Array.isArray(scanSummary.top_negative)
+        ? scanSummary.top_negative
+        : []
+  ) as RankedReturn[];
   const showScanChrome = Boolean(selected);
   const scanActions = (
     <div className="ind-scan-actions">
@@ -693,7 +1053,7 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
             <svg className="animate-spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <circle cx="12" cy="12" r="10" strokeDasharray="32" strokeDashoffset="12" />
             </svg>
-            Scanning…
+            {fetchingData ? "Fetching data…" : "Scanning…"}
           </>
         ) : (
           <>
@@ -703,6 +1063,28 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
             Scan
           </>
         )}
+      </button>
+      <button
+        type="button"
+        className="st-btn-dark"
+        onClick={() => setBacktestModalOpen(true)}
+        disabled={!selected || leanLoading}
+        data-testid="btn-open-lean-backtest"
+        style={{
+          background: "linear-gradient(135deg, #1e3a8a, #2563eb)",
+          color: "#ffffff",
+          borderColor: "#3b82f6",
+          fontWeight: 600,
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: 6,
+          padding: "6px 12px",
+        }}
+        title="Run multi-asset historical portfolio backtest with LEAN"
+      >
+        <span>⚡</span>
+        <span>Backtest (LEAN)</span>
       </button>
       {scanning && scan?.scan_id && (
         <button type="button" className="st-btn-reset" onClick={handleCancel} data-testid="btn-cancel-indicator-scan">
@@ -721,13 +1103,13 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
             <option value="nse-755">{universeCount || 755} Stocks</option>
           </select>
         </label>
-        <label className="ind-pill" title="1D bar to evaluate (TradingView Pine Screener as-of)">
+        <label className="ind-pill" title="As-of date in IST. The scan evaluates the last NSE 1D session on or before this date.">
           <span className="ind-pill-prefix">As of</span>
           <input
             type="date"
             value={scanDate}
-            max={lastCompletedSessionIST()}
-            onChange={(e) => setScanDate(e.target.value || lastCompletedSessionIST())}
+            max={currentScanSessionIST()}
+            onChange={(e) => setScanDate(e.target.value || currentScanSessionIST())}
             data-testid="input-indicator-scan-date"
           />
         </label>
@@ -756,20 +1138,28 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
             </select>
           </label>
         )}
-        {outputNames.length > 0 && (
+        {visibleColumnsAbsorbed.length > 0 && (
           <div className="ind-pill-wrap" data-testid="indicator-absorbed-columns">
-            {outputNames.map((name) => (
-              <button
-                key={name}
-                type="button"
-                className="ind-pill"
-                onClick={() => {
-                  if (filters.some((item) => item.field === name)) return;
-                  setFilters([...filters, { field: name, operator: "=", value: 1 }]);
+            {visibleColumnsAbsorbed.map((col) => (
+              <ScreenerColumnChip
+                key={col.name}
+                column={col}
+                columns={absorbedSelected.columns}
+                filter={filters.find((item) => item.field === col.name) || null}
+                open={openColumn === col.name}
+                onToggle={() => setOpenColumn((current) => (current === col.name ? null : col.name))}
+                onClose={() => setOpenColumn(null)}
+                onApplyFilter={(next) => {
+                  setFilters((prev) => {
+                    const without = prev.filter((item) => item.field !== next.field);
+                    return [...without, next];
+                  });
                 }}
-              >
-                {name}
-              </button>
+                onRemoveColumn={(field) => {
+                  setFilters((prev) => prev.filter((item) => item.field !== field));
+                  setHiddenColumns((prev) => (prev.includes(field) ? prev : [...prev, field]));
+                }}
+              />
             ))}
           </div>
         )}
@@ -789,9 +1179,41 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
             </button>
           </>
         )}
+        {(leanJob || leanResult) && (
+          <button
+            type="button"
+            className="ind-pill"
+            onClick={() => setShowBacktestView((prev) => !prev)}
+            data-testid="btn-toggle-lean-view"
+            style={{
+              background: showBacktestView ? "#2563eb" : "#0d1527",
+              color: "#ffffff",
+              border: "1px solid #3b82f6",
+              fontWeight: 600,
+            }}
+          >
+            ⚡ {showBacktestView ? "Hide LEAN Results" : "View LEAN Results"}
+            {leanResult?.summary?.cagr !== null && leanResult?.summary?.cagr !== undefined
+              ? ` (${(leanResult.summary.cagr * 100).toFixed(1)}% CAGR)`
+              : leanLoading
+                ? " (Running…)"
+                : ""}
+          </button>
+        )}
       </div>
       {scanSlot ? null : scanActions}
       </div>
+
+      {showBacktestView && (leanJob || leanResult) && (
+        <IndicatorLeanBacktestView
+          job={leanJob}
+          result={leanResult}
+          loading={leanLoading}
+          onCancel={handleCancelLeanBacktest}
+          onClose={() => setShowBacktestView(false)}
+          onRerun={() => setBacktestModalOpen(true)}
+        />
+      )}
       {timeframe !== "1D" && showScanChrome && (
         <p className="st-pine-summary-warning" data-testid="screener-timeframe-warning">
           Weekly and monthly timeframes are not supported yet. Daily (1D) data is available.
@@ -806,6 +1228,25 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
         <span className="sr-only" data-testid="indicator-empty-library">
           Universe is {universeCount || 755} Stocks. Click Add indicator, Observe Pine, then Scan.
         </span>
+      )}
+
+      {showScanChrome && entryConditions.length > 0 && (
+        <div className="st-card" data-testid="indicator-strategy-conditions">
+          <h2 className="st-card-title">Strategy Conditions</h2>
+          <p className="st-reject-not-a-trade">
+            TradingView Pine Screener and this scan both evaluate the last 1D bar. MATCH requires every
+            required entry condition on that bar, plus any column filters you set. ta.crossover is true
+            only on that bar.
+          </p>
+          <div className="st-filter-eval-list">
+            {entryConditions.map((name) => (
+              <div key={name} className="st-filter-eval-item">
+                <span className="st-filter-eval-name">{name}</span>
+                <span className="st-filter-eval-status passed">✓ Required</span>
+              </div>
+            ))}
+          </div>
+        </div>
       )}
 
       {showScanChrome && (
@@ -896,7 +1337,14 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
         <button
           type="button"
           className="st-btn-dark"
-          onClick={() => setFilters([...filters, { field: outputNames[0] || SIGNAL_FIELD, operator: "=", value: 1 }])}
+          onClick={() =>
+            setFilters([
+              ...filters,
+              screenerSignalColumn
+                ? defaultColumnFilter(screenerSignalColumn)
+                : { field: SIGNAL_FIELD, operator: "=", value: 1 },
+            ])
+          }
           data-testid="btn-add-filter"
         >
           + Filter
@@ -905,6 +1353,28 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
           Clear Filters
         </button>
       </div>
+      )}
+      {showScanChrome && tvStylePriceEqualsOne && (
+        <p className="st-pine-summary-warning" data-testid="pine-screener-filter-warning">
+          TradingView Pine Screener filters plot columns on the last 1D bar. Setting{" "}
+          {filters.find((item) => isTvStyleSignalEqualsOneOnPricePlot(item, absorbedSelected.columns))?.field || "EMA 20"}{" "}
+          = 1 matches no symbols because that plot is a price, not a 0/1 signal. That is why TradingView
+          showed “No symbols match your filters”. Filter {screenerSignalColumn?.name || "Momentum Signal"} is
+          true, or add plot(buySignal ? 1 : 0, &quot;Signal&quot;) and filter Signal = 1 on both platforms.
+          {screenerSignalColumn ? (
+            <>
+              {" "}
+              <button
+                type="button"
+                className="st-btn-dark"
+                data-testid="btn-use-screener-signal-filter"
+                onClick={() => setFilters([defaultColumnFilter(screenerSignalColumn)])}
+              >
+                Use {screenerSignalColumn.name} is true
+              </button>
+            </>
+          ) : null}
+        </p>
       )}
 
       {scan && (
@@ -916,132 +1386,159 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
         </p>
       )}
 
-      <div className="ind-list-card">
-        <div className="ind-results-header">
-          <strong data-testid="indicator-result-count">
-            Symbol {scanned ? total : listCount}
-          </strong>
-          <div className="ind-results-actions">
-            <input
-              className="st-search-box"
-              placeholder="Search symbol"
-              value={search}
-              onChange={(e) => {
-                setSearch(e.target.value);
-                setPage(1);
-              }}
-              aria-label="Search results"
-            />
-            {showScanChrome && (
-              <>
-                <label className="ind-matched-toggle">
-                  <input
-                    type="checkbox"
-                    checked={matchedOnly}
-                    onChange={(e) => {
-                      setMatchedOnly(e.target.checked);
-                      setPage(1);
-                    }}
-                    data-testid="chk-matched-only"
-                  />
-                  Matched only
-                </label>
-                <button type="button" className="st-btn-dark" onClick={handleDiagnostics} disabled={!scan} data-testid="btn-indicator-diagnostics">
-                  View Diagnostics
-                </button>
-                <button type="button" className="st-btn-dark" onClick={handleExport} disabled={!scan} data-testid="btn-export-indicator-csv">
-                  Export CSV
-                </button>
-              </>
-            )}
-          </div>
+      <section className="st-upper-analytics-grid" aria-label="Strategy overview analytics">
+        <div className="st-builder-col">
+          <StrategyBuilderCard
+            rules={builderRules.length ? builderRules : [{ id: "1", label: selected?.name || "Scan indicator", join: "AND" }]}
+            logicText="Logic: ALL conditions must be true"
+            universeCount={universeCount || 755}
+            timeframe="1 Day"
+            positionSide="LONG ONLY"
+            exitRule="Scan only — no trade is opened"
+            capital={0}
+            sourceType="pine"
+            onEditClick={() => (selected ? onEditIndicator(selected) : onAddIndicator())}
+          />
         </div>
-
-        <div className="ind-table-wrap">
-          <table className="ind-results-table" data-testid="indicator-results-table">
-            <thead>
-              <tr>
-                <th>
-                  <button type="button" onClick={() => toggleSort("symbol")}>
-                    Symbol {sortField === "symbol" ? (sortDir === "asc" ? "↑" : "↓") : ""}
-                  </button>
-                </th>
-                {outputNames.map((name) => (
-                  <th key={name} className="is-numeric">
-                    <button type="button" onClick={() => toggleSort(name)}>
-                      {name} {sortField === name ? (sortDir === "asc" ? "↑" : "↓") : ""}
-                    </button>
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {displayRows.length === 0 ? (
-                <tr>
-                  <td colSpan={1 + outputNames.length} data-testid="indicator-empty-state">
-                    {scan?.status === "completed"
-                      ? "No stocks matched the current indicator and filters."
-                      : "Loading universe…"}
-                  </td>
-                </tr>
-              ) : (
-                displayRows.map((row) => (
-                  <tr
-                    key={row.symbol}
-                    tabIndex={0}
-                    onClick={() => navigateToStock(navigate, row.symbol, { returnTo: "/strategy-tester" })}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") navigateToStock(navigate, row.symbol, { returnTo: "/strategy-tester" });
-                    }}
-                    data-testid={`indicator-row-${row.symbol}`}
-                  >
-                    <td>
-                      <div className="ind-symbol-cell">
-                        <span className="ind-logo" style={{ background: logoHue(row.symbol) }} aria-hidden>
-                          {row.symbol.slice(0, 1)}
-                        </span>
-                        <span className="ind-symbol-ticker">{row.symbol}</span>
-                        <span className="ind-symbol-name">{row.display_name || ""}</span>
-                      </div>
-                    </td>
-                    {outputNames.map((name) => {
-                      const value = row.outputs?.[name];
-                      const isSignal =
-                        typeof value === "boolean" ||
-                        name.toLowerCase().includes("signal") ||
-                        name.toLowerCase().includes("breakout");
-                      return (
-                        <td key={name} className={`is-numeric ${isSignal && (value === 1 || value === true) ? "is-signal-on" : ""}`}>
-                          {formatValue(value)}
-                        </td>
-                      );
-                    })}
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
+        <div className="st-top-returns-col">
+          <TopReturnsCard
+            type="positive"
+            items={topPositive}
+            totalCount={Number(scanSummary.positive_returns ?? 0)}
+            onStockClick={(symbol) =>
+              navigateToStock(navigate, symbol, { runId: scan?.scan_id, returnTo: "/strategy-tester" })
+            }
+            onViewAllClick={() => {
+              setReturnFilter("POSITIVE");
+              setPage(1);
+              document.getElementById("all-results-section")?.scrollIntoView({ behavior: "smooth" });
+            }}
+          />
+          <TopReturnsCard
+            type="negative"
+            items={topNegative}
+            totalCount={Number(scanSummary.negative_returns ?? 0)}
+            onStockClick={(symbol) =>
+              navigateToStock(navigate, symbol, { runId: scan?.scan_id, returnTo: "/strategy-tester" })
+            }
+            onViewAllClick={() => {
+              setReturnFilter("NEGATIVE");
+              setPage(1);
+              document.getElementById("all-results-section")?.scrollIntoView({ behavior: "smooth" });
+            }}
+          />
         </div>
+      </section>
 
-        {total > pageSize && (
-          <div className="ind-pagination">
-            <button type="button" className="st-btn-dark" disabled={page <= 1} onClick={() => setPage(page - 1)}>
-              Previous
-            </button>
-            <span>
-              Page {page} of {Math.ceil(total / pageSize)}
-            </span>
-            <button
-              type="button"
-              className="st-btn-dark"
-              disabled={page >= Math.ceil(total / pageSize)}
-              onClick={() => setPage(page + 1)}
-            >
-              Next
-            </button>
-          </div>
-        )}
+      <section className="st-lower-analytics-grid" aria-label="Filter and signal analytics">
+        <FilterAnalyticsCard stats={filterStats} totalUniverse={universeCount || 755} />
+        <FilterFunnelCard
+          steps={funnelSteps}
+          totalUniverse={universeCount || 755}
+          onStepClick={(step) => {
+            if (step.step === 0) setSignalFilter("ALL");
+            if (step.filter_id === "final" || step.label?.toLowerCase().includes("matched")) setSignalFilter("MATCH");
+            setPage(1);
+            document.getElementById("all-results-section")?.scrollIntoView({ behavior: "smooth" });
+          }}
+        />
+        <SignalDistributionCard
+          buyCount={matchedCount}
+          watchCount={skippedCount}
+          rejectCount={unmatchedCount}
+          failedCount={0}
+          totalUniverse={universeCount || 755}
+          labels={{ buy: "MATCHED", watch: "SKIPPED", reject: "REJECTED" }}
+          onSignalClick={(sig) => {
+            setSignalFilter(sig);
+            setPage(1);
+            document.getElementById("all-results-section")?.scrollIntoView({ behavior: "smooth" });
+          }}
+        />
+      </section>
+
+      <div data-testid="indicator-results-table">
+        <AllStockResultsTable
+          results={tableRows}
+          totalResults={scanned ? total : listCount}
+          selectedSymbol={selectedSymbol}
+          searchQuery={search}
+          signalFilter={scanned ? signalFilter : "ALL"}
+          returnFilter={returnFilter}
+          sortColumn={sortField}
+          sortDirection={sortDir}
+          currentPage={page}
+          pageSize={pageSize}
+          visibleColumns={visibleColumns}
+          buyCount={matchedCount}
+          watchCount={skippedCount}
+          rejectCount={unmatchedCount}
+          failedCount={scan?.failed_count ?? 0}
+          variant="scanner"
+          caption={`MATCHED means every required strategy entry condition passed on the same last 1D bar TradingView Pine Screener uses, and every column filter passed. ta.crossover is true only on that bar — yesterday's crosses will not match today's screen. Filtering a price plot such as EMA 20 to 1 matches no symbols (TradingView empty result). Filter Momentum Signal is true to screen the pulse. REJECTED means at least one required condition or filter did not pass. SKIPPED means the name did not have enough history.${outputNames.length ? ` Indicator outputs: ${outputNames.join(", ")}.` : ""}`}
+          onSearchChange={(q) => {
+            setSearch(q);
+            setPage(1);
+          }}
+          onSignalFilterChange={(sig) => {
+            setSignalFilter(sig);
+            setMatchedOnly(sig === "MATCH");
+            if (sig === "ALL") setSortField("signal");
+            setPage(1);
+          }}
+          onReturnFilterChange={(ret) => {
+            setReturnFilter(ret);
+            setPage(1);
+          }}
+          onSortChange={(col) => {
+            if (sortField === col) {
+              setSortDir((prev) => (prev === "asc" ? "desc" : "asc"));
+            } else {
+              setSortField(col);
+              setSortDir(col === "symbol" ? "asc" : "desc");
+            }
+          }}
+          onPageChange={setPage}
+          onPageSizeChange={(size) => {
+            setPageSize(size);
+            setPage(1);
+          }}
+          onStockSelect={(symbol) => {
+            setSelectedSymbol(symbol);
+            navigateToStock(navigate, symbol, { runId: scan?.scan_id, returnTo: "/strategy-tester" });
+          }}
+          onColumnsClick={() => setColumnsOpen(true)}
+          onExportClick={() => {
+            if (scan) void handleExport();
+          }}
+        />
       </div>
+      <span className="sr-only" data-testid="indicator-result-count">
+        Symbol {scanned ? total : listCount}
+      </span>
+      <button type="button" className="sr-only" onClick={handleDiagnostics} disabled={!scan} data-testid="btn-indicator-diagnostics">
+        View Diagnostics
+      </button>
+
+      <ColumnsConfigModal
+        isOpen={columnsOpen}
+        visibleColumns={visibleColumns}
+        onClose={() => setColumnsOpen(false)}
+        onToggleColumn={(colKey) => {
+          setVisibleColumns((prev) => {
+            const next = new Set(prev);
+            if (next.has(colKey)) {
+              if (next.size > 2) next.delete(colKey);
+            } else {
+              next.add(colKey);
+            }
+            return next;
+          });
+        }}
+        onResetColumns={() =>
+          setVisibleColumns(new Set(["rank", "symbol", "company", "signal", "evaluation_date", "exit_price", "return_pct", "pass_count", "primary_failure"]))
+        }
+      />
 
       {diagnosticsOpen && diagnostics && (
         <div className="st-modal-overlay" onClick={() => setDiagnosticsOpen(false)} data-testid="indicator-diagnostics">
@@ -1072,6 +1569,14 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
           </div>
         </div>
       )}
+
+      <IndicatorLeanBacktestModal
+        isOpen={backtestModalOpen}
+        onClose={() => setBacktestModalOpen(false)}
+        indicatorName={selected?.name || "Indicator Strategy"}
+        onStartBacktest={handleStartLeanBacktest}
+        isStarting={leanLoading}
+      />
     </section>
   );
 };

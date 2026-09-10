@@ -3,7 +3,11 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from app.config.settings import ROOT_DIR, settings
-from app.services.universe_csv import load_unique_nifty500_csv_rows, parse_nifty500_row
+from app.services.universe_csv import (
+    is_dummy_universe_symbol,
+    load_unique_nifty500_csv_rows,
+    parse_nifty500_row,
+)
 from app.services.universe_service import UniverseService
 from app.utils.symbol import (
     canonical_symbol,
@@ -17,10 +21,11 @@ def test_csv_authoritative_universe_has_755_unique_symbols():
     csv_path = ROOT_DIR / settings.nifty500_csv_path
     rows = load_unique_nifty500_csv_rows(csv_path)
     symbols = [row["canonical_symbol"] for row in rows]
-    assert len(rows) == 755
-    assert len(set(symbols)) == 755
+    assert len(rows) == 750
+    assert len(set(symbols)) == 750
     assert all(symbol and symbol.strip() for symbol in symbols)
     assert all(" " not in symbol for symbol in symbols)
+    assert all(not symbol.startswith("DUMMY") for symbol in symbols)
     assert "360ONE" in symbols
     assert "AARTIDRUGS" in symbols
 
@@ -44,6 +49,13 @@ def test_tab_collapsed_csv_row_recovers_symbol_and_company():
 
 def test_blank_csv_row_is_not_invented():
     assert parse_nifty500_row({"Company Name": "Unknown Co", "Symbol": ""}) is None
+
+
+def test_dummy_universe_symbols_are_rejected():
+    assert is_dummy_universe_symbol("DUMMYALCAR") is True
+    assert is_dummy_universe_symbol("DUMMYVEDL1-EQ") is True
+    assert is_dummy_universe_symbol("RELIANCE") is False
+    assert parse_nifty500_row({"Company Name": "Dummy Vedanta Ltd. 1", "Symbol": "DUMMYVEDL1", "Series": "EQ"}) is None
 
 
 def test_ohlcv_symbol_variants_include_store_eq_form():
@@ -97,8 +109,9 @@ def test_csv_membership_maps_to_755_unique_instruments():
         assert item is not None
         instruments.append(item)
     canons = [item.symbol for item in instruments]
-    assert len(instruments) == 755
-    assert len(set(canons)) == 755
+    assert len(instruments) == 750
+    assert len(set(canons)) == 750
+    assert all(not symbol.startswith("DUMMY") for symbol in canons)
     assert all(item.company_name for item in instruments)
     assert all(item.broker_symbol.startswith("NSE:") for item in instruments)
     assert all(item.universe_symbol for item in instruments)

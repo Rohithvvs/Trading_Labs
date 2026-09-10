@@ -7,6 +7,7 @@ import pytest
 from app.services.indicator_scanner.compiler import compile_source
 from app.services.indicator_scanner.errors import PineCompileError
 from app.services.indicator_scanner.parser import parse_source
+from app.services.indicator_scanner.ema_pullback_template import EMA_PULLBACK_SCAN_SOURCE, EMA_PULLBACK_SCAN_TITLE
 from app.services.indicator_scanner.template import BREAKOUT_SCAN_SOURCE, BREAKOUT_SCAN_TITLE
 
 
@@ -60,6 +61,16 @@ def test_parses_ternary_and_request_security():
     assert any(s.symbol == "NSE:CNX500" for s in compiled.security_calls)
     assert any(o.kind == "plotshape" for o in compiled.outputs)
     assert any(o.kind == "alertcondition" for o in compiled.outputs)
+
+
+def test_compiles_ema_pullback_swing_scanner():
+    compiled = compile_source(EMA_PULLBACK_SCAN_SOURCE)
+    assert compiled.title == EMA_PULLBACK_SCAN_TITLE
+    out_names = [o.name for o in compiled.outputs]
+    assert out_names[0] == "Signal"
+    assert "Buy Signal" in out_names
+    assert "Swing Long" in out_names
+    assert compiled.warnings == []
 
 
 def test_rejects_strategy():

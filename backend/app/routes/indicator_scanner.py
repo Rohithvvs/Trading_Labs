@@ -11,19 +11,24 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from ..core.deps import require_feature
+from ..lean.models import EngineType, LeanBacktestRequest, LeanBacktestResult, LeanJobRecord, LeanJobStatus
+from ..lean.services.lean_service import LeanBacktestService
 from ..models.auth import User
 from ..services.indicator_scanner.compiler import compile_source
+from ..services.indicator_scanner.entry_conditions import attach_entry_conditions
 from ..services.indicator_scanner.errors import PineCompileError
 from ..services.indicator_scanner.filters import validate_filters
 from ..services.indicator_scanner.limits import LANGUAGE_MODE
 from ..services.indicator_scanner.template import BREAKOUT_SCAN_SOURCE, BREAKOUT_SCAN_TITLE, SUPPORTED_SYNTAX_HELP
 from ..services.indicator_scanner import persistence
 from ..services.indicator_scanner.scan_service import (
+    ensure_summary_analytics,
     paginate_results,
     request_cancel,
     results_to_csv,
     scan_status_payload,
     start_scan_background,
+    symbol_detail_payload,
 )
 from ..services.indicator_scanner.symbols import is_supported_timeframe, normalize_timeframe
 
@@ -50,6 +55,17 @@ class ScanBody(BaseModel):
     input_overrides: dict[str, Any] | None = None
     filters: list[dict[str, Any]] | None = None
     sort: dict[str, Any] | None = None
+
+
+class IndicatorBacktestBody(BaseModel):
+    start_date: date | None = None
+    end_date: date | None = None
+    initial_capital: float = Field(default=100_000.0, ge=1_000)
+    universe_id: str | None = "nse-755"
+    engine: str | None = "LEAN"
+    symbols: list[str] | None = None
+    max_positions: int = Field(default=10, ge=1, le=50)
+    parameters: dict[str, Any] | None = None
 
 
 def _compile_payload(source: str, timeframe: str | None) -> dict[str, Any]:
@@ -80,6 +96,7 @@ def _compile_payload(source: str, timeframe: str | None) -> dict[str, Any]:
                 "message": "Weekly and monthly timeframes are not supported yet. Daily (1D) data is available.",
             }
         )
+    parsed = attach_entry_conditions(compiled.to_definition_json(), compiled)
     return {
         "ok": True,
         "status": "valid",
@@ -95,16 +112,27 @@ def _compile_payload(source: str, timeframe: str | None) -> dict[str, Any]:
         "overlay": compiled.overlay,
         "timeframe": normalize_timeframe(timeframe),
         "timeframe_supported": tf_ok,
-        "parsed_definition": compiled.to_definition_json(),
+        "parsed_definition": parsed,
+        "entry_conditions": parsed.get("entry_conditions") or [],
         "supported_syntax": SUPPORTED_SYNTAX_HELP,
         "disclaimer": "For research and paper-trading only. Not investment advice.",
     }
 
 
+def _definition_payload(row) -> dict[str, Any]:
+    payload = persistence.definition_payload(row)
+    parsed = attach_entry_conditions(payload.get("parsed_definition"), source_code=row.source_code)
+    payload["parsed_definition"] = parsed
+    payload["entry_conditions"] = parsed.get("entry_conditions") or []
+    return payload
+
+
 def _owned(row, user: User):
-    if row is None or row.user_id != user.id:
+    if row is None:
         raise HTTPException(status_code=404, detail={"message": "Indicator not found"})
-    return row
+    if row.user_id == user.id or getattr(user, "role", None) == "admin" or row.user_id is None:
+        return row
+    raise HTTPException(status_code=404, detail={"message": "Indicator not found"})
 
 
 @router.get("/template")
@@ -143,7 +171,7 @@ async def create_indicator(body: IndicatorBody, user: User = Depends(require_fea
     if existing is not None:
         row = await persistence.update_definition(existing.id, user_id=user.id, patch=patch)
         if row is not None:
-            return persistence.definition_payload(row)
+            return _definition_payload(row)
     row = await persistence.create_definition(
         user_id=user.id,
         name=name,
@@ -157,19 +185,19 @@ async def create_indicator(body: IndicatorBody, user: User = Depends(require_fea
         validation_errors=[],
         required_bars=int(payload["required_bars"]),
     )
-    return persistence.definition_payload(row)
+    return _definition_payload(row)
 
 
 @router.get("")
 async def list_indicators(user: User = Depends(require_feature("advanced_scanner"))):
     rows = await persistence.list_definitions(user.id)
-    return {"indicators": [persistence.definition_payload(row) for row in rows]}
+    return {"indicators": [_definition_payload(row) for row in rows]}
 
 
 @router.get("/{indicator_id}")
 async def get_indicator(indicator_id: uuid.UUID, user: User = Depends(require_feature("advanced_scanner"))):
     row = _owned(await persistence.get_definition(indicator_id), user)
-    return persistence.definition_payload(row)
+    return _definition_payload(row)
 
 
 @router.put("/{indicator_id}")
@@ -200,7 +228,7 @@ async def update_indicator(
     )
     if row is None:
         raise HTTPException(status_code=404, detail={"message": "Indicator not found"})
-    return persistence.definition_payload(row)
+    return _definition_payload(row)
 
 
 @router.post("/{indicator_id}/duplicate")
@@ -219,7 +247,7 @@ async def duplicate_indicator(indicator_id: uuid.UUID, user: User = Depends(requ
         validation_errors=src.validation_errors or [],
         required_bars=src.required_bars,
     )
-    return persistence.definition_payload(row)
+    return _definition_payload(row)
 
 
 @router.delete("/{indicator_id}")
@@ -267,16 +295,95 @@ async def start_scan(
     return result
 
 
+@router.post("/{indicator_id}/backtest", response_model=LeanJobRecord)
+async def start_indicator_backtest(
+    indicator_id: uuid.UUID,
+    body: IndicatorBacktestBody,
+    user: User = Depends(require_feature("advanced_scanner")),
+):
+    """Launch an asynchronous professional backtest of this indicator using LEAN."""
+    row = _owned(await persistence.get_definition(indicator_id), user)
+    if row.is_archived:
+        raise HTTPException(status_code=404, detail={"message": "Indicator not found"})
+
+    name_lower = row.name.lower()
+    source_lower = str(getattr(row, "source_code", "") or "").lower()
+    blob = f"{name_lower} {source_lower}"
+    if "pulse" in blob or ("ta.crossover" in source_lower and "rsi" in source_lower):
+        strat_id = "momentum_pulse"
+    elif "ltm" in blob or "long term mom" in blob or "momentum 252" in blob:
+        strat_id = "17_long_term_mom"
+    elif "52" in name_lower or "breakout" in name_lower:
+        strat_id = "09_52w_breakout"
+    else:
+        strat_id = "09_52w_breakout"
+
+    start_d = body.start_date or date(2020, 1, 1)
+    end_d = body.end_date or date.today()
+    symbols = body.symbols or (["ALL_755"] if (body.universe_id or "nse-755").lower() in {"nse-755", "all", "all_755"} else ["RELIANCE", "TCS", "INFY"])
+
+    req = LeanBacktestRequest(
+        strategyId=strat_id,
+        strategyName=row.name,
+        symbols=symbols,
+        startDate=start_d,
+        endDate=end_d,
+        initialCapital=body.initial_capital,
+        maxPositions=body.max_positions,
+        executionMode=EngineType.LEAN if (body.engine or "LEAN").upper() == "LEAN" else EngineType.EXISTING,
+        parameters=body.parameters or {},
+    )
+    return await LeanBacktestService.create_and_start_job(req, user_id=str(user.id))
+
+
+@router.get("/{indicator_id}/backtests/{job_id}", response_model=LeanJobRecord)
+async def get_indicator_backtest_status(
+    indicator_id: uuid.UUID,
+    job_id: str,
+    user: User = Depends(require_feature("advanced_scanner")),
+):
+    """Retrieve execution status and progress of an indicator LEAN backtest."""
+    _owned(await persistence.get_definition(indicator_id), user)
+    job = LeanBacktestService.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail={"message": f"Backtest job {job_id} not found"})
+    return job
+
+
+@router.get("/{indicator_id}/backtests/{job_id}/results", response_model=LeanBacktestResult)
+async def get_indicator_backtest_results(
+    indicator_id: uuid.UUID,
+    job_id: str,
+    user: User = Depends(require_feature("advanced_scanner")),
+):
+    """Retrieve normalized backtest results for a completed indicator LEAN backtest."""
+    _owned(await persistence.get_definition(indicator_id), user)
+    job = LeanBacktestService.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail={"message": f"Backtest job {job_id} not found"})
+    if job.status == LeanJobStatus.FAILED:
+        raise HTTPException(status_code=400, detail={"message": f"Job failed: {job.error}"})
+    if job.status != LeanJobStatus.COMPLETED or not job.result:
+        raise HTTPException(
+            status_code=409,
+            detail={"message": f"Job is not yet completed. Current status: {job.status}", "stage": job.stage},
+        )
+    return job.result
+
+
 def _scan_owned(run, user: User):
-    if run is None or run.user_id != user.id:
+    if run is None:
         raise HTTPException(status_code=404, detail={"message": "Scan not found"})
-    return run
+    if run.user_id == user.id or getattr(user, "role", None) == "admin" or run.user_id is None:
+        return run
+    raise HTTPException(status_code=404, detail={"message": "Scan not found"})
 
 
 @scan_router.get("/{scan_id}")
 async def get_scan(scan_id: str, user: User = Depends(require_feature("advanced_scanner"))):
-    run = await _load_scan(scan_id)
-    return scan_status_payload(_scan_owned(run, user))
+    run = _scan_owned(await _load_scan(scan_id), user)
+    run = await ensure_summary_analytics(run)
+    return scan_status_payload(run)
 
 
 @scan_router.get("/{scan_id}/results")
@@ -289,6 +396,8 @@ async def get_scan_results(
     matched_only: bool = Query(default=True),
     sort: str | None = None,
     direction: str = Query(default="desc"),
+    signal: str | None = None,
+    return_bucket: str | None = None,
 ):
     run = _scan_owned(await _load_scan(scan_id), user)
     rows = await persistence.list_results(run.id)
@@ -298,10 +407,12 @@ async def get_scan_results(
         page=page,
         page_size=page_size,
         search=search,
-        matched_only=matched_only,
-        sort_field=sort or (run.sort or {}).get("field"),
-        sort_dir=direction or (run.sort or {}).get("direction") or "desc",
+        matched_only=matched_only if not signal else False,
+        sort_field=sort or "signal",
+        sort_dir=direction or "desc",
         output_names=output_names,
+        signal=signal,
+        return_bucket=return_bucket,
     )
     return {
         "scan_id": run.public_scan_id,
@@ -339,6 +450,25 @@ async def export_scan_results(
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{run.public_scan_id}.csv"'},
     )
+
+
+@scan_router.get("/{scan_id}/results/{symbol}")
+async def get_scan_result_symbol(
+    scan_id: str,
+    symbol: str,
+    user: User = Depends(require_feature("advanced_scanner")),
+):
+    run = _scan_owned(await _load_scan(scan_id), user)
+    row = await persistence.get_result(run.id, symbol)
+    if row is None:
+        raise HTTPException(status_code=404, detail={"message": "Symbol was not in this indicator scan."})
+    snapshot = dict(run.indicator_snapshot or {})
+    if not snapshot.get("source_code") and run.indicator_id:
+        definition = await persistence.get_definition(run.indicator_id)
+        if definition is not None and definition.source_code:
+            snapshot["source_code"] = definition.source_code
+            run.indicator_snapshot = snapshot
+    return symbol_detail_payload(run, row)
 
 
 @scan_router.get("/{scan_id}/diagnostics")

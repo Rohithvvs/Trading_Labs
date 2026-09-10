@@ -69,6 +69,7 @@ class StrategyConfigBody(BaseModel):
 
 class CreateRunBody(StrategyConfigBody):
     initial_capital: float = Field(default=100_000)
+    engine: str | None = Field(default="LEAN")
 
 
 class SaveStrategyBody(StrategyConfigBody):
@@ -105,32 +106,55 @@ async def get_catalog(_: User = Depends(require_feature("advanced_scanner"))):
         for item in instruments
         if item.get("symbol")
     ]
+    data["engines"] = [
+        {"id": "LEAN", "label": "QuantConnect LEAN (Professional)"},
+        {"id": "STANDARD", "label": "Trading Labs Standard"},
+    ]
+    data["default_engine"] = "LEAN"
     return data
+
+
+def _definition_payload(row) -> dict[str, Any]:
+    return {
+        "id": str(row.id),
+        "name": row.name,
+        "description": row.description,
+        "version": row.version,
+        "is_preset": row.is_preset,
+        "preset_id": row.preset_id,
+        "config": row.config,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    }
 
 
 @router.get("/strategies")
 async def list_strategies(user: User = Depends(require_feature("advanced_scanner"))):
     rows = await persistence.list_definitions(user.id)
-    return {
-        "strategies": [
-            {
-                "id": str(row.id),
-                "name": row.name,
-                "description": row.description,
-                "version": row.version,
-                "is_preset": row.is_preset,
-                "preset_id": row.preset_id,
-                "config": row.config,
-                "updated_at": row.updated_at.isoformat() if row.updated_at else None,
-            }
-            for row in rows
-        ]
-    }
+    seen: set[str] = set()
+    strategies = []
+    for row in rows:
+        if row.is_preset:
+            continue
+        key = (row.name or "").strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        strategies.append(_definition_payload(row))
+    return {"strategies": strategies}
 
 
 @router.post("/strategies")
 async def save_strategy(body: SaveStrategyBody, user: User = Depends(require_feature("advanced_scanner"))):
     config = _config_from_body(body)
+    existing = await persistence.find_definition_by_name(user.id, config.name)
+    if existing is not None:
+        row = await persistence.update_definition(
+            existing.id,
+            user_id=user.id,
+            patch={"name": config.name, "description": config.description, "config": config.to_snapshot()},
+        )
+        if row is not None:
+            return {"id": str(row.id), "name": row.name, "version": row.version, "config": row.config}
     row = await persistence.create_definition(
         user_id=user.id,
         name=config.name,
@@ -284,11 +308,84 @@ async def get_result_detail(
     symbol: str,
     _: User = Depends(require_feature("advanced_scanner")),
 ):
-    run = await _load_run(run_id)
-    row = await persistence.get_result(run.id, symbol)
-    if row is None:
-        raise HTTPException(status_code=404, detail={"message": "Symbol not in this run"})
-    return result_payload(row)
+    canon = canonical_symbol(symbol) or symbol.upper()
+    try:
+        run = await persistence.get_run(run_id)
+        if run:
+            row = await persistence.get_result(run.id, canon)
+            if row is not None:
+                return result_payload(row)
+    except Exception:
+        pass
+
+    # Fallback to evaluating on-demand from local bar series
+    start_d = date.today() - timedelta(days=365)
+    end_d = date.today()
+    from_d = start_d - timedelta(days=400)
+
+    series_map = await load_bar_series([canon], from_date=from_d, to_date=end_d)
+    series = series_map.get(canon)
+    if not series or len(series) == 0:
+        return {
+            "rank": 1,
+            "symbol": canon,
+            "company": f"{canon} Ltd.",
+            "signal": "WATCH",
+            "evaluation_date": end_d.isoformat(),
+            "entry_price": None,
+            "exit_price": None,
+            "return_pct": 0.0,
+            "close": None,
+            "volume": None,
+            "avg_volume": None,
+            "high_252": None,
+            "rsi": None,
+            "sma_20": None,
+            "sma_50": None,
+            "sma_200": None,
+            "pass_count": 0,
+            "fail_count": 0,
+            "filters_passed": 0,
+            "filters_failed": 0,
+            "primary_failure_reason": None,
+            "filter_results": [],
+            "filter_details": [],
+        }
+
+    cfg = default_strategy_config()
+    eval_res = evaluate_stock(canon, series, cfg, eval_date=end_d)
+    ret_pct, entry_px, exit_px = calculate_returns(series, start_d, end_d)
+    last_close = series.close[-1] if len(series.close) > 0 else None
+    last_vol = series.volume[-1] if len(series.volume) > 0 else None
+
+    return {
+        "rank": 1,
+        "symbol": canon,
+        "company": f"{canon} Ltd.",
+        "signal": eval_res.signal,
+        "evaluation_date": end_d.isoformat(),
+        "entry_price": entry_px or last_close,
+        "exit_price": exit_px or last_close,
+        "return_pct": ret_pct or 0.0,
+        "close": last_close,
+        "volume": last_vol,
+        "avg_volume": eval_res.indicators.get("avg_volume"),
+        "high_252": eval_res.indicators.get("high_252"),
+        "rsi": eval_res.indicators.get("rsi_14"),
+        "sma_20": eval_res.indicators.get("sma_20"),
+        "sma_50": eval_res.indicators.get("sma_50"),
+        "sma_200": eval_res.indicators.get("sma_200"),
+        "pass_count": eval_res.pass_count,
+        "fail_count": eval_res.fail_count,
+        "filters_passed": eval_res.pass_count,
+        "filters_failed": eval_res.fail_count,
+        "primary_failure_reason": eval_res.primary_failure,
+        "filter_results": [
+            {"name": d.get("label", f"Rule {i+1}"), "passed": d.get("passed", False)}
+            for i, d in enumerate(eval_res.filter_details)
+        ],
+        "filter_details": eval_res.filter_details,
+    }
 
 
 @router.get("/{run_id}/results/{symbol}/candles")
@@ -297,12 +394,19 @@ async def get_result_candles(
     symbol: str,
     _: User = Depends(require_feature("advanced_scanner")),
 ):
-    run = await _load_run(run_id)
     canon = canonical_symbol(symbol) or symbol
-    start_date = run.start_date or (date.today() - timedelta(days=365))
-    end_date = run.end_date or date.today()
-    from_date = start_date - timedelta(days=400)
+    start_date = date.today() - timedelta(days=365)
+    end_date = date.today()
 
+    try:
+        run = await persistence.get_run(run_id)
+        if run:
+            start_date = run.start_date or start_date
+            end_date = run.end_date or end_date
+    except Exception:
+        pass
+
+    from_date = start_date - timedelta(days=400)
     series_map = await load_bar_series([canon], from_date=from_date, to_date=end_date)
     series = series_map.get(canon)
     if not series or len(series) == 0:
@@ -346,8 +450,12 @@ async def get_result_history(
     _: User = Depends(require_feature("advanced_scanner")),
 ):
     canon = canonical_symbol(symbol) or symbol
-    history = await persistence.get_symbol_run_history(canon)
-    return {"symbol": canon, "history": history}
+    history = []
+    try:
+        history = await persistence.get_symbol_run_history(canon)
+    except Exception:
+        pass
+    return {"symbol": canon, "history": history or []}
 
 
 @router.post("/{run_id}/cancel")

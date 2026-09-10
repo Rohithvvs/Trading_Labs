@@ -1,0 +1,29 @@
+//@version=6
+indicator("Buy and Hold Top Momentum [SCAN]", overlay=false)
+
+// Buy-and-Hold Top Momentum: 252-session momentum screen.
+// Same momentum kernel as Long-Term Buy & Hold Momentum (17_long_term_mom):
+//   Momentum_252 = Close[t] / Close[t-252] - 1.0
+//   Eligibility gate: Momentum_252 > 0.50 (strict)
+// Buy-and-hold variant: the top-ranked names are purchased once and never
+// rebalanced. The scan evaluates the last completed 1D bar per symbol.
+
+momentumGate = input.float(0.50, "Momentum Gate", minval=0.0, step=0.01)
+
+closeNow = close
+closePast = close[252]
+hasHistory = not na(closeNow) and not na(closePast) and closePast > 0 and closeNow > 0
+momentum252 = hasHistory ? (closeNow / closePast - 1.0) : na
+eligible = hasHistory and not na(momentum252) and momentum252 > momentumGate
+scanSignal = eligible ? 1 : 0
+
+plot(scanSignal, "BHTM Eligible Signal")
+plot(momentum252, "Momentum 252")
+plot(closeNow, "Close")
+plot(closePast, "Close t-252")
+
+alertcondition(
+     eligible,
+     title="BHTM Momentum Eligible",
+     message="252-session momentum above gate"
+)

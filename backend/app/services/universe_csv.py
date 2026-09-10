@@ -19,6 +19,15 @@ logger = logging.getLogger("app.services.universe")
 CSV_FIELDS = ("Company Name", "Industry", "Symbol", "Series", "ISIN Code")
 
 
+def is_dummy_universe_symbol(symbol: str | None) -> bool:
+    """Placeholder tickers (DUMMY*) are not part of the investable NSE universe."""
+    raw = (symbol or "").strip().upper()
+    if not raw:
+        return False
+    canon = canonical_symbol(raw) or raw
+    return canon.startswith("DUMMY") or raw.startswith("DUMMY")
+
+
 def parse_nifty500_row(row: dict[str, Any] | None) -> dict[str, str] | None:
     """Return a normalized CSV membership row, or None if no symbol is present."""
     if not row:
@@ -45,6 +54,8 @@ def parse_nifty500_row(row: dict[str, Any] | None) -> dict[str, str] | None:
             )
 
     if not symbol:
+        return None
+    if is_dummy_universe_symbol(symbol):
         return None
 
     return {

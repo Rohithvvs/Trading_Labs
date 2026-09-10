@@ -21,8 +21,8 @@ from ....config.settings import settings
 
 logger = logging.getLogger("app.strategies.w52.session")
 
-_QUOTE_CHUNK = 40
-_HISTORY_CONCURRENCY = 6
+_QUOTE_CHUNK = 50
+_HISTORY_CONCURRENCY = 10
 
 
 def _num(*values: Any) -> float | None:
@@ -95,6 +95,10 @@ def _session_date(now: datetime | None = None) -> date | None:
     th = _hours()
     ist = th._to_ist(now)
     if not th.is_trading_day(ist):
+        return None
+    from ...trading_hours_service import OPEN_TIME
+
+    if ist.time() < OPEN_TIME:
         return None
     return ist.date()
 
@@ -248,20 +252,33 @@ async def fetch_live_session_bars(symbols: list[str]) -> tuple[dict[str, dict[st
     reverse = {svc._normalize_symbol(s): s for s in unique}
     reverse[svc._normalize_symbol(index_provider)] = index_provider
 
-    for i in range(0, len(want), _QUOTE_CHUNK):
-        chunk = want[i : i + _QUOTE_CHUNK]
-        fyers_syms = [svc._normalize_symbol(s) for s in chunk]
-        try:
-            # Same SDK contract as FyersService.fetch_quote: data={"symbols": ...}
-            resp = await asyncio.to_thread(
-                client.quotes, data={"symbols": ",".join(fyers_syms)}
-            )
-        except Exception:
-            logger.exception("W52_LIVE_QUOTES_FAILED offset=%s", i)
-            continue
-        rows = (resp or {}).get("d") if isinstance(resp, dict) else None
-        if not rows:
-            logger.warning("W52_LIVE_QUOTES_EMPTY offset=%s resp=%s", i, type(resp).__name__)
+    chunks = [want[i : i + _QUOTE_CHUNK] for i in range(0, len(want), _QUOTE_CHUNK)]
+    sem = asyncio.Semaphore(4)
+
+    async def fetch_chunk(chunk: list[str]) -> list[dict[str, Any]]:
+        async with sem:
+            fyers_syms = [svc._normalize_symbol(s) for s in chunk]
+            resp = None
+            for attempt in range(1, 4):
+                try:
+                    resp = await asyncio.to_thread(
+                        client.quotes, data={"symbols": ",".join(fyers_syms)}
+                    )
+                    if isinstance(resp, dict) and resp.get("s") == "ok" and resp.get("d"):
+                        break
+                    if isinstance(resp, dict) and resp.get("code") == 429:
+                        await asyncio.sleep(0.4 * attempt)
+                except Exception:
+                    if attempt == 3:
+                        logger.warning("W52_LIVE_QUOTES_FAILED chunk_len=%s", len(chunk))
+                    await asyncio.sleep(0.3)
+                await asyncio.sleep(0.1)
+            rows = (resp or {}).get("d") if isinstance(resp, dict) else None
+            return rows if isinstance(rows, list) else []
+
+    chunk_results = await asyncio.gather(*(fetch_chunk(c) for c in chunks), return_exceptions=True)
+    for rows in chunk_results:
+        if not isinstance(rows, list):
             continue
         for row in rows:
             if not isinstance(row, dict):
@@ -276,6 +293,7 @@ async def fetch_live_session_bars(symbols: list[str]) -> tuple[dict[str, dict[st
                 index_close = bar["close"]
             else:
                 equity[local] = bar
+
     logger.info(
         "W52_LIVE_SESSION_BARS symbols=%s got=%s index=%s",
         len(unique),

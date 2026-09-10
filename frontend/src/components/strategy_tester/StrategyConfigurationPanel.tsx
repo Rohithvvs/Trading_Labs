@@ -1,9 +1,11 @@
-import React from "react";
+import React, { useMemo } from "react";
 import type { StrategyCatalog } from "../../api_strategy_tester";
+import { strategySelectOptions } from "../../utils/strategyTesterState";
 
 interface StrategyConfigurationPanelProps {
   catalog: StrategyCatalog | null;
   selectedPresetId: string;
+  selectedEngine?: string;
   strategyName: string;
   strategyDescription: string;
   universe: string;
@@ -14,6 +16,7 @@ interface StrategyConfigurationPanelProps {
   initialCapital: number;
   isRunning: boolean;
   onPresetChange: (presetId: string) => void;
+  onEngineChange?: (engineId: string) => void;
   onEditStrategy: () => void;
   onStartDateChange: (dateStr: string) => void;
   onEndDateChange: (dateStr: string) => void;
@@ -38,6 +41,7 @@ export function formatDateInput(d: string): string {
 export const StrategyConfigurationPanel: React.FC<StrategyConfigurationPanelProps> = ({
   catalog,
   selectedPresetId,
+  selectedEngine = "LEAN",
   strategyName,
   strategyDescription,
   universe: _universe,
@@ -48,6 +52,7 @@ export const StrategyConfigurationPanel: React.FC<StrategyConfigurationPanelProp
   initialCapital,
   isRunning,
   onPresetChange,
+  onEngineChange,
   onEditStrategy,
   onStartDateChange,
   onEndDateChange,
@@ -55,6 +60,14 @@ export const StrategyConfigurationPanel: React.FC<StrategyConfigurationPanelProp
   onRunStrategy,
   onReset,
 }) => {
+  const strategyOptions = useMemo(
+    () => strategySelectOptions(catalog?.presets, catalog?.saved),
+    [catalog?.presets, catalog?.saved],
+  );
+  const selectedValue = strategyOptions.some((opt) => opt.id === selectedPresetId)
+    ? selectedPresetId
+    : strategyOptions[0]?.id || selectedPresetId;
+
   return (
     <section className="st-config-card" aria-label="Strategy configuration">
       <div className="st-config-row">
@@ -64,18 +77,13 @@ export const StrategyConfigurationPanel: React.FC<StrategyConfigurationPanelProp
           <div className="st-config-box">
             <select
               id="st-strategy-select"
-              value={selectedPresetId}
+              value={selectedValue}
               onChange={(e) => onPresetChange(e.target.value)}
               data-testid="select-strategy-preset"
             >
-              {(Array.isArray(catalog?.presets) ? catalog.presets : []).map((p) => (
-                <option key={p.preset_id} value={p.preset_id}>
-                  {p.name}
-                </option>
-              ))}
-              {(Array.isArray(catalog?.saved) ? catalog.saved : []).map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.name}
+              {strategyOptions.map((opt) => (
+                <option key={opt.id} value={opt.id}>
+                  {opt.name}
                 </option>
               ))}
             </select>
@@ -112,6 +120,31 @@ export const StrategyConfigurationPanel: React.FC<StrategyConfigurationPanelProp
           <div className="st-config-box">
             <span>1 Day</span>
             <span style={{ color: "#64748b", fontSize: "0.75rem" }}>⌄</span>
+          </div>
+        </div>
+
+        {/* Backtest Engine */}
+        <div className="st-config-field" style={{ minWidth: 150 }}>
+          <label htmlFor="st-engine-select">Engine</label>
+          <div className="st-config-box">
+            <select
+              id="st-engine-select"
+              value={selectedEngine}
+              onChange={(e) => onEngineChange?.(e.target.value)}
+              data-testid="select-backtest-engine"
+              style={{
+                background: "transparent",
+                color: "#38bdf8",
+                fontWeight: 600,
+                border: "none",
+                fontSize: "0.75rem",
+                outline: "none",
+                cursor: "pointer",
+              }}
+            >
+              <option value="LEAN" style={{ background: "#0f172a", color: "#f8fafc" }}>QuantConnect LEAN</option>
+              <option value="STANDARD" style={{ background: "#0f172a", color: "#f8fafc" }}>Trading Labs Standard</option>
+            </select>
           </div>
         </div>
 

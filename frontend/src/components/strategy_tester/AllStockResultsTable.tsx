@@ -26,6 +26,8 @@ interface AllStockResultsTableProps {
   onStockSelect: (symbol: string) => void;
   onColumnsClick: () => void;
   onExportClick: () => void;
+  variant?: "strategy" | "scanner";
+  caption?: string;
 }
 
 export function formatINR(val: number | null | undefined): string {
@@ -41,12 +43,19 @@ export function formatVolume(val: number | null | undefined): string {
   return val.toLocaleString("en-IN");
 }
 
-const signalOrderWeight = (sig: string | null | undefined): number => {
+const signalOrderWeight = (sig: string | null | undefined, variant: "strategy" | "scanner" = "strategy"): number => {
   const s = (sig || "").toUpperCase();
+  if (variant === "scanner") {
+    if (s === "MATCH" || s === "MATCHED") return 1;
+    if (s === "REJECT" || s === "FAILED") return 2;
+    if (s === "SKIPPED") return 3;
+    return 4;
+  }
   if (s === "BUY") return 1;
   if (s === "WATCH") return 2;
   if (s === "REJECT") return 3;
-  return 4;
+  if (s === "FAILED") return 4;
+  return 5;
 };
 
 export const AllStockResultsTable: React.FC<AllStockResultsTableProps> = ({
@@ -74,6 +83,8 @@ export const AllStockResultsTable: React.FC<AllStockResultsTableProps> = ({
   onStockSelect,
   onColumnsClick,
   onExportClick,
+  variant = "strategy",
+  caption,
 }) => {
   const isColVisible = (colKey: string) => {
     if (!visibleColumns) return true;
@@ -84,14 +95,13 @@ export const AllStockResultsTable: React.FC<AllStockResultsTableProps> = ({
   const from = totalResults > 0 ? (currentPage - 1) * pageSize + 1 : 0;
   const to = Math.min(currentPage * pageSize, totalResults);
 
-  // When All Signals is selected, order by signal priority (BUY -> WATCH -> REJECT -> FAILED)
   const sortedRows = React.useMemo(() => {
-    if (signalFilter !== "ALL" && signalFilter !== "") {
+    if (variant !== "scanner" && signalFilter !== "ALL" && signalFilter !== "") {
       return results;
     }
     return [...results].sort((a, b) => {
-      const weightA = signalOrderWeight(a.signal);
-      const weightB = signalOrderWeight(b.signal);
+      const weightA = signalOrderWeight(a.signal, variant);
+      const weightB = signalOrderWeight(b.signal, variant);
       if (weightA !== weightB) {
         return weightA - weightB;
       }
@@ -122,7 +132,7 @@ export const AllStockResultsTable: React.FC<AllStockResultsTableProps> = ({
       }
       return 0;
     });
-  }, [results, signalFilter, sortColumn, sortDirection]);
+  }, [results, signalFilter, sortColumn, sortDirection, variant]);
 
   // Generate pagination items
   const renderPaginationButtons = () => {
@@ -185,14 +195,64 @@ export const AllStockResultsTable: React.FC<AllStockResultsTableProps> = ({
       <div className="st-results-header">
         <div className="st-results-title-group">
           <h2 className="st-results-title">
-            All {totalResults} Stock Results
+            {variant === "scanner" ? `All ${totalResults} Scanned Stock Results` : `All ${totalResults} Stock Results`}
           </h2>
           <p className="st-results-caption" data-testid="scan-semantics-caption">
-            BUY is the last daily bar (same as TradingView Pine Screener): Close ≥ prior 252-session high, volume &gt; 20-day average, Nifty 500 &gt; SMA 50. Hold Return is buy-and-hold from the window start — not a 52-week ATR-trail trade list.
+            {caption ||
+              (variant === "scanner"
+                ? "MATCHED means every required strategy entry condition passed on the scan bar. REJECTED means at least one required condition did not pass. SKIPPED means the name did not have enough history."
+                : "BUY is the last daily bar (same as TradingView Pine Screener): Close ≥ prior 252-session high, volume &gt; 20-day average, Nifty 500 &gt; SMA 50. Hold Return is buy-and-hold from the window start — not a 52-week ATR-trail trade list.")}
           </p>
 
-          {/* Quick Access Signal Selector: BUY -> WATCH -> REJECT -> FAILED */}
+          {/* Quick Access Signal Selector */}
           <div className="st-signal-quick-pills" role="group" aria-label="Quick signal filters">
+            {variant === "scanner" ? (
+              <>
+                <button
+                  type="button"
+                  className={`st-signal-pill buy ${signalFilter === "MATCH" ? "is-active" : ""}`}
+                  onClick={() => {
+                    onSignalFilterChange(signalFilter === "MATCH" ? "ALL" : "MATCH");
+                    onPageChange(1);
+                  }}
+                  data-testid="pill-filter-matched"
+                  title="Show MATCHED stocks"
+                >
+                  <span className="st-pill-dot buy" />
+                  <span>MATCHED</span>
+                  <span className="st-pill-count">{buyCount}</span>
+                </button>
+                <button
+                  type="button"
+                  className={`st-signal-pill reject ${signalFilter === "REJECT" ? "is-active" : ""}`}
+                  onClick={() => {
+                    onSignalFilterChange(signalFilter === "REJECT" ? "ALL" : "REJECT");
+                    onPageChange(1);
+                  }}
+                  data-testid="pill-filter-rejected"
+                  title="Show REJECTED stocks"
+                >
+                  <span className="st-pill-dot reject" />
+                  <span>REJECTED</span>
+                  <span className="st-pill-count">{rejectCount}</span>
+                </button>
+                <button
+                  type="button"
+                  className={`st-signal-pill watch ${signalFilter === "SKIPPED" ? "is-active" : ""}`}
+                  onClick={() => {
+                    onSignalFilterChange(signalFilter === "SKIPPED" ? "ALL" : "SKIPPED");
+                    onPageChange(1);
+                  }}
+                  data-testid="pill-filter-skipped"
+                  title="Show SKIPPED stocks"
+                >
+                  <span className="st-pill-dot watch" />
+                  <span>SKIPPED</span>
+                  <span className="st-pill-count">{watchCount}</span>
+                </button>
+              </>
+            ) : (
+              <>
             <button
               type="button"
               className={`st-signal-pill buy ${signalFilter === "BUY" ? "is-active" : ""}`}
@@ -252,6 +312,8 @@ export const AllStockResultsTable: React.FC<AllStockResultsTableProps> = ({
               <span>FAILED</span>
               <span className="st-pill-count">{failedCount}</span>
             </button>
+              </>
+            )}
           </div>
         </div>
       </div>
@@ -301,11 +363,22 @@ export const AllStockResultsTable: React.FC<AllStockResultsTableProps> = ({
           data-testid="select-signal-filter"
           aria-label="Filter by Signal"
         >
-          <option value="ALL">All Signals ▼</option>
-          <option value="BUY">BUY</option>
-          <option value="WATCH">WATCH</option>
-          <option value="REJECT">REJECT</option>
-          <option value="FAILED">FAILED</option>
+          {variant === "scanner" ? (
+            <>
+              <option value="ALL">All Results ▼</option>
+              <option value="MATCH">MATCHED</option>
+              <option value="REJECT">REJECTED</option>
+              <option value="SKIPPED">SKIPPED</option>
+            </>
+          ) : (
+            <>
+              <option value="ALL">All Signals ▼</option>
+              <option value="BUY">BUY</option>
+              <option value="WATCH">WATCH</option>
+              <option value="REJECT">REJECT</option>
+              <option value="FAILED">FAILED</option>
+            </>
+          )}
         </select>
 
         {/* Returns Filter */}
@@ -399,7 +472,7 @@ export const AllStockResultsTable: React.FC<AllStockResultsTableProps> = ({
                     key={row.symbol}
                     className={isSelected ? "is-selected" : ""}
                     onClick={() => onStockSelect(row.symbol)}
-                    data-testid={`row-stock-${row.symbol}`}
+                    data-testid={variant === "scanner" ? `indicator-row-${row.symbol}` : `row-stock-${row.symbol}`}
                     style={{ cursor: "pointer" }}
                   >
                     {isColVisible("rank") && <td style={{ color: "#64748b", fontWeight: 600 }}>{row.rank ?? "—"}</td>}
@@ -497,7 +570,15 @@ export const AllStockResultsTable: React.FC<AllStockResultsTableProps> = ({
                     )}
                     {isColVisible("primary_failure") && (
                       <td style={{ color: "#94a3b8", fontSize: "0.72rem" }}>
-                        {row.primary_failure_reason || row.primary_failure || (row.signal === "BUY" ? "None" : "SMA 50 > SMA 200")}
+                        {row.primary_failure_reason ||
+                          row.primary_failure ||
+                          (variant === "scanner"
+                            ? row.signal === "MATCH" || row.signal === "MATCHED"
+                              ? "None"
+                              : "—"
+                            : row.signal === "BUY"
+                              ? "None"
+                              : "—")}
                       </td>
                     )}
                   </tr>

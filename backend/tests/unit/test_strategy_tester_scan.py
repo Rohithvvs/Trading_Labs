@@ -76,6 +76,25 @@ async def test_load_universe_backfills_csv_when_stocks_master_is_truncated():
     assert {r["symbol"] for r in rows} == {f"S{i}" for i in range(755)}
 
 
+@pytest.mark.asyncio
+async def test_load_universe_drops_dummy_placeholders():
+    instruments = [
+        _instrument(0),
+        SimpleNamespace(symbol="DUMMYALCAR", company_name="Dummy", universe_symbol="DUMMYALCAR-EQ"),
+        SimpleNamespace(symbol="DUMMYVEDL1", company_name="Dummy 1", universe_symbol="DUMMYVEDL1-EQ"),
+    ]
+    with patch(
+        "app.services.strategy_tester.scan_service.UniverseService.list_active_instruments",
+        new=AsyncMock(return_value=instruments),
+    ), patch(
+        "app.services.strategy_tester.scan_service.load_unique_nifty500_csv_rows",
+        return_value=[{"canonical_symbol": "S0", "company_name": "Company 0", "symbol": "S0"}],
+    ):
+        rows = await load_universe("ALL_755")
+    assert [r["symbol"] for r in rows] == ["S0"]
+    assert all(not str(r["symbol"]).startswith("DUMMY") for r in rows)
+
+
 def test_apply_live_bar_replaces_same_session_and_appends_next():
     series = _series(n=2, start=date(2026, 8, 27))
     apply_live_bar(
@@ -120,6 +139,19 @@ def test_series_from_rows_drops_duplicate_dates_and_trailing_clones():
     series = _series_from_rows(rows)
     assert series.dates == [date(2026, 8, 26), date(2026, 8, 27)]
     assert series.close[-1] == 1696.8
+
+
+def test_series_from_rows_drops_holidays_weekends_and_mid_series_clones():
+    rows = [
+        (date(2025, 12, 24), 100.0, 101.0, 99.0, 100.0, 1000.0),  # Wednesday
+        (date(2025, 12, 25), 100.0, 101.0, 99.0, 100.0, 1000.0),  # Christmas holiday clone
+        (date(2025, 12, 26), 102.0, 103.0, 101.0, 102.5, 1100.0),  # Friday
+        (date(2025, 12, 27), 102.0, 103.0, 101.0, 102.5, 1100.0),  # Saturday
+        (date(2025, 12, 29), 104.0, 105.0, 103.0, 104.0, 1200.0),  # Monday
+    ]
+    series = _series_from_rows(rows)
+    assert series.dates == [date(2025, 12, 24), date(2025, 12, 26), date(2025, 12, 29)]
+    assert series.close == [100.0, 102.5, 104.0]
 
 
 @pytest.mark.asyncio
@@ -173,6 +205,58 @@ async def test_overlay_live_session_applies_fyers_quotes_when_window_includes_to
     assert out["AAA"].close[-1] == 204.0
     assert bench is not None
     assert bench.close[-1] == 24000.0
+
+
+@pytest.mark.asyncio
+async def test_overlay_fetches_quotes_when_helper_is_none_but_end_date_is_live_session(monkeypatch):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    series_map = {"AAA": _series(n=3, start=date(2026, 9, 2))}
+    live_bar = {"open": 200.0, "high": 205.0, "low": 199.0, "close": 204.0, "volume": 12_000.0}
+    friday_noon = datetime(2026, 9, 4, 12, 18, tzinfo=ZoneInfo("Asia/Kolkata"))
+
+    class _Hours:
+        def now_ist(self):
+            return friday_noon
+
+    monkeypatch.setattr(
+        "app.services.trading_hours_service.trading_hours",
+        _Hours(),
+        raising=False,
+    )
+    with (
+        patch(
+            "app.services.strategy_tester.scan_service.fill_missing_completed_bar_series",
+            new=AsyncMock(side_effect=lambda series, symbols, **kw: (series, kw.get("benchmark"), "stored_eod")),
+        ),
+        patch(
+            "app.services.strategies.breakout52w.session_overlay.should_overlay_session",
+            return_value=None,
+        ),
+        patch(
+            "app.services.strategies.breakout52w.session_overlay.fetch_live_session_bars",
+            new=AsyncMock(return_value=({"AAA": live_bar}, 24000.0)),
+        ) as quotes,
+        patch(
+            "app.services.market_data_ingestion.repository.upsert_daily_bars",
+            new=AsyncMock(return_value=(1, 0)),
+        ),
+        patch(
+            "app.services.market_data_ingestion.repository.upsert_index_bars",
+            new=AsyncMock(return_value=(1, 0)),
+        ),
+    ):
+        out, _bench, source = await overlay_live_session(
+            series_map,
+            ["AAA"],
+            end_date=date(2026, 9, 4),
+            benchmark=_series(n=3, start=date(2026, 9, 2)),
+        )
+    quotes.assert_awaited()
+    assert source == "live_session"
+    assert out["AAA"].dates[-1] == date(2026, 9, 4)
+    assert out["AAA"].close[-1] == 204.0
 
 
 @pytest.mark.asyncio

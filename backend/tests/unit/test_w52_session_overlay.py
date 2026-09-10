@@ -87,6 +87,17 @@ def test_open_session_overlays_forming_1d_bar(monkeypatch):
     assert should_overlay_session([date(2026, 8, 20)], now=after_close) == date(2026, 8, 21)
 
 
+def test_pre_open_session_does_not_overlay_forming_bar():
+    from zoneinfo import ZoneInfo
+    from app.services.strategies.breakout52w.session_overlay import should_overlay_session
+
+    pre_open = datetime(2026, 8, 21, 8, 30, tzinfo=ZoneInfo("Asia/Kolkata"))
+    assert should_overlay_session([date(2026, 8, 20)], now=pre_open) is None
+
+    midnight = datetime(2026, 8, 21, 0, 30, tzinfo=ZoneInfo("Asia/Kolkata"))
+    assert should_overlay_session([date(2026, 8, 20)], now=midnight) is None
+
+
 def test_drop_open_session_bar_is_fallback_when_quotes_fail(monkeypatch):
     from app.services.strategies.breakout52w import session_overlay as so
 

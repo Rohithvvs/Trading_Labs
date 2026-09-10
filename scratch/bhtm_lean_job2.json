@@ -1,0 +1,40 @@
+{
+  "jobId": "LEAN-30214ABEBDEA",
+  "strategyId": "17_long_term_mom",
+  "strategyName": "Buy and Hold Top Momentum [SCAN]",
+  "userId": "6e29da5c-b7ca-4e4f-b863-74f837fe96fb",
+  "createdAt": "2026-09-10T08:28:04.387915Z",
+  "startedAt": null,
+  "completedAt": null,
+  "status": "QUEUED",
+  "progressPct": 0,
+  "stage": "Queued",
+  "error": null,
+  "request": {
+    "strategyId": "17_long_term_mom",
+    "strategyName": "Buy and Hold Top Momentum [SCAN]",
+    "symbols": [
+      "ALL_755"
+    ],
+    "startDate": "2024-11-15",
+    "endDate": "2026-09-09",
+    "initialCapital": 100000.0,
+    "commission": 0.0005,
+    "slippage": 0.0005,
+    "positionSizing": "PERCENT_EQUITY",
+    "positionSizingValue": 10.0,
+    "maxPositions": 10,
+    "benchmark": "NIFTY500",
+    "timeframe": "Daily",
+    "dataSource": "NSE",
+    "executionMode": "LEAN",
+    "parameters": {
+      "momentum_gate": 0.5,
+      "rebalance_period": 252,
+      "sizing_mode": "A"
+    },
+    "debugMode": false,
+    "debugSymbol": null
+  },
+  "result": null
+}

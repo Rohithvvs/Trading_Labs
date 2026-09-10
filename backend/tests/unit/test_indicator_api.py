@@ -46,6 +46,15 @@ def test_validate_success_extracts_outputs_and_required_bars(api):
     assert "52W Breakout" in names
     assert "52W Breakout Scan" in names
     assert any("ATR Multiplier" in w["message"] for w in body["warnings"])
+    condition_names = [item["name"] for item in body["entry_conditions"]]
+    assert condition_names == [
+        "NIFTY 500 Close > NIFTY 500 SMA 50",
+        "Close >= Prior 252 High",
+        "Volume > Average Volume 20",
+    ]
+    assert "52W Breakout Signal = 1" not in condition_names
+    parsed_names = [item["name"] for item in (body["parsed_definition"] or {}).get("entry_conditions") or []]
+    assert parsed_names == condition_names
 
 
 def test_validate_rejects_strategy(api):
@@ -303,19 +312,164 @@ def test_user_cannot_read_foreign_indicator(api):
     assert res.status_code == 404
 
 
-def test_indicator_end_date_keeps_tradingview_as_of():
+@pytest.mark.asyncio
+async def test_fetch_current_indicator_market_data_ensures_then_overlays():
     from datetime import date
 
-    from app.services.indicator_scanner.scan_service import clip_series_to, indicator_end_date
+    from app.services.indicator_scanner.scan_service import fetch_current_indicator_market_data
     from app.services.strategy_tester.indicators import BarSeries
 
+    order: list[str] = []
+    series = BarSeries(
+        dates=[date(2026, 9, 8)],
+        open=[100.0],
+        high=[101.0],
+        low=[99.0],
+        close=[100.5],
+        volume=[1_000.0],
+    )
+
+    async def ensure(symbols, **kwargs):
+        order.append("ensure")
+        assert kwargs.get("target_date") == date(2026, 9, 8)
+        assert kwargs.get("max_duration_s") == 20.0
+        return {"status": "SUCCESS"}
+
+    async def repair(*_args, **_kwargs):
+        order.append("repair")
+        assert _kwargs.get("skip_thin") is True
+        return {"repaired": 0}
+
+    async def prepare(*_args, **_kwargs):
+        order.append("prepare")
+        assert _kwargs.get("overlay_live") is True
+        return {"AAA": series}, series, "daily_ohlcv+live_session"
+
+    with (
+        patch(
+            "app.services.indicator_scanner.scan_service.ensure_universe_market_data",
+            new=ensure,
+        ),
+        patch(
+            "app.services.market_data_ingestion.session_repair.repair_scan_market_history",
+            new=repair,
+        ),
+        patch(
+            "app.services.indicator_scanner.scan_service.prepare_scan_market_data",
+            new=prepare,
+        ),
+        patch(
+            "app.services.market_data_ingestion.calendar_utils.expected_last_completed_session",
+            return_value=date(2026, 9, 8),
+        ),
+    ):
+        loaded, bench, source, report = await fetch_current_indicator_market_data(
+            ["AAA"],
+            ["AAA-EQ"],
+            from_date=date(2026, 1, 1),
+            end_date=date(2026, 9, 8),
+            need_benchmark=False,
+            min_bars=20,
+        )
+
+    assert order == ["ensure", "repair", "prepare"]
+    assert source == "daily_ohlcv+live_session"
+    assert report["ensure"]["status"] == "SUCCESS"
+    assert loaded["AAA"].close[-1] == 100.5
+    assert bench is series
+
+
+def test_indicator_end_date_keeps_tradingview_as_of():
+    from datetime import date, datetime
+    from zoneinfo import ZoneInfo
+
+    from app.services.indicator_scanner.scan_service import indicator_end_date
+
+    saturday = datetime(2026, 8, 29, 10, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
+    monday = datetime(2026, 8, 31, 10, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
     with patch(
         "app.services.market_data_ingestion.calendar_utils.expected_last_completed_session",
         return_value=date(2026, 8, 28),
     ):
-        assert indicator_end_date(date(2026, 8, 28)) == date(2026, 8, 28)
-        assert indicator_end_date(None) == date(2026, 8, 28)
-        assert indicator_end_date(date(2026, 8, 30)) == date(2026, 8, 28)
+        assert indicator_end_date(date(2026, 8, 28), now=saturday) == date(2026, 8, 28)
+        assert indicator_end_date(None, now=saturday) == date(2026, 8, 28)
+        assert indicator_end_date(date(2026, 8, 30), now=saturday) == date(2026, 8, 28)
+        assert indicator_end_date(date(2026, 8, 27), now=saturday) == date(2026, 8, 27)
+
+    assert indicator_end_date(None, now=monday) == date(2026, 8, 31)
+    assert indicator_end_date(date(2026, 8, 28), now=monday) == date(2026, 8, 28)
+
+
+def test_indicator_end_date_weekend_today_uses_last_session():
+    from datetime import date, datetime
+    from zoneinfo import ZoneInfo
+
+    from app.services.indicator_scanner.scan_service import indicator_end_date, pine_screener_bar
+
+    saturday_morning = datetime(2026, 9, 5, 9, 14, tzinfo=ZoneInfo("Asia/Kolkata"))
+    assert pine_screener_bar(saturday_morning) == date(2026, 9, 4)
+    assert indicator_end_date(date(2026, 9, 5), now=saturday_morning) == date(2026, 9, 4)
+    assert indicator_end_date(None, now=saturday_morning) == date(2026, 9, 4)
+    assert indicator_end_date(date(2026, 9, 3), now=saturday_morning) == date(2026, 9, 3)
+
+
+def test_indicator_end_date_before_open_uses_today_on_trading_day():
+    from datetime import date, datetime
+    from zoneinfo import ZoneInfo
+
+    from app.services.indicator_scanner.scan_service import (
+        indicator_end_date,
+        last_bar_covers_scan,
+        pine_screener_bar,
+    )
+
+    thursday_midnight = datetime(2026, 9, 10, 0, 58, tzinfo=ZoneInfo("Asia/Kolkata"))
+    assert pine_screener_bar(thursday_midnight) == date(2026, 9, 9)
+    assert indicator_end_date(date(2026, 9, 10), now=thursday_midnight) == date(2026, 9, 10)
+    assert indicator_end_date(None, now=thursday_midnight) == date(2026, 9, 10)
+    assert last_bar_covers_scan(date(2026, 9, 9), date(2026, 9, 10), now=thursday_midnight) is True
+    assert last_bar_covers_scan(date(2026, 9, 8), date(2026, 9, 10), now=thursday_midnight) is False
+
+
+def test_last_bar_covers_scan_requires_today_after_open():
+    from datetime import date, datetime
+    from zoneinfo import ZoneInfo
+
+    from app.services.indicator_scanner.scan_service import last_bar_covers_scan
+
+    thursday_open = datetime(2026, 9, 10, 9, 15, tzinfo=ZoneInfo("Asia/Kolkata"))
+    assert last_bar_covers_scan(date(2026, 9, 9), date(2026, 9, 10), now=thursday_open) is False
+    assert last_bar_covers_scan(date(2026, 9, 10), date(2026, 9, 10), now=thursday_open) is True
+
+
+def test_indicator_end_date_uses_today_during_rth_even_if_overlay_helper_is_none():
+    from datetime import date, datetime
+    from zoneinfo import ZoneInfo
+
+    from app.services.indicator_scanner.scan_service import indicator_end_date, pine_screener_bar
+
+    friday_noon = datetime(2026, 9, 4, 12, 18, tzinfo=ZoneInfo("Asia/Kolkata"))
+    with (
+        patch(
+            "app.services.strategies.breakout52w.session_overlay.should_overlay_session",
+            return_value=None,
+        ),
+        patch(
+            "app.services.market_data_ingestion.calendar_utils.expected_last_completed_session",
+            return_value=date(2026, 9, 3),
+        ),
+    ):
+        assert pine_screener_bar(friday_noon) == date(2026, 9, 4)
+        assert indicator_end_date(None, now=friday_noon) == date(2026, 9, 4)
+        assert indicator_end_date(date(2026, 9, 4), now=friday_noon) == date(2026, 9, 4)
+        assert indicator_end_date(date(2026, 9, 3), now=friday_noon) == date(2026, 9, 3)
+
+
+def test_clip_series_stops_on_requested_session():
+    from datetime import date
+
+    from app.services.indicator_scanner.scan_service import clip_series_to
+    from app.services.strategy_tester.indicators import BarSeries
 
     series = BarSeries(
         dates=[date(2026, 8, 26), date(2026, 8, 27), date(2026, 8, 28), date(2026, 8, 29)],
@@ -329,3 +483,252 @@ def test_indicator_end_date_keeps_tradingview_as_of():
     assert clipped is not None
     assert clipped.dates[-1] == date(2026, 8, 28)
     assert clipped.close[-1] == 1938.5
+
+
+LTM_SCAN_SOURCE = """
+//@version=6
+indicator("LTM Momentum 252 [SCAN]", overlay=false)
+closeNow = close
+closePast = close[252]
+hasHistory = not na(closeNow) and not na(closePast) and closePast > 0 and closeNow > 0
+momentum252 = hasHistory ? (closeNow / closePast - 1.0) : na
+eligible = hasHistory and not na(momentum252) and momentum252 > 0.50
+scanSignal = eligible ? 1 : 0
+plot(scanSignal, "LTM Eligible Signal")
+plot(momentum252, "Momentum 252")
+plot(closeNow, "Close")
+plot(closePast, "Close t-252")
+"""
+
+
+def test_symbol_detail_payload_expands_legacy_signal_filter_from_source():
+    from types import SimpleNamespace
+
+    from app.services.indicator_scanner.entry_conditions import CONDITIONS_OUTPUT_KEY
+    from app.services.indicator_scanner.scan_service import symbol_detail_payload
+
+    run = SimpleNamespace(
+        public_scan_id="IND-20260904-001",
+        indicator_id=None,
+        indicator_name="LTM Momentum 252 [SCAN]",
+        filters=[{"field": "LTM Eligible Signal", "operator": "=", "value": 1}],
+        indicator_snapshot={"source_code": LTM_SCAN_SOURCE},
+    )
+    row = SimpleNamespace(
+        symbol="RATEGAIN",
+        display_name="Rategain Travel Technologies Ltd.",
+        exchange="NSE",
+        timeframe="1D",
+        as_of="2026-09-04",
+        status="ok",
+        matched=True,
+        outputs={
+            "LTM Eligible Signal": 1.0,
+            "Momentum 252": 0.76,
+            "Close": 869.75,
+            "Close t-252": 495.05,
+        },
+        ohlcv={"close": 869.75},
+        error_detail=None,
+        bar_count=400,
+    )
+    payload = symbol_detail_payload(run, row)
+    assert payload["source"] == "indicator_scanner"
+    assert payload["signal"] == "MATCH"
+    assert payload["indicator_name"] == "LTM Momentum 252 [SCAN]"
+    assert [item["name"] for item in payload["filter_results"]] == ["Momentum 252 > 0.5"]
+    assert payload["filter_results"][0]["passed"] is True
+    assert CONDITIONS_OUTPUT_KEY not in (payload.get("outputs") or {})
+    assert payload["entry_price"] == 495.05
+    assert payload["exit_price"] == 869.75
+    assert abs(payload["return_pct"] - 76.0) < 1e-9
+    names = {item["name"] for item in payload["filter_results"]}
+    assert "LTM Eligible Signal = 1" not in names
+    assert "Close > SMA 50" not in names
+    assert "Rsi 14 > 55" not in names
+
+
+def test_row_from_eval_requires_every_strategy_condition():
+    from datetime import date
+    from types import SimpleNamespace
+
+    from app.services.indicator_scanner.entry_conditions import CONDITIONS_OUTPUT_KEY
+    from app.services.indicator_scanner.evaluator import EvalResult
+    from app.services.indicator_scanner.scan_service import _row_from_eval, symbol_detail_payload
+
+    all_pass = [
+        {"id": "c1", "name": "Close > SMA 50", "passed": True, "left_value": 1255.8, "right_value": 1200.0, "operator": ">"},
+        {"id": "c2", "name": "SMA 50 > SMA 200", "passed": True, "left_value": 1306.47, "right_value": 869.7, "operator": ">"},
+        {"id": "c3", "name": "RSI 14 > 55", "passed": True, "left_value": 62.4, "right_value": 55, "operator": ">"},
+        {"id": "c4", "name": "Volume > Average Volume 20", "passed": True, "left_value": 1234567, "right_value": 987654, "operator": ">"},
+    ]
+    rsi_fail = [dict(item) for item in all_pass]
+    rsi_fail[2] = {**rsi_fail[2], "passed": False, "left_value": 41.0}
+
+    matched = _row_from_eval(
+        "AAA",
+        "AAA Ltd",
+        EvalResult(as_of=date(2026, 9, 7), outputs={"Eligible Signal": 1.0}, ohlcv={"close": 1255.8}, status="ok", conditions=all_pass),
+        [{"field": "Eligible Signal", "operator": "=", "value": 1}],
+    )
+    rejected = _row_from_eval(
+        "BBB",
+        "BBB Ltd",
+        EvalResult(as_of=date(2026, 9, 7), outputs={"Eligible Signal": 1.0}, ohlcv={"close": 1255.8}, status="ok", conditions=rsi_fail),
+        [{"field": "Eligible Signal", "operator": "=", "value": 1}],
+    )
+    assert matched["matched"] is True
+    assert rejected["matched"] is False
+    assert CONDITIONS_OUTPUT_KEY in matched["outputs"]
+
+    run = SimpleNamespace(
+        public_scan_id="IND-20260907-004",
+        indicator_id=None,
+        indicator_name="Momentum Strategy [SCAN]",
+        filters=[{"field": "Eligible Signal", "operator": "=", "value": 1}],
+        indicator_snapshot={"entry_conditions": [{"id": "c1", "name": "Close > SMA 50"}]},
+    )
+    row = SimpleNamespace(
+        symbol="AAA",
+        display_name="AAA Ltd",
+        exchange="NSE",
+        timeframe="1D",
+        as_of="2026-09-07",
+        status="ok",
+        matched=True,
+        outputs={"Eligible Signal": 1.0, CONDITIONS_OUTPUT_KEY: all_pass},
+        ohlcv={"close": 1255.8},
+        error_detail=None,
+        bar_count=320,
+    )
+    payload = symbol_detail_payload(run, row)
+    assert [item["name"] for item in payload["filter_results"]] == [
+        "Close > SMA 50",
+        "SMA 50 > SMA 200",
+        "RSI 14 > 55",
+        "Volume > Average Volume 20",
+    ]
+    assert all(item["passed"] is True for item in payload["filter_results"])
+    assert "Eligible Signal = 1" not in {item["name"] for item in payload["filter_results"]}
+
+
+def test_symbol_detail_payload_expands_52w_conditions_from_source():
+    from types import SimpleNamespace
+
+    from app.services.indicator_scanner.scan_service import symbol_detail_payload
+    from app.services.indicator_scanner.template import BREAKOUT_SCAN_SOURCE
+
+    run = SimpleNamespace(
+        public_scan_id="IND-20260904-002",
+        indicator_id=None,
+        indicator_name="52-Week High Breakout [SCAN]",
+        filters=[{"field": "52W Breakout Signal", "operator": "=", "value": 1}],
+        indicator_snapshot={"source_code": BREAKOUT_SCAN_SOURCE},
+    )
+    row = SimpleNamespace(
+        symbol="RELIANCE",
+        display_name="Reliance Industries Ltd.",
+        exchange="NSE",
+        timeframe="1D",
+        as_of="2026-09-04",
+        status="ok",
+        matched=True,
+        outputs={
+            "52W Breakout Signal": 1.0,
+            "Close": 1400.0,
+            "Prior 252 High": 1350.0,
+            "Volume SMA 20": 1_000_000.0,
+            "NIFTY 500 Close": 21000.0,
+            "NIFTY 500 SMA 50": 20000.0,
+        },
+        ohlcv={"close": 1400.0, "volume": 1_500_000.0},
+        error_detail=None,
+        bar_count=400,
+    )
+    payload = symbol_detail_payload(run, row)
+    names = [item["name"] for item in payload["filter_results"]]
+    assert names == [
+        "NIFTY 500 Close > NIFTY 500 SMA 50",
+        "Close >= Prior 252 High",
+        "Volume > Average Volume 20",
+    ]
+    assert all(item["passed"] is True for item in payload["filter_results"])
+    assert "52W Breakout Signal = 1" not in names
+
+
+def test_start_indicator_backtest_endpoints(api):
+    headers = _register(api)
+    save = api.post(
+        "/indicators",
+        json={
+            "name": "52-Week High Breakout [SCAN]",
+            "description": "52W Breakout for LEAN test",
+            "source_code": BREAKOUT_SCAN_SOURCE,
+            "timeframe": "1D",
+        },
+        headers=headers,
+    )
+    assert save.status_code == 200, save.text
+    indicator_id = save.json()["id"]
+
+    # Start backtest
+    res = api.post(
+        f"/indicators/{indicator_id}/backtest",
+        json={
+            "start_date": "2021-01-01",
+            "end_date": "2021-06-01",
+            "initial_capital": 100000.0,
+            "universe_id": "nse-755",
+            "engine": "LEAN",
+            "max_positions": 5,
+        },
+        headers=headers,
+    )
+    assert res.status_code == 200, res.text
+    job_data = res.json()
+    assert "jobId" in job_data
+    assert job_data["strategyId"] == "09_52w_breakout"
+    job_id = job_data["jobId"]
+
+    # Query status
+    status_res = api.get(f"/indicators/{indicator_id}/backtests/{job_id}", headers=headers)
+    assert status_res.status_code == 200
+    assert status_res.json()["jobId"] == job_id
+
+
+def test_momentum_pulse_backtest_uses_pulse_algorithm_not_ltm(api):
+    headers = _register(api)
+    save = api.post(
+        "/indicators",
+        json={
+            "name": "Momentum Pulse Finder",
+            "description": "EMA 20 + RSI crossover",
+            "source_code": (
+                '//@version=6\nindicator("Momentum Pulse Finder", overlay=true)\n'
+                "ema20 = ta.ema(close, 20)\nrsiValue = ta.rsi(close, 14)\n"
+                "buySignal = close > ema20 and ta.crossover(rsiValue, 50)\n"
+                'plot(ema20, title="EMA 20")\n'
+                'plotshape(buySignal, title="Momentum Signal")\n'
+            ),
+            "timeframe": "1D",
+        },
+        headers=headers,
+    )
+    assert save.status_code == 200, save.text
+    indicator_id = save.json()["id"]
+    res = api.post(
+        f"/indicators/{indicator_id}/backtest",
+        json={
+            "start_date": "2021-01-01",
+            "end_date": "2021-06-01",
+            "initial_capital": 100000.0,
+            "universe_id": "nse-755",
+            "engine": "LEAN",
+            "max_positions": 5,
+        },
+        headers=headers,
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["strategyId"] == "momentum_pulse"
+    assert res.json()["strategyId"] != "17_long_term_mom"
+

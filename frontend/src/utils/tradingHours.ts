@@ -44,6 +44,16 @@ const KNOWN_HOLIDAYS: Record<string, string[]> = {
   ],
 };
 
+/** Calendar date in Asia/Kolkata (YYYY-MM-DD). */
+export function isoDateIST(now: Date = new Date()): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(now);
+}
+
 function getISTDateParts(d: Date = new Date()) {
   const istFormatter = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Kolkata",
@@ -106,6 +116,32 @@ export function lastCompletedTradingDayIST(now: Date = new Date()): string {
     cursor = shiftIsoDate(cursor, -1);
   }
   return cursor;
+}
+
+/**
+ * NSE cash session the Indicator Scanner should default to:
+ * today's IST date on a trading day (from midnight), else the last completed session.
+ * Weekends and holidays stay on the previous cash session.
+ */
+export function currentCashSessionIST(now: Date = new Date()): string {
+  const { dateStr, isWeekend } = getISTDateParts(now);
+  if (!isWeekend && isTradingDayISO(dateStr)) {
+    return dateStr;
+  }
+  return lastCompletedTradingDayIST(now);
+}
+
+/**
+ * Returns the 1D session date that TradingView Pine Screener evaluates in IST:
+ * - On trading days (during or after market hours): today's date (forming candle or completed EOD)
+ * - On weekends or market holidays: the last completed trading day
+ */
+export function effectivePineScreenerSessionIST(now: Date = new Date()): string {
+  const { dateStr, isWeekend, minutesSinceMidnight } = getISTDateParts(now);
+  if (!isWeekend && isTradingDayISO(dateStr) && minutesSinceMidnight >= MARKET_OPEN_MINUTES) {
+    return dateStr;
+  }
+  return lastCompletedTradingDayIST(now);
 }
 
 /** Whether NSE cash market is currently open (client clock / IST). */

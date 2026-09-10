@@ -9,7 +9,7 @@ import {
 } from "../../api_indicator_scanner";
 import { uniqueIndicatorsByIdAndName } from "../../utils/indicatorScannerState";
 import { DEFAULT_INDICATOR_TEMPLATE, INDICATOR_SYNTAX_HELP, BREAKOUT_SCAN_DESCRIPTION, BREAKOUT_SCAN_TITLE } from "../../utils/indicatorTemplate";
-import { absorbOutputs, absorbScreenFilters, describeAbsorbedFilter } from "../../utils/indicatorAbsorb";
+import { absorbFromParsedDefinition, describeAbsorbedFilter, insertScreenerSignalPlot } from "../../utils/indicatorAbsorb";
 import { PineCodeEditor } from "./PineCodeEditor";
 
 export type IndicatorEditorPanelProps = {
@@ -48,9 +48,8 @@ export const IndicatorEditorPanel: React.FC<IndicatorEditorPanelProps> = ({
   };
 
   const absorbed = useMemo(() => {
-    if (!isValid || !validation) return { columns: [], filters: [] };
-    const columns = absorbOutputs(validation.outputs);
-    return { columns, filters: absorbScreenFilters(columns) };
+    if (!isValid || !validation) return { columns: [], filters: [], entryConditions: [] };
+    return absorbFromParsedDefinition(validation.parsed_definition || { outputs: validation.outputs });
   }, [isValid, validation]);
 
   const handleObserve = async () => {
@@ -206,6 +205,24 @@ export const IndicatorEditorPanel: React.FC<IndicatorEditorPanelProps> = ({
           {validation.warnings.map((issue, i) => (
             <div key={`w-${i}`} className="st-pine-summary-warning">
               {issue.message}
+              {issue.code === "MISSING_SCREENER_SIGNAL_PLOT" && (
+                <div>
+                  <button
+                    type="button"
+                    className="st-btn-dark"
+                    data-testid="btn-insert-screener-signal-plot"
+                    onClick={() => {
+                      setSource((prev) => insertScreenerSignalPlot(prev));
+                      setValidation(null);
+                      setValidatedSource(null);
+                    }}
+                  >
+                    Insert Signal = 1 plot
+                  </button>
+                  {" "}
+                  Then Observe again and paste the same script into TradingView Pine Screener. Filter Signal = 1 on both platforms.
+                </div>
+              )}
             </div>
           ))}
           {validation.ok && (
@@ -223,8 +240,14 @@ export const IndicatorEditorPanel: React.FC<IndicatorEditorPanelProps> = ({
                 </div>
               </div>
               <div>
-                <strong>Screen rules</strong>
-                {absorbed.filters.length ? (
+                <strong>Strategy conditions</strong>
+                {absorbed.entryConditions.length ? (
+                  <ul data-testid="indicator-absorbed-filters">
+                    {absorbed.entryConditions.map((name) => (
+                      <li key={name}>{name}</li>
+                    ))}
+                  </ul>
+                ) : absorbed.filters.length ? (
                   <ul data-testid="indicator-absorbed-filters">
                     {absorbed.filters.map((filter) => (
                       <li key={describeAbsorbedFilter(filter)}>{describeAbsorbedFilter(filter)}</li>

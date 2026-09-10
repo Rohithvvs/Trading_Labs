@@ -211,9 +211,13 @@ class UniverseService:
 
         instruments: list[UniverseInstrument] = []
         seen_canonical: set[str] = set()
+        from .universe_csv import is_dummy_universe_symbol
+
         for row in rows:
             item = UniverseService._instrument_from_row(row)
             if item is None:
+                continue
+            if is_dummy_universe_symbol(item.symbol) or is_dummy_universe_symbol(item.universe_symbol):
                 continue
             if item.symbol in seen_canonical:
                 logger.warning(
