@@ -135,34 +135,38 @@ def atr(highs: Sequence[Scalar], lows: Sequence[Scalar], closes: Sequence[Scalar
 
 
 def rsi(values: Sequence[Scalar], length: int) -> list[Scalar]:
-    """Wilder RSI via RMA of gains/losses — same formulation as TradingView ta.rsi."""
     n = len(values)
     out: list[Scalar] = [None] * n
     if length <= 0 or n < length + 1:
         return out
-    gains: list[Scalar] = [None] * n
-    losses: list[Scalar] = [None] * n
+    gains = 0.0
+    losses = 0.0
     prev = as_float(values[0])
-    for i in range(1, n):
+    for i in range(1, length + 1):
+        cur = as_float(values[i])
+        if prev is None or cur is None:
+            return out
+        delta = cur - prev
+        if delta >= 0:
+            gains += delta
+        else:
+            losses += -delta
+        prev = cur
+    avg_gain = gains / length
+    avg_loss = losses / length
+    out[length] = 100.0 if avg_loss == 0 else 100.0 - (100.0 / (1.0 + avg_gain / avg_loss))
+    for i in range(length + 1, n):
         cur = as_float(values[i])
         if prev is None or cur is None:
             prev = cur
             continue
         delta = cur - prev
-        gains[i] = delta if delta > 0 else 0.0
-        losses[i] = -delta if delta < 0 else 0.0
+        gain = delta if delta > 0 else 0.0
+        loss = -delta if delta < 0 else 0.0
+        avg_gain = (avg_gain * (length - 1) + gain) / length
+        avg_loss = (avg_loss * (length - 1) + loss) / length
+        out[i] = 100.0 if avg_loss == 0 else 100.0 - (100.0 / (1.0 + avg_gain / avg_loss))
         prev = cur
-    avg_gain = rma(gains, length)
-    avg_loss = rma(losses, length)
-    for i in range(n):
-        g = as_float(avg_gain[i])
-        loss = as_float(avg_loss[i])
-        if g is None or loss is None:
-            continue
-        if loss == 0:
-            out[i] = 100.0
-        else:
-            out[i] = 100.0 - (100.0 / (1.0 + g / loss))
     return out
 
 

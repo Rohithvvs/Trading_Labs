@@ -70,8 +70,6 @@ vi.mock("../../api_strategy_tester", () => ({
     ],
   })),
   fetchSavedStrategies: vi.fn(async () => ({ strategies: [] })),
-  saveStrategyDefinition: vi.fn(async () => ({ id: "s1", name: "saved", version: 1 })),
-  updateStrategyDefinition: vi.fn(async (id: string) => ({ id, name: "saved", version: 2 })),
   startStrategyTest: vi.fn(async () => ({ run_id: "STR-20260826-002", status: "queued" })),
   fetchStrategyRun: vi.fn(async (runId: string) => ({
     run_id: runId || "STR-20260826-001",
@@ -181,6 +179,7 @@ vi.mock("../../api_strategy_tester", () => ({
   })),
   cancelStrategyRun: vi.fn(),
   exportStrategyRun: vi.fn(),
+  saveStrategyDefinition: vi.fn(async () => ({ id: "s1", name: "saved", version: 1 })),
 }));
 
 vi.mock("../../api_indicator_scanner", () => ({
@@ -193,7 +192,6 @@ vi.mock("../../api_indicator_scanner", () => ({
   startIndicatorScan: vi.fn(),
   fetchIndicatorScan: vi.fn(),
   fetchIndicatorScanResults: vi.fn(),
-  fetchIndicatorScanResult: vi.fn(),
   fetchIndicatorScanDiagnostics: vi.fn(),
   exportIndicatorScanCsv: vi.fn(),
   cancelIndicatorScan: vi.fn(),
@@ -218,11 +216,6 @@ vi.mock("../../design-system", async () => {
   };
 });
 
-import {
-  fetchSavedStrategies,
-  saveStrategyDefinition,
-  updateStrategyDefinition,
-} from "../../api_strategy_tester";
 import { StrategyTesterPage } from "../StrategyTesterPage";
 
 describe("StrategyTesterPage", () => {
@@ -230,13 +223,6 @@ describe("StrategyTesterPage", () => {
     vi.clearAllMocks();
     sessionStorage.clear();
     localStorage.clear();
-    vi.mocked(fetchSavedStrategies).mockResolvedValue({ strategies: [] } as never);
-    vi.mocked(saveStrategyDefinition).mockResolvedValue({ id: "s1", name: "saved", version: 1 });
-    vi.mocked(updateStrategyDefinition).mockImplementation(async (id: string) => ({
-      id,
-      name: "saved",
-      version: 2,
-    }));
   });
 
   it("renders Strategy Tester header, top action buttons, and config panel", async () => {
@@ -571,61 +557,6 @@ if longCondition
     expect(payload.side).toBe("LONG");
     expect(payload.filters?.length).toBe(3);
     expect(payload.source?.type).toBe("pine");
-  });
-
-  it("deduplicates repeated strategies in the Strategy Tester dropdown like Indicator Scanner", async () => {
-    const { fetchSavedStrategies } = await import("../../api_strategy_tester");
-    vi.mocked(fetchSavedStrategies).mockResolvedValue([
-      { id: "s-old", name: "Momentum Strategy", updated_at: "2026-01-01T00:00:00Z" },
-      { id: "s-new", name: "Momentum Strategy", updated_at: "2026-08-01T00:00:00Z" },
-      { id: "s-custom", name: "My Custom", updated_at: "2026-08-02T00:00:00Z" },
-      { id: "s-custom-2", name: "My Custom", updated_at: "2026-07-01T00:00:00Z" },
-    ] as never);
-
-    render(
-      <MemoryRouter>
-        <StrategyTesterPage />
-      </MemoryRouter>,
-    );
-
-    const select = (await screen.findByTestId("select-strategy-preset")) as HTMLSelectElement;
-    await waitFor(() => {
-      const labels = [...select.options].map((opt) => opt.text);
-      expect(labels).toEqual(["Momentum Strategy", "My Custom"]);
-    });
-    expect(select.options).toHaveLength(2);
-    expect([...select.options].map((opt) => opt.value).sort()).toEqual(["s-custom", "s-new"]);
-  });
-
-  it("updates an existing same-name strategy instead of creating a duplicate", async () => {
-    const { fetchSavedStrategies, saveStrategyDefinition, updateStrategyDefinition } = await import(
-      "../../api_strategy_tester"
-    );
-    vi.mocked(fetchSavedStrategies).mockResolvedValue([
-      { id: "s-existing", name: "Momentum Strategy", updated_at: "2026-08-01T00:00:00Z" },
-    ] as never);
-    vi.mocked(updateStrategyDefinition).mockResolvedValue({
-      id: "s-existing",
-      name: "Momentum Strategy",
-      version: 2,
-    });
-
-    render(
-      <MemoryRouter>
-        <StrategyTesterPage />
-      </MemoryRouter>,
-    );
-
-    await waitFor(() => {
-      const select = screen.getByTestId("select-strategy-preset") as HTMLSelectElement;
-      expect([...select.options].map((opt) => opt.value)).toContain("s-existing");
-    });
-    fireEvent.click(screen.getByTestId("btn-save-strategy"));
-    fireEvent.click(screen.getByTestId("btn-confirm-save"));
-
-    await waitFor(() => expect(updateStrategyDefinition).toHaveBeenCalled());
-    expect(saveStrategyDefinition).not.toHaveBeenCalled();
-    expect(vi.mocked(updateStrategyDefinition).mock.calls[0][0]).toBe("s-existing");
   });
 
   it("opens the Indicator Scanner workspace and Add Indicator tab", async () => {

@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { fetchSymbolDetail } from "../api";
-import { fetchIndicatorScan, fetchIndicatorScanResult } from "../api_indicator_scanner";
 import {
   fetchStrategyHistory,
   fetchStrategyResultCandles,
@@ -14,7 +13,6 @@ import {
   type SymbolHistoryItem,
 } from "../api_strategy_tester";
 import type { ArticleItem, SymbolDetail } from "../types";
-import { isIndicatorScanId, mapIndicatorResultToStock, mapIndicatorScanToRunStatus } from "../utils/indicatorScanDetail";
 import { toCanonicalStockSymbol } from "../utils/stockNavigation";
 import {
   BacktestTab,
@@ -166,77 +164,30 @@ export const StockDetailsPage: React.FC = () => {
 
       const activeRunId = targetRunId || "STR-20260826-001";
       setResolvedRunId(activeRunId);
-      if (!isIndicatorScanId(activeRunId)) {
-        localStorage.setItem("strategy_tester_last_run_id", activeRunId);
-      }
+      localStorage.setItem("strategy_tester_last_run_id", activeRunId);
 
-      if (isIndicatorScanId(activeRunId)) {
-        const [scan, detail] = await Promise.all([
-          fetchIndicatorScan(activeRunId),
-          fetchIndicatorScanResult(activeRunId, symbol),
-        ]);
-        const mapped = mapIndicatorResultToStock(detail, scan);
-        setRunStatus(mapIndicatorScanToRunStatus(scan));
-        setStock(mapped);
-        setHistory([
-          {
-            run_id: activeRunId,
-            strategy_name: scan.indicator_name || mapped.strategy_name || "Indicator Scanner",
-            date: mapped.evaluation_date || detail.as_of || null,
-            signal: mapped.signal,
-            entry_price: mapped.entry_price ?? null,
-            exit_price: mapped.exit_price ?? null,
-            return_pct: mapped.return_pct ?? null,
-            status: "completed",
-          },
-        ]);
-      } else {
-        try {
-          const detail = await fetchStrategyResultDetail(activeRunId, symbol);
-          setStock(detail);
-        } catch (detailErr: any) {
-          if (detailErr?.status === 404) {
+      try {
+        const detail = await fetchStrategyResultDetail(activeRunId, symbol);
+        setStock(detail);
+      } catch (detailErr: any) {
+        const msg = String(detailErr?.message || "").toLowerCase();
+        if (msg.includes("not found") || msg.includes("not in this run") || detailErr?.status === 404) {
+          if (!initialStock) {
             setIsNotFound(true);
+            setIsLoading(false);
             return;
           }
-          if (detailErr?.message === "Connection failed") {
-            throw detailErr;
-          }
-          if (!initialStock) {
-            const fallbackStock: StrategyResultRow = {
-              rank: 1,
-              symbol: symbol.toUpperCase(),
-              company: `${symbol.toUpperCase()} Ltd.`,
-              signal: "WATCH",
-              evaluation_date: new Date().toISOString().slice(0, 10),
-              entry_price: null,
-              exit_price: null,
-              return_pct: 0,
-              close: null,
-              volume: null,
-              avg_volume: null,
-              rsi: null,
-              sma_20: null,
-              sma_50: null,
-              sma_200: null,
-              high_252: null,
-              filters_passed: 0,
-              filters_failed: 0,
-              passed_filters: [],
-              failed_filters: [],
-              primary_failure_reason: null,
-            };
-            setStock(fallbackStock);
-          }
+        } else {
+          throw detailErr;
         }
+      }
 
-        if (typeof fetchStrategyRun === "function") {
-          try {
-            const run = await fetchStrategyRun(activeRunId);
-            if (run) setRunStatus(run);
-          } catch {
-            // ignore run status error
-          }
+      if (typeof fetchStrategyRun === "function") {
+        try {
+          const run = await fetchStrategyRun(activeRunId);
+          if (run) setRunStatus(run);
+        } catch {
+          // ignore run status error
         }
       }
     } catch (err: any) {
@@ -272,10 +223,6 @@ export const StockDetailsPage: React.FC = () => {
         })
         .catch(() => {
           if (isMountedRef.current) {
-            if (isIndicatorScanId(resolvedRunId)) {
-              setCandles([]);
-              return;
-            }
             const synth: CandlePoint[] = [];
             let px = stock?.entry_price || 1400;
             for (let i = 30; i >= 0; i--) {
@@ -306,7 +253,6 @@ export const StockDetailsPage: React.FC = () => {
 
   // Fetch history when history or backtest tab is active
   useEffect(() => {
-    if (isIndicatorScanId(resolvedRunId)) return;
     if ((activeTab === "history" || activeTab === "backtest") && resolvedRunId && symbol && history.length === 0) {
       setLoadingHistory(true);
       fetchStrategyResultHistory(resolvedRunId, symbol)
@@ -366,7 +312,7 @@ export const StockDetailsPage: React.FC = () => {
     runStatus?.strategy_name ||
     (history.length > 0 ? history[0].strategy_name : null) ||
     (stock as any)?.strategy_name ||
-    (isIndicatorScanId(resolvedRunId) ? "Indicator Scanner" : "52-Week High Breakout");
+    "52-Week High Breakout";
 
   const filterResults = useMemo<FilterEvalItem[]>(() => {
     if (stock?.filter_results && stock.filter_results.length > 0) {
@@ -387,7 +333,12 @@ export const StockDetailsPage: React.FC = () => {
         ...(stock.failed_filters || []).map((name) => ({ name, passed: false })),
       ];
     }
-    return [];
+    return [
+      { name: "Close > SMA 50", passed: true },
+      { name: "SMA 50 > SMA 200", passed: true },
+      { name: "RSI > 55", passed: true },
+      { name: "Volume > Avg Volume", passed: true },
+    ];
   }, [stock]);
 
   const newsArticles: ArticleItem[] = useMemo(() => {
@@ -569,7 +520,6 @@ export const StockDetailsPage: React.FC = () => {
           history={history}
           candles={candles}
           strategyName={strategyName}
-          runId={resolvedRunId}
           startDate={runStatus?.start_date}
           endDate={runStatus?.end_date}
           initialCapital={runStatus?.initial_capital}

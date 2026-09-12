@@ -77,40 +77,6 @@ def test_create_run_returns_immediately_and_tracks_progress(api):
     assert body["status"] == "queued"
 
 
-def test_save_same_name_updates_existing(api):
-    headers = _register(api)
-    payload = {
-        "name": "Momentum Strategy",
-        "description": "first",
-        "universe": "ALL_755",
-        "timeframe": "1D",
-        "side": "LONG",
-        "filters": [
-            {"id": "f1", "field": "CLOSE", "left": "CLOSE", "operator": ">", "value": {"indicator": "SMA", "period": 50}},
-            {
-                "id": "f2",
-                "field": "SMA_50",
-                "left": {"indicator": "SMA", "period": 50},
-                "operator": ">",
-                "value": {"indicator": "SMA", "period": 200},
-            },
-            {"id": "f3", "field": "RSI_14", "left": {"indicator": "RSI", "period": 14}, "operator": ">", "value": 55},
-            {"id": "f4", "field": "VOLUME", "operator": ">", "value": {"indicator": "AVG_VOLUME", "period": 20}},
-        ],
-        "signal_rules": {"buy_requires_all": True},
-        "position_rules": {"side": "LONG"},
-        "source": {"type": "builder"},
-    }
-    first = api.post("/strategy-tests/strategies", json=payload, headers=headers)
-    assert first.status_code == 200, first.text
-    second = api.post("/strategy-tests/strategies", json={**payload, "description": "updated"}, headers=headers)
-    assert second.status_code == 200, second.text
-    assert second.json()["id"] == first.json()["id"]
-    listed = api.get("/strategy-tests/strategies", headers=headers)
-    names = [item["name"] for item in listed.json()["strategies"]]
-    assert names.count("Momentum Strategy") == 1
-
-
 def test_invalid_strategy_rejected(api):
     headers = _register(api)
     res = api.post("/strategy-tests", json={"name": "Empty", "filters": []}, headers=headers)

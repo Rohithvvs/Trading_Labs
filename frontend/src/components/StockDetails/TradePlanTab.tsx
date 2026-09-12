@@ -62,7 +62,6 @@ export const TradePlanTab: React.FC<TradePlanTabProps> = ({
   }
 
   const signal = (stock?.signal || "WATCH").toUpperCase();
-  const isIndicatorScan = (stock as any)?.source === "indicator_scanner" || String(runId || "").startsWith("IND-");
   const positionRules = (runStatus?.strategy_snapshot as any)?.position_rules || {};
   const position = (positionRules.side || (runStatus?.strategy_snapshot as any)?.side || "LONG").toUpperCase();
   const entryPrice = stock?.entry_price ?? null;
@@ -91,15 +90,9 @@ export const TradePlanTab: React.FC<TradePlanTabProps> = ({
   const exitRule =
     positionRules.exit_rule ||
     positionRules.return_method ||
-    (isIndicatorScan
-      ? "Scan only — no trade is opened"
-      : strategyName.toLowerCase().includes("52-week")
-        ? "Close < Trailing Stop"
-        : "EOD (End of Day)");
+    (strategyName.toLowerCase().includes("52-week") ? "Close < Trailing Stop" : "EOD (End of Day)");
 
-  const calcFormula = isIndicatorScan
-    ? "(Close / Close t-252 − 1) × 100"
-    : `((Exit - Entry) / Entry) × 100`;
+  const calcFormula = `((Exit - Entry) / Entry) × 100`;
   const calcExact =
     entryPrice != null && exitPrice != null
       ? `((${exitPrice.toFixed(2)} - ${entryPrice.toFixed(2)}) / ${entryPrice.toFixed(2)}) × 100`
@@ -185,33 +178,16 @@ export const TradePlanTab: React.FC<TradePlanTabProps> = ({
 
       {/* Card 3: Entry Conditions */}
       <div className="st-card" data-testid="card-detail-tradeplan-conditions">
-        <h2 className="st-card-title">{isIndicatorScan ? "Scan Filters" : "Entry Conditions"}</h2>
-        {signal === "REJECT" && !isIndicatorScan ? (
-          <p className="st-reject-not-a-trade" data-testid="reject-not-a-trade">
-            Failed entry conditions mean this name was not selected. Return % is buy-and-hold from the
-            window start to the scan bar (WINDOW_END), not a strategy trade.
-          </p>
-        ) : null}
-        {isIndicatorScan ? (
-          <p className="st-reject-not-a-trade" data-testid="indicator-scan-not-a-trade">
-            Each row is an entry condition from the selected strategy, evaluated on the scan bar.
-          </p>
-        ) : null}
+        <h2 className="st-card-title">Entry Conditions</h2>
         <div className="st-filter-eval-list">
-          {filterResults.length === 0 ? (
-            <div className="st-filter-eval-item">
-              <span className="st-filter-eval-name">No scan filters recorded for this run.</span>
+          {filterResults.map((f, i) => (
+            <div key={f.name || i} className="st-filter-eval-item">
+              <span className="st-filter-eval-name">{formatFilterDisplayName(f.name)}</span>
+              <span className={`st-filter-eval-status ${f.passed ? "passed" : "failed"}`}>
+                {f.passed ? "✓ Passed" : "✕ Failed"}
+              </span>
             </div>
-          ) : (
-            filterResults.map((f, i) => (
-              <div key={f.name || i} className="st-filter-eval-item">
-                <span className="st-filter-eval-name">{formatFilterDisplayName(f.name)}</span>
-                <span className={`st-filter-eval-status ${f.passed ? "passed" : "failed"}`}>
-                  {f.passed ? "✓ Passed" : "✕ Failed"}
-                </span>
-              </div>
-            ))
-          )}
+          ))}
         </div>
       </div>
 

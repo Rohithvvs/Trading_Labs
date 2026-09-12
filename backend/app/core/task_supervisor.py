@@ -23,14 +23,7 @@ class TaskSupervisor:
                     return
                 except asyncio.CancelledError:
                     raise
-                except Exception as exc:
-                    if self._closing:
-                        self._logger.warning(
-                            "Supervised task stopped during shutdown | task=%s | err=%s",
-                            name,
-                            exc,
-                        )
-                        return
+                except Exception:
                     self._logger.exception("Supervised task crashed | task=%s", name)
                     await asyncio.sleep(2)
 

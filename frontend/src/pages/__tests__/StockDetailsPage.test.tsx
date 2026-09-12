@@ -2,7 +2,6 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import React from "react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fetchLtmSymbolDetail, fetchW52SymbolDetail } from "../../api";
 import { StockDetailsPage } from "../StockDetailsPage";
 
 // Mock ResizeObserver for Recharts
@@ -211,50 +210,6 @@ vi.mock("../../api_strategy_tester", () => ({
   })),
 }));
 
-vi.mock("../../api_indicator_scanner", () => ({
-  fetchIndicatorScan: vi.fn(async (scanId: string) => ({
-    id: scanId,
-    scan_id: scanId,
-    indicator_name: "LTM Momentum 252 [SCAN]",
-    status: "completed",
-    timeframe: "1D",
-    universe: "nse-755",
-    universe_size: 750,
-    universe_label: "750 Stocks",
-    progress_pct: 100,
-    processed_count: 750,
-    total_count: 750,
-    matched_count: 89,
-    success_count: 710,
-    skipped_count: 40,
-    as_of: "2026-09-04",
-    filters: [{ field: "LTM Eligible Signal", operator: "=", value: 1 }],
-  })),
-  fetchIndicatorScanResult: vi.fn(async (_scanId: string, symbol: string) => ({
-    symbol: symbol.toUpperCase(),
-    display_name: "Rategain Travel Technologies Ltd.",
-    status: "ok",
-    matched: true,
-    as_of: "2026-09-04",
-    outputs: {
-      "LTM Eligible Signal": 1,
-      "Momentum 252": 0.76,
-      Close: 869.75,
-      "Close t-252": 495.05,
-    },
-    ohlcv: { close: 869.75 },
-    filter_results: [{ name: "Momentum 252 > 0.5", passed: true }],
-    signal: "MATCH",
-    company: "Rategain Travel Technologies Ltd.",
-    entry_price: 495.05,
-    exit_price: 869.75,
-    return_pct: 76,
-    close: 869.75,
-    source: "indicator_scanner",
-    indicator_name: "LTM Momentum 252 [SCAN]",
-  })),
-}));
-
 vi.mock("../../api", () => ({
   fetchSymbolDetail: vi.fn(async (symbol: string) => {
     if (symbol.toUpperCase() === "GVTD" || symbol.toUpperCase() === "GVT&D") {
@@ -312,8 +267,6 @@ vi.mock("../../api", () => ({
 describe("StockDetailsPage", () => {
   beforeEach(() => {
     mockNavigate.mockClear();
-    vi.mocked(fetchLtmSymbolDetail).mockClear();
-    vi.mocked(fetchW52SymbolDetail).mockClear();
   });
 
   it("renders dedicated Stock Details page with header, metrics, and Overview tab content for CUPID", async () => {
@@ -625,56 +578,5 @@ describe("StockDetailsPage", () => {
 
     const symbolEl = await screen.findByTestId("stock-details-symbol");
     expect(symbolEl.textContent).toBe("CUPID");
-  });
-
-  it("loads Indicator Scanner entry conditions for an IND- run instead of a collapsed signal", async () => {
-    render(
-      <MemoryRouter initialEntries={["/stock/RATEGAIN?runId=IND-20260904-001"]}>
-        <Routes>
-          <Route path="/stock/:symbol" element={<StockDetailsPage />} />
-        </Routes>
-      </MemoryRouter>,
-    );
-
-    expect(await screen.findByTestId("stock-details-symbol")).toBeTruthy();
-    expect(screen.getByTestId("stock-detail-signal").textContent).toBe("MATCH");
-    expect(screen.getByText("IND-20260904-001")).toBeTruthy();
-    expect(screen.getByText("LTM Momentum 252 [SCAN]")).toBeTruthy();
-    expect(screen.getByText("Momentum 252 > 0.5")).toBeTruthy();
-    expect(screen.getByText("✓ Passed")).toBeTruthy();
-    expect(screen.queryByText("LTM Eligible Signal = 1")).toBeNull();
-    expect(screen.queryByText("Close > SMA 50")).toBeNull();
-    expect(screen.queryByText("Rsi 14 > 55")).toBeNull();
-    expect(screen.getByTestId("indicator-scan-not-a-trade")).toBeTruthy();
-  });
-
-  it("shows indicator scan backtest metrics instead of the strategy-book empty state", async () => {
-    vi.mocked(fetchLtmSymbolDetail).mockResolvedValueOnce({
-      symbol: "RATEGAIN",
-      dashboard: {
-        never_selected_in_window: true,
-        trade_count: 0,
-        total_return: null,
-        window: "3Y",
-        replay_kind: "symbol_window",
-        equity_curve: [],
-      },
-    });
-
-    render(
-      <MemoryRouter initialEntries={["/stock/RATEGAIN?runId=IND-20260904-001&tab=backtest"]}>
-        <Routes>
-          <Route path="/stock/:symbol" element={<StockDetailsPage />} />
-        </Routes>
-      </MemoryRouter>,
-    );
-
-    expect(await screen.findByTestId("card-detail-backtest")).toBeTruthy();
-    expect(fetchLtmSymbolDetail).not.toHaveBeenCalled();
-    expect(fetchW52SymbolDetail).not.toHaveBeenCalled();
-    expect(screen.queryByText(/not selected in the strategy book/i)).toBeNull();
-    expect(screen.queryByTestId("backtest-unavailable")).toBeNull();
-    expect(screen.getByTestId("backtest-total-return").textContent).toBe("+76.00%");
-    expect(screen.getByTestId("table-backtest-trades")).toBeTruthy();
   });
 });

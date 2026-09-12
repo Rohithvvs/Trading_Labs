@@ -297,30 +297,6 @@ async def upsert_daily_bars(rows: list[dict[str, Any]]) -> tuple[int, int]:
     return len(payload), 0
 
 
-async def delete_cloned_daily_bars(session: date, previous: date) -> int:
-    """Delete rows on `session` whose OHLCV is an exact copy of `previous`."""
-    async with AsyncSessionLocal() as db:
-        result = await db.execute(
-            text(
-                """
-                DELETE FROM daily_ohlcv AS d
-                USING daily_ohlcv AS p
-                WHERE d.trade_date = :session
-                  AND p.trade_date = :previous
-                  AND d.symbol = p.symbol
-                  AND d.open = p.open
-                  AND d.high = p.high
-                  AND d.low = p.low
-                  AND d.close = p.close
-                  AND d.volume = p.volume
-                """
-            ),
-            {"session": session, "previous": previous},
-        )
-        await db.commit()
-        return int(result.rowcount or 0)
-
-
 async def update_delivery_fields(rows: list[dict[str, Any]]) -> int:
     """Update delivery_qty / delivery_pct for existing (trade_date, symbol) rows.
 

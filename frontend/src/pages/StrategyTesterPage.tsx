@@ -10,7 +10,6 @@ import {
   fetchStrategyRun,
   saveStrategyDefinition,
   startStrategyTest,
-  updateStrategyDefinition,
   type FilterStat,
   type FunnelStep,
   type HistoryRow,
@@ -45,13 +44,16 @@ import { DEFAULT_PINE_TEMPLATE } from "../utils/pineParser";
 import { IndicatorScreenerPanel } from "../components/strategy_tester/IndicatorScreenerPanel";
 import type { SavedIndicator } from "../api_indicator_scanner";
 import { useToast } from "../design-system";
-import { isoDateIST } from "../utils/tradingHours";
-import {
-  resolveSelectedStrategyId,
-  strategySelectOptions,
-  uniqueStrategiesByIdAndName,
-} from "../utils/strategyTesterState";
 import "./strategyTester.css";
+
+function isoDateIST(): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+}
 
 /** Pine Screener always evaluates the last 1D bar. A leftover window end scans a different tape. */
 function pineScreenerEndDate(endDate: string | null | undefined): string {
@@ -235,7 +237,6 @@ export const StrategyTesterPageInner: React.FC = () => {
   const [currentPage, setCurrentPage] = useState<number>(savedState?.currentPage || 1);
   const [pageSize, setPageSize] = useState<number>(savedState?.pageSize || 25);
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(savedState?.selectedSymbol || null);
-  const [selectedEngine, setSelectedEngine] = useState<string>(savedState?.selectedEngine || "LEAN");
 
   // Modals state
   const [isImportModalOpen, setIsImportModalOpen] = useState<boolean>(false);
@@ -352,17 +353,14 @@ export const StrategyTesterPageInner: React.FC = () => {
         }
         setCatalog((prev) => ({
           ...cat,
-          saved:
-            Array.isArray(prev?.saved) && prev.saved.length > 0
-              ? uniqueStrategiesByIdAndName(prev.saved)
-              : uniqueStrategiesByIdAndName(asRows<SavedStrategyItem>(cat.saved, "strategies")),
+          saved: Array.isArray(prev?.saved) && prev.saved.length > 0 ? prev.saved : asRows<SavedStrategyItem>(cat.saved, "strategies"),
         }));
       })
       .catch((err) => console.error("Failed to load catalog:", err));
 
     fetchSavedStrategies()
       .then((saved) => {
-        const list = uniqueStrategiesByIdAndName(asRows<SavedStrategyItem>(saved, "strategies"));
+        const list = asRows<SavedStrategyItem>(saved, "strategies");
         setSavedStrategies(list);
         setCatalog((prev) => (prev ? { ...prev, saved: list } : prev));
       })
@@ -407,12 +405,6 @@ export const StrategyTesterPageInner: React.FC = () => {
       })
       .catch(() => {});
   }, [savedState]);
-
-  useEffect(() => {
-    if (!catalog) return;
-    const options = strategySelectOptions(catalog.presets, savedStrategies);
-    setSelectedPresetId((current) => resolveSelectedStrategyId(current, options, catalog.presets, savedStrategies));
-  }, [catalog, savedStrategies]);
 
   // Poll active run
   const pollRun = useCallback(
@@ -653,33 +645,6 @@ export const StrategyTesterPageInner: React.FC = () => {
     }
   };
 
-  const persistCurrentStrategy = useCallback(
-    async (payload: StrategyConfigPayload) => {
-      const selectedSaved = savedStrategies.find((item) => item.id === selectedPresetId);
-      if (selectedSaved?.id) {
-        return updateStrategyDefinition(selectedSaved.id, payload);
-      }
-      const match = uniqueStrategiesByIdAndName(savedStrategies).find(
-        (item) => item.name.trim().toLowerCase() === payload.name.trim().toLowerCase(),
-      );
-      if (match?.id) {
-        return updateStrategyDefinition(match.id, payload);
-      }
-      return saveStrategyDefinition(payload);
-    },
-    [savedStrategies, selectedPresetId],
-  );
-
-  const refreshSavedStrategies = useCallback(async (preferId?: string) => {
-    const saved = uniqueStrategiesByIdAndName(asRows<SavedStrategyItem>(await fetchSavedStrategies(), "strategies"));
-    setSavedStrategies(saved);
-    setCatalog((prev) => (prev ? { ...prev, saved } : prev));
-    if (preferId && saved.some((row) => row.id === preferId)) {
-      setSelectedPresetId(preferId);
-    }
-    return saved;
-  }, []);
-
   // Import JSON handler
   const handleImportJSON = (jsonStr: string) => {
     try {
@@ -715,10 +680,12 @@ export const StrategyTesterPageInner: React.FC = () => {
         logic,
         source: { type: strategySource, pine_code: pineCode },
       });
-      const savedRow = await persistCurrentStrategy(payload);
+      await saveStrategyDefinition(payload);
       setStrategyName(name);
       setStrategyDesc(description);
-      await refreshSavedStrategies(savedRow.id);
+      const saved = asRows<SavedStrategyItem>(await fetchSavedStrategies(), "strategies");
+      setSavedStrategies(saved);
+      setCatalog((prev) => (prev ? { ...prev, saved } : prev));
       notify({ title: "Strategy saved", message: `Saved strategy "${name}".`, type: "success" });
     } catch (e: any) {
       notify({ title: "Save failed", message: e.message, type: "error" });
@@ -774,8 +741,10 @@ export const StrategyTesterPageInner: React.FC = () => {
     }
 
     try {
-      const savedRow = await persistCurrentStrategy(savePayload);
-      await refreshSavedStrategies(savedRow.id);
+      await saveStrategyDefinition(savePayload);
+      const saved = asRows<SavedStrategyItem>(await fetchSavedStrategies(), "strategies");
+      setSavedStrategies(saved);
+      setCatalog((prev) => (prev ? { ...prev, saved } : prev));
     } catch (e: any) {
       notify({
         title: "Save failed",
@@ -834,9 +803,8 @@ export const StrategyTesterPageInner: React.FC = () => {
     () => (Array.isArray(filters) ? filters : DEFAULT_FILTERS).map(toBuilderRule),
     [filters],
   );
-
   const catalogView = useMemo(
-    () => (catalog ? { ...catalog, saved: uniqueStrategiesByIdAndName(savedStrategies) } : catalog),
+    () => (catalog ? { ...catalog, saved: savedStrategies } : catalog),
     [catalog, savedStrategies],
   );
 
@@ -883,7 +851,6 @@ export const StrategyTesterPageInner: React.FC = () => {
         <StrategyConfigurationPanel
           catalog={catalogView}
           selectedPresetId={selectedPresetId}
-          selectedEngine={selectedEngine}
           strategyName={strategyName}
           strategyDescription={strategyDesc}
           universe={universe}
@@ -894,7 +861,6 @@ export const StrategyTesterPageInner: React.FC = () => {
           initialCapital={initialCapital}
           isRunning={isRunning}
           onPresetChange={handlePresetChange}
-          onEngineChange={setSelectedEngine}
           onEditStrategy={() => {
             setBuilderTab("builder");
             setIsBuilderModalOpen(true);

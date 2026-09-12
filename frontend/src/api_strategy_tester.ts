@@ -183,8 +183,6 @@ export type StrategyResultRow = {
   primary_failure_reason?: string | null;
   primary_failure?: string | null;
   error_detail?: string | null;
-  source?: string;
-  strategy_name?: string;
 };
 
 export type HistoryRow = {
@@ -207,10 +205,6 @@ export type SavedStrategyItem = {
   name: string;
   description?: string;
   config?: StrategyConfigPayload;
-  version?: number;
-  is_preset?: boolean;
-  preset_id?: string | null;
-  updated_at?: string | null;
 };
 
 export type StrategyCatalog = {
@@ -277,19 +271,6 @@ export async function saveStrategyDefinition(payload: StrategyConfigPayload): Pr
     "Save strategy",
   );
   if (!response.ok) throw new Error(await parseError(response, "Unable to save strategy."));
-  return response.json();
-}
-
-export async function updateStrategyDefinition(
-  id: string,
-  payload: StrategyConfigPayload,
-): Promise<{ id: string; name: string; version: number }> {
-  const response = await fetchWithAuthResponse(
-    `/strategy-tests/strategies/${encodeURIComponent(id)}`,
-    { method: "PUT", body: JSON.stringify(payload) },
-    "Update strategy",
-  );
-  if (!response.ok) throw new Error(await parseError(response, "Unable to update strategy."));
   return response.json();
 }
 
@@ -449,203 +430,6 @@ export async function fetchStrategyResultHistory(
     "Strategy test stock history",
   );
   if (!response.ok) throw new Error(await parseError(response, "Unable to load stock history."));
-  return response.json();
-}
-
-// ---------------------------------------------------------------------------
-// QuantConnect LEAN Backtesting Engine API Client
-// ---------------------------------------------------------------------------
-
-export type LeanTradeItem = {
-  tradeId: number;
-  symbol: string;
-  entryDate: string;
-  entryPrice: number;
-  exitDate?: string | null;
-  exitPrice?: number | null;
-  quantity: number;
-  direction: "LONG" | "SHORT";
-  grossPnL: number;
-  commission: number;
-  slippage: number;
-  netPnL: number;
-  returnPct: number;
-  holdingPeriod: number;
-  entryReason: string;
-  exitReason: string;
-  isOpen: boolean;
-};
-
-export type LeanEquityPointItem = {
-  date: string;
-  equity: number;
-  cash: number;
-  investedCapital: number;
-  drawdown: number;
-  drawdownPct: number;
-};
-
-export type LeanBacktestSummaryItem = {
-  initialCapital: number;
-  finalEquity: number;
-  netProfit: number;
-  netProfitPct: number;
-  cagr?: number | null;
-  sharpeRatio: number;
-  sortinoRatio: number;
-  maximumDrawdown: number;
-  maximumDrawdownPct: number;
-  calmarRatio?: number | null;
-  totalTrades: number;
-  winningTrades: number;
-  losingTrades: number;
-  winRate: number;
-  profitFactor: number;
-  averageTrade: number;
-  averageWinningTrade: number;
-  averageLosingTrade: number;
-  expectancy: number;
-  totalCommission: number;
-  totalSlippage: number;
-  executionModel: string;
-  dataSource: string;
-  dataCoverageRatio: number;
-  tradingDaysCount: number;
-};
-
-export type LeanBacktestResultPayload = {
-  jobId: string;
-  strategyId: string;
-  strategyName: string;
-  engine: string;
-  status: string;
-  startDate: string;
-  endDate: string;
-  symbols: string[];
-  summary: LeanBacktestSummaryItem;
-  trades: LeanTradeItem[];
-  equityCurve: LeanEquityPointItem[];
-  positions: Array<{
-    date: string;
-    symbol: string;
-    quantity: number;
-    averagePrice: number;
-    marketValue: number;
-    unrealizedPnL: number;
-    realizedPnL: number;
-  }>;
-  debugTrace?: Array<Record<string, unknown>> | null;
-  validationParity?: {
-    symbol: string;
-    strategy: string;
-    startDate: string;
-    endDate: string;
-    totalBars: number;
-    signalMatches: number;
-    signalMismatches: number;
-    tradeMatches: number;
-    metricsComparison: Record<string, Record<string, unknown>>;
-    mismatchDetails: Array<Record<string, unknown>>;
-    verdict: string;
-  } | null;
-};
-
-export type LeanJobItem = {
-  jobId: string;
-  strategyId: string;
-  strategyName: string;
-  userId?: string | null;
-  createdAt: string;
-  startedAt?: string | null;
-  completedAt?: string | null;
-  status: "QUEUED" | "RUNNING" | "COMPLETED" | "FAILED" | "CANCELLED";
-  progressPct: number;
-  stage: string;
-  error?: string | null;
-  request: {
-    strategyId: string;
-    strategyName: string;
-    symbols: string[];
-    startDate: string;
-    endDate: string;
-    initialCapital: number;
-    commission?: number;
-    slippage?: number;
-    positionSizing?: string;
-    positionSizingValue?: number;
-    maxPositions?: number;
-    benchmark?: string | null;
-    timeframe?: string;
-    dataSource?: string;
-    executionMode?: string;
-  };
-  result?: LeanBacktestResultPayload | null;
-};
-
-export async function fetchLeanEngines(): Promise<{
-  engines: Array<{ id: string; name: string; description: string; is_default: boolean; supports_portfolio: boolean }>;
-  default_engine: string;
-}> {
-  const response = await fetchWithAuthResponse("/backtests/engines", { method: "GET" }, "LEAN engines");
-  if (!response.ok) return { engines: [{ id: "LEAN", name: "QuantConnect LEAN Engine", description: "Professional event-driven backtesting engine", is_default: true, supports_portfolio: true }], default_engine: "LEAN" };
-  return response.json();
-}
-
-export async function createLeanBacktest(payload: Record<string, unknown>): Promise<LeanJobItem> {
-  const response = await fetchWithAuthResponse(
-    "/backtests",
-    { method: "POST", body: JSON.stringify(payload) },
-    "Create LEAN backtest",
-  );
-  if (!response.ok) throw new Error(await parseError(response, "Unable to create LEAN backtest job."));
-  return response.json();
-}
-
-export async function fetchLeanJob(jobId: string): Promise<LeanJobItem> {
-  const response = await fetchWithAuthResponse(
-    `/backtests/${encodeURIComponent(jobId)}`,
-    { method: "GET" },
-    "LEAN job status",
-  );
-  if (!response.ok) throw new Error(await parseError(response, "Unable to load LEAN job status."));
-  return response.json();
-}
-
-export async function fetchLeanJobResults(jobId: string): Promise<LeanBacktestResultPayload> {
-  const response = await fetchWithAuthResponse(
-    `/backtests/${encodeURIComponent(jobId)}/results`,
-    { method: "GET" },
-    "LEAN job results",
-  );
-  if (!response.ok) throw new Error(await parseError(response, "Unable to load LEAN results."));
-  return response.json();
-}
-
-export async function cancelLeanJob(jobId: string): Promise<{ job_id: string; status: string }> {
-  const response = await fetchWithAuthResponse(
-    `/backtests/${encodeURIComponent(jobId)}/cancel`,
-    { method: "POST" },
-    "Cancel LEAN job",
-  );
-  if (!response.ok) throw new Error(await parseError(response, "Unable to cancel LEAN job."));
-  return response.json();
-}
-
-export async function validateLeanAgainstTv(
-  symbol = "RELIANCE",
-  startDate?: string,
-  endDate?: string,
-  strategyId = "09_52w_breakout",
-): Promise<any> {
-  const params = new URLSearchParams({ symbol, strategy_id: strategyId });
-  if (startDate) params.set("start_date", startDate);
-  if (endDate) params.set("end_date", endDate);
-  const response = await fetchWithAuthResponse(
-    `/backtests/validate-tv?${params.toString()}`,
-    { method: "POST" },
-    "Validate LEAN against TV",
-  );
-  if (!response.ok) throw new Error(await parseError(response, "Unable to validate LEAN against TradingView."));
   return response.json();
 }
 

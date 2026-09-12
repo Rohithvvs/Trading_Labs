@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import uuid
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from typing import Any
 
 from sqlalchemy import func, select
@@ -181,7 +181,7 @@ async def touch_last_used(definition_id: uuid.UUID) -> None:
 
 
 async def next_public_scan_id(day: date | None = None) -> str:
-    stamp = (day or datetime.now(timezone(timedelta(hours=5, minutes=30))).date()).strftime("%Y%m%d")
+    stamp = (day or _utc().date()).strftime("%Y%m%d")
     prefix = f"IND-{stamp}-"
     async with AsyncSessionLocal() as db:
         count = int(
@@ -303,17 +303,3 @@ async def list_results(run_id: uuid.UUID) -> list[IndicatorScanResult]:
     async with AsyncSessionLocal() as db:
         stmt = select(IndicatorScanResult).where(IndicatorScanResult.run_id == run_id)
         return list((await db.execute(stmt)).scalars().all())
-
-
-async def get_result(run_id: uuid.UUID, symbol: str) -> IndicatorScanResult | None:
-    from ...utils.symbol import canonical_symbol
-
-    raw = (symbol or "").strip().upper()
-    canon = canonical_symbol(raw) or raw
-    candidates = [c for c in dict.fromkeys([canon, raw, f"{canon}-EQ", f"{raw}-EQ"]) if c]
-    async with AsyncSessionLocal() as db:
-        stmt = select(IndicatorScanResult).where(
-            IndicatorScanResult.run_id == run_id,
-            IndicatorScanResult.symbol.in_(candidates),
-        )
-        return (await db.execute(stmt)).scalars().first()

@@ -642,11 +642,13 @@ async def get_w52_symbol(
     from ..services.strategies.breakout52w.window_backtest import run_symbol_window_backtest
 
     row = await persistence.load_latest(STRATEGY_ID)
-    payload = row.payload if (row and row.payload) else {}
+    if not row or not row.payload:
+        raise HTTPException(status_code=404, detail={"message": "No 52-Week High Breakout scan yet"})
+    payload = row.payload
     recs = payload.get("recommendations") or []
     match = next((r for r in recs if str(r.get("symbol", "")).upper() == symbol.upper()), None)
     if not match:
-        match = {"symbol": symbol.upper(), "signal": "WATCH", "technicals": {}}
+        raise HTTPException(status_code=404, detail={"message": "Symbol not in last 52-Week High Breakout scan"})
     eval_raw = payload.get("evaluation_date")
     try:
         asof = date_cls.fromisoformat(str(eval_raw)[:10]) if eval_raw else date_cls.today()

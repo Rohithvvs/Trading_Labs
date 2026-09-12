@@ -330,18 +330,10 @@ class Settings(BaseSettings):
     # KERNEL preserves 038 signal-close fills. TV_COMPAT uses next-bar-open + intrabar stops.
     w52_execution_profile: str = Field(default="KERNEL", alias="W52_EXECUTION_PROFILE")
     w52_historical_fill_mode: str = Field(default="DEFAULT_OHLC", alias="W52_HISTORICAL_FILL_MODE")
+    w52_breakeven_tolerance_inr: float = Field(default=0.0, alias="W52_BREAKEVEN_TOLERANCE_INR")
     ohlcv_lookback_max_sessions: int = Field(
         default=2000, ge=1, le=2000, alias="OHLCV_LOOKBACK_MAX_SESSIONS"
     )
-
-    # QuantConnect LEAN Backtesting Engine Settings
-    lean_engine_enabled: bool = Field(default=True, alias="LEAN_ENGINE_ENABLED")
-    lean_default_engine: str = Field(default="LEAN", alias="LEAN_DEFAULT_ENGINE")
-    lean_data_dir: str = Field(default="data/lean", alias="LEAN_DATA_DIR")
-    lean_results_dir: str = Field(default="data/lean_results", alias="LEAN_RESULTS_DIR")
-    lean_max_concurrent_jobs: int = Field(default=4, ge=1, le=16, alias="LEAN_MAX_CONCURRENT_JOBS")
-    lean_default_commission_rate: float = Field(default=0.0005, alias="LEAN_DEFAULT_COMMISSION_RATE")
-    lean_default_slippage_rate: float = Field(default=0.0005, alias="LEAN_DEFAULT_SLIPPAGE_RATE")
 
     def is_strategy_market_data_gate_enabled(self) -> bool:
         """Live feature-flag for pre-scanner strategy market-data freshness gate."""

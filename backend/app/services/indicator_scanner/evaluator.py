@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
@@ -94,8 +94,6 @@ class EvalResult:
     status: str = "ok"
     error_detail: str | None = None
     bar_count: int = 0
-    conditions: list[dict[str, Any]] = field(default_factory=list)
-    return_pct: float | None = None
 
 
 class SeriesEngine:
@@ -171,16 +169,12 @@ class SeriesEngine:
                 outputs[name] = bool(_truthy(value))
             else:
                 outputs[name] = _json_number(value)
-        from .entry_conditions import evaluate_entry_conditions
-
         return EvalResult(
             as_of=self.bars.dates[i],
             outputs=outputs,
             ohlcv=self._ohlcv(i),
             status="ok",
             bar_count=self.n,
-            conditions=evaluate_entry_conditions(self, i),
-            return_pct=_hold_return_pct(self.bars.close),
         )
 
     def _ohlcv(self, i: int) -> dict[str, Scalar]:
@@ -413,17 +407,6 @@ def _arith(a: Scalar, b: Scalar, op: str) -> Scalar:
             return None
         return av % bv
     return None
-
-
-def _hold_return_pct(close: list[Scalar]) -> float | None:
-    """Buy-and-hold return from close[252] to the scan bar. Independent of plotted outputs."""
-    if len(close) < 253:
-        return None
-    now = as_float(close[-1])
-    past = as_float(close[-253])
-    if now is None or past is None or past == 0:
-        return None
-    return (now / past - 1.0) * 100.0
 
 
 def _json_number(value: Scalar) -> Scalar:

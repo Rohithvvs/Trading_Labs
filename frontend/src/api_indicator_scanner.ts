@@ -62,7 +62,6 @@ export type IndicatorValidation = {
   timeframe?: string;
   timeframe_supported?: boolean;
   parsed_definition?: Record<string, unknown>;
-  entry_conditions?: Array<{ id?: string; name: string }>;
   supported_syntax?: string[];
   disclaimer?: string;
   source_code?: string;
@@ -79,7 +78,6 @@ export type SavedIndicator = {
   language_mode: string;
   timeframe: string;
   parsed_definition?: Record<string, unknown> | null;
-  entry_conditions?: Array<{ id?: string; name: string }>;
   validation_status: string;
   validation_errors?: IndicatorIssue[];
   required_bars: number;
@@ -89,28 +87,12 @@ export type SavedIndicator = {
   is_archived?: boolean;
 };
 
-export type SignalCondition =
-  | "above"
-  | "above_or_equal"
-  | "below"
-  | "below_or_equal"
-  | "crosses"
-  | "crosses_up"
-  | "crosses_down"
-  | "between"
-  | "outside"
-  | "equal";
-
 export type IndicatorFilter = {
   field: string;
   operator: string;
   value?: string | number | boolean | null;
   low?: number | null;
   high?: number | null;
-  condition?: SignalCondition;
-  source?: string;
-  setup_type?: "signal" | "pulse";
-  compare_field?: string | null;
 };
 
 export type IndicatorScanStatus = {
@@ -141,7 +123,6 @@ export type IndicatorScanStatus = {
   summary?: Record<string, unknown> | null;
   outputs?: IndicatorOutputDef[];
   filters?: IndicatorFilter[];
-  entry_conditions?: Array<{ id?: string; name: string }>;
 };
 
 export type IndicatorScanRow = {
@@ -156,12 +137,6 @@ export type IndicatorScanRow = {
   ohlcv?: Record<string, number | null>;
   error_detail?: string | null;
   bar_count?: number | null;
-  return_pct?: number | null;
-  signal?: string;
-  rank?: number;
-  company?: string | null;
-  entry_price?: number | null;
-  exit_price?: number | null;
 };
 
 export async function validateIndicatorSource(sourceCode: string, timeframe = "1D"): Promise<IndicatorValidation> {
@@ -269,32 +244,6 @@ export async function fetchIndicatorScan(scanId: string): Promise<IndicatorScanS
   return response.json();
 }
 
-export async function fetchIndicatorScanResult(
-  scanId: string,
-  symbol: string,
-): Promise<
-  IndicatorScanRow & {
-    scan_id?: string;
-    indicator_name?: string;
-    filters?: IndicatorFilter[];
-    filter_results?: Array<{ name: string; passed: boolean }>;
-    signal?: string;
-    company?: string | null;
-    entry_price?: number | null;
-    exit_price?: number | null;
-    return_pct?: number | null;
-    close?: number | null;
-    evaluation_date?: string | null;
-    source?: string;
-  }
-> {
-  const response = await fetchWithAuth(
-    `/indicator-scans/${encodeURIComponent(scanId)}/results/${encodeURIComponent(symbol)}`,
-  );
-  if (!response.ok) throw new Error(await parseError(response, "Unable to load indicator scan result."));
-  return response.json();
-}
-
 export async function fetchIndicatorScanResults(
   scanId: string,
   params: {
@@ -304,8 +253,6 @@ export async function fetchIndicatorScanResults(
     matched_only?: boolean;
     sort?: string;
     direction?: string;
-    signal?: string;
-    return_bucket?: string;
   } = {},
 ): Promise<{ total: number; page: number; page_size: number; outputs: string[]; results: IndicatorScanRow[]; matched_count?: number }> {
   const qs = new URLSearchParams();
@@ -315,8 +262,6 @@ export async function fetchIndicatorScanResults(
   if (params.matched_only === false) qs.set("matched_only", "false");
   if (params.sort) qs.set("sort", params.sort);
   if (params.direction) qs.set("direction", params.direction);
-  if (params.signal) qs.set("signal", params.signal);
-  if (params.return_bucket) qs.set("return_bucket", params.return_bucket);
   const response = await fetchWithAuth(`/indicator-scans/${encodeURIComponent(scanId)}/results?${qs.toString()}`);
   if (!response.ok) throw new Error(await parseError(response, "Unable to load scan results."));
   return response.json();
@@ -344,161 +289,3 @@ export async function cancelIndicatorScan(scanId: string): Promise<void> {
   const response = await fetchWithAuth(`/indicator-scans/${encodeURIComponent(scanId)}/cancel`, { method: "POST" });
   if (!response.ok) throw new Error(await parseError(response, "Unable to cancel scan."));
 }
-
-export type IndicatorBacktestOptions = {
-  start_date?: string;
-  end_date?: string;
-  initial_capital?: number;
-  universe_id?: string;
-  engine?: "LEAN" | "EXISTING";
-  symbols?: string[];
-  max_positions?: number;
-  parameters?: Record<string, unknown>;
-};
-
-export type LeanJobStatus = "QUEUED" | "RUNNING" | "COMPLETED" | "FAILED" | "CANCELLED";
-
-export type LeanTrade = {
-  tradeId: number;
-  symbol: string;
-  entryDate: string;
-  entryPrice: number;
-  exitDate?: string | null;
-  exitPrice?: number | null;
-  quantity: number;
-  direction: "LONG" | "SHORT";
-  grossPnL: number;
-  commission: number;
-  slippage: number;
-  netPnL: number;
-  returnPct: number;
-  holdingPeriod: number;
-  entryReason: string;
-  exitReason: string;
-  isOpen: boolean;
-};
-
-export type LeanEquityPoint = {
-  date: string;
-  equity: number;
-  cash: number;
-  investedCapital: number;
-  drawdown: number;
-  drawdownPct: number;
-};
-
-export type LeanPositionHistory = {
-  date: string;
-  symbol: string;
-  quantity: number;
-  averagePrice: number;
-  marketValue: number;
-  unrealizedPnL: number;
-  realizedPnL: number;
-};
-
-export type LeanBacktestSummary = {
-  initialCapital: number;
-  finalEquity: number;
-  netProfit: number;
-  netProfitPct: number;
-  cagr?: number | null;
-  sharpeRatio: number;
-  sortinoRatio: number;
-  maximumDrawdown: number;
-  maximumDrawdownPct: number;
-  calmarRatio?: number | null;
-  totalTrades: number;
-  winningTrades: number;
-  losingTrades: number;
-  winRate: number;
-  profitFactor: number;
-  averageTrade: number;
-  averageWinningTrade: number;
-  averageLosingTrade: number;
-  expectancy: number;
-  totalCommission: number;
-  totalSlippage: number;
-  executionModel: string;
-  dataSource: string;
-  dataCoverageRatio: number;
-  tradingDaysCount: number;
-};
-
-export type LeanBacktestResult = {
-  jobId: string;
-  strategyId: string;
-  strategyName: string;
-  engine: string;
-  status: LeanJobStatus;
-  startDate: string;
-  endDate: string;
-  symbols: string[];
-  summary: LeanBacktestSummary;
-  trades: LeanTrade[];
-  equityCurve: LeanEquityPoint[];
-  positions: LeanPositionHistory[];
-  debugTrace?: unknown[] | null;
-  runtimeMetrics: Record<string, unknown>;
-  validationParity?: Record<string, unknown> | null;
-};
-
-export type IndicatorBacktestJob = {
-  jobId: string;
-  strategyId: string;
-  strategyName: string;
-  userId?: string | null;
-  createdAt: string;
-  startedAt?: string | null;
-  completedAt?: string | null;
-  status: LeanJobStatus;
-  progressPct: number;
-  stage: string;
-  error?: string | null;
-  request: Record<string, unknown>;
-  result?: LeanBacktestResult | null;
-};
-
-export async function startIndicatorBacktest(
-  indicatorId: string,
-  options: IndicatorBacktestOptions = {},
-): Promise<IndicatorBacktestJob> {
-  const response = await fetchWithAuth(`/indicators/${encodeURIComponent(indicatorId)}/backtest`, {
-    method: "POST",
-    body: JSON.stringify({
-      start_date: options.start_date || undefined,
-      end_date: options.end_date || undefined,
-      initial_capital: options.initial_capital ?? 100000.0,
-      universe_id: options.universe_id || "nse-755",
-      engine: options.engine || "LEAN",
-      symbols: options.symbols || undefined,
-      max_positions: options.max_positions ?? 10,
-      parameters: options.parameters || {},
-    }),
-  });
-  if (!response.ok) throw new Error(await parseError(response, "Unable to start LEAN backtest."));
-  return response.json();
-}
-
-export async function fetchIndicatorBacktest(
-  indicatorId: string,
-  jobId: string,
-): Promise<IndicatorBacktestJob> {
-  const response = await fetchWithAuth(
-    `/indicators/${encodeURIComponent(indicatorId)}/backtests/${encodeURIComponent(jobId)}`,
-  );
-  if (!response.ok) throw new Error(await parseError(response, "Unable to load backtest status."));
-  return response.json();
-}
-
-export async function fetchIndicatorBacktestResults(
-  indicatorId: string,
-  jobId: string,
-): Promise<LeanBacktestResult> {
-  const response = await fetchWithAuth(
-    `/indicators/${encodeURIComponent(indicatorId)}/backtests/${encodeURIComponent(jobId)}/results`,
-  );
-  if (!response.ok) throw new Error(await parseError(response, "Unable to load backtest results."));
-  return response.json();
-}
-

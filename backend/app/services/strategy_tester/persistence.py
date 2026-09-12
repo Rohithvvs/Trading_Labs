@@ -105,22 +105,6 @@ async def get_definition(definition_id: uuid.UUID) -> StrategyDefinition | None:
         return await db.get(StrategyDefinition, definition_id)
 
 
-async def find_definition_by_name(user_id: uuid.UUID, name: str) -> StrategyDefinition | None:
-    needle = (name or "").strip().lower()
-    if not needle:
-        return None
-    async with AsyncSessionLocal() as db:
-        stmt = (
-            select(StrategyDefinition)
-            .where(StrategyDefinition.user_id == user_id)
-            .where(StrategyDefinition.is_preset.is_(False))
-            .where(func.lower(StrategyDefinition.name) == needle)
-            .order_by(StrategyDefinition.updated_at.desc())
-            .limit(1)
-        )
-        return (await db.execute(stmt)).scalars().first()
-
-
 async def list_definitions(user_id: uuid.UUID | None) -> list[StrategyDefinition]:
     async with AsyncSessionLocal() as db:
         stmt = select(StrategyDefinition).order_by(StrategyDefinition.updated_at.desc())

@@ -16,7 +16,7 @@ from ...services.market_data_ingestion.repository import (
     fetch_index_history,
     iter_symbol_chunks,
 )
-from ...services.universe_csv import is_dummy_universe_symbol, load_unique_nifty500_csv_rows
+from ...services.universe_csv import load_unique_nifty500_csv_rows
 from ...services.universe_service import UniverseService
 from ...utils.symbol import canonical_symbol, ohlcv_symbol_variants
 from . import persistence
@@ -40,7 +40,7 @@ _active_runs: set[uuid.UUID] = set()
 _PROGRESS_EVERY = 12
 _FILL_HISTORY_TIMEOUT_S = 12.0
 _PROBE_HISTORY_TIMEOUT_S = 8.0
-_LIVE_QUOTE_TIMEOUT_S = 90.0
+_LIVE_QUOTE_TIMEOUT_S = 12.0
 _FILL_PROBE_NAMES = ("RELIANCE", "TCS", "HDFCBANK", "INFY", "ICICIBANK")
 # NIFTY 500 membership is 500+ names; the live Trading Labs universe is 755.
 # A truncated stocks_master (historically 65 names) must not become the scan set.
@@ -324,8 +324,6 @@ async def load_universe(universe: str) -> list[dict[str, str | None]]:
         symbol = canonical_symbol(inst.symbol) or inst.symbol
         if not symbol or symbol in seen:
             continue
-        if is_dummy_universe_symbol(symbol):
-            continue
         seen.add(symbol)
         store = getattr(inst, "universe_symbol", None) or f"{symbol}-EQ"
         rows.append({"symbol": symbol, "company": inst.company_name, "store_symbol": store})
@@ -362,8 +360,6 @@ def _merge_csv_universe(rows: list[dict[str, str | None]], seen: set[str]) -> in
         symbol = item.get("canonical_symbol") or canonical_symbol(item.get("symbol") or "")
         if not symbol or symbol in seen:
             continue
-        if is_dummy_universe_symbol(symbol):
-            continue
         seen.add(symbol)
         rows.append({"symbol": symbol, "company": item.get("company_name"), "store_symbol": f"{symbol}-EQ"})
         added += 1
@@ -375,7 +371,6 @@ async def load_bar_series(
     *,
     from_date: date,
     to_date: date,
-    session_dates: set[date] | None = None,
 ) -> dict[str, BarSeries]:
     if not symbols:
         return {}
@@ -407,7 +402,7 @@ async def load_bar_series(
     out: dict[str, BarSeries] = {}
     for symbol, items in buckets.items():
         items.sort(key=lambda row: row[0])
-        out[symbol] = _series_from_rows(items, session_dates=session_dates)
+        out[symbol] = _series_from_rows(items)
     return out
 
 
@@ -415,19 +410,15 @@ def _tuple_cloned(current: tuple, previous: tuple) -> bool:
     return all(_same_px(_num(current[i]), _num(previous[i])) for i in range(1, 6))
 
 
-def _series_from_rows(
-    items: list[tuple],
-    *,
-    session_dates: set[date] | None = None,
-    apply_holiday_calendar: bool = True,
-) -> BarSeries:
-    from ...services.market_data_ingestion.nse_sessions import filter_session_ohlcv_rows
-
-    ordered, _stats = filter_session_ohlcv_rows(
-        items,
-        session_dates=session_dates,
-        apply_holiday_calendar=apply_holiday_calendar,
-    )
+def _series_from_rows(items: list[tuple]) -> BarSeries:
+    by_date: dict[date, tuple] = {}
+    for row in items:
+        if not row or row[0] is None:
+            continue
+        by_date[row[0]] = row
+    ordered = [by_date[day] for day in sorted(by_date)]
+    while len(ordered) >= 2 and _tuple_cloned(ordered[-1], ordered[-2]):
+        ordered.pop()
     return BarSeries(
         dates=[row[0] for row in ordered],
         open=[_num(row[1]) for row in ordered],
@@ -444,70 +435,45 @@ async def prepare_scan_market_data(
     from_date: date,
     to_date: date,
     need_benchmark: bool,
-    fill_timeout_s: float | None = None,
-    overlay_live: bool = True,
 ) -> tuple[dict[str, BarSeries], BarSeries | None, str]:
     """Load the 755-name live OHLCV store, fill gaps, overlay today's FYERS bar."""
-    from ...services.market_data_ingestion.nse_sessions import nse_session_dates
-
-    benchmark_series = await load_benchmark_series(from_date=from_date, to_date=to_date)
-    session_dates = nse_session_dates(
-        from_date,
-        to_date,
-        index_dates=benchmark_series.dates if benchmark_series is not None else None,
-    )
-    if need_benchmark and benchmark_series is None:
-        logger.warning("Strategy tester benchmark index series unavailable; market-gate filters will be unevaluable")
-    if not need_benchmark:
-        # Index was loaded only to pin the NSE cash session calendar.
-        pass
-
-    series_by_symbol = await load_bar_series(
-        symbols, from_date=from_date, to_date=to_date, session_dates=session_dates
-    )
+    series_by_symbol = await load_bar_series(symbols, from_date=from_date, to_date=to_date)
     sources = ["daily_ohlcv"]
     filled = await fill_missing_from_historical_candles(
-        symbols,
-        series_by_symbol,
-        from_date=from_date,
-        to_date=to_date,
-        session_dates=session_dates,
+        symbols, series_by_symbol, from_date=from_date, to_date=to_date
     )
     if filled:
         sources.append("historical_candles")
 
-    if overlay_live:
-        series_by_symbol, benchmark_series, live_source = await overlay_live_session(
-            series_by_symbol,
-            symbols,
-            end_date=to_date,
-            benchmark=benchmark_series,
-            fill_timeout_s=fill_timeout_s,
-        )
-        if live_source and live_source != "stored_eod":
-            sources.append(live_source)
+    benchmark_series: BarSeries | None = None
+    if need_benchmark:
+        benchmark_series = await load_benchmark_series(from_date=from_date, to_date=to_date)
+        if benchmark_series is None:
+            logger.warning("Strategy tester benchmark index series unavailable; market-gate filters will be unevaluable")
+
+    series_by_symbol, benchmark_series, live_source = await overlay_live_session(
+        series_by_symbol,
+        symbols,
+        end_date=to_date,
+        benchmark=benchmark_series,
+    )
+    if live_source and live_source != "stored_eod":
+        sources.append(live_source)
     return series_by_symbol, benchmark_series, "+".join(sources)
 
 
-async def ensure_universe_market_data(
-    symbols: list[str],
-    *,
-    target_date: date | None = None,
-    max_duration_s: float = 45.0,
-) -> dict[str, Any]:
+async def ensure_universe_market_data(symbols: list[str]) -> dict[str, Any]:
     """Refresh the strategy-grade daily_ohlcv store for the live 755-name universe."""
     try:
         from ...services.market_data_ingestion.ensure import ensure_latest_market_data
 
-        budget = max(5.0, float(max_duration_s))
         return await asyncio.wait_for(
             ensure_latest_market_data(
                 symbols=symbols or None,
-                target_date=target_date,
                 trigger_source="SCANNER",
-                max_duration_s=budget,
+                max_duration_s=45.0,
             ),
-            timeout=budget + 5.0,
+            timeout=50.0,
         )
     except asyncio.TimeoutError:
         logger.warning("STRATEGY_TESTER_ENSURE_TIMEOUT | universe=%s", len(symbols))
@@ -677,7 +643,6 @@ async def fill_missing_completed_bar_series(
     *,
     end_date: date,
     benchmark: BarSeries | None,
-    timeout_s: float | None = None,
 ) -> tuple[dict[str, BarSeries], BarSeries | None, str]:
     """Bring stored EOD up to the last completed NSE session (same bar Pine Screener uses after close).
 
@@ -731,17 +696,16 @@ async def fill_missing_completed_bar_series(
         )
         return series_by_symbol, benchmark, "stored_eod"
     try:
-        fill_timeout = _FILL_HISTORY_TIMEOUT_S if timeout_s is None else timeout_s
         by_session, index_by, persist, index_persist = await asyncio.wait_for(
             fetch_missing_completed_bars(stale, gap_from, target),
-            timeout=fill_timeout,
+            timeout=_FILL_HISTORY_TIMEOUT_S,
         )
     except asyncio.TimeoutError:
         logger.warning(
             "STRATEGY_TESTER_FILL_TIMEOUT | stale=%s | target=%s | timeout_s=%s",
             len(stale),
             target.isoformat(),
-            _FILL_HISTORY_TIMEOUT_S if timeout_s is None else timeout_s,
+            _FILL_HISTORY_TIMEOUT_S,
         )
         return series_by_symbol, benchmark, "stored_eod"
     except Exception:
@@ -821,7 +785,6 @@ async def overlay_live_session(
     *,
     end_date: date,
     benchmark: BarSeries | None,
-    fill_timeout_s: float | None = None,
 ) -> tuple[dict[str, BarSeries], BarSeries | None, str]:
     """Fill last completed NSE session, then overlay today's live 1D bar (Pine Screener candle)."""
     series_by_symbol, benchmark, fill_source = await fill_missing_completed_bar_series(
@@ -829,7 +792,6 @@ async def overlay_live_session(
         symbols,
         end_date=end_date,
         benchmark=benchmark,
-        timeout_s=fill_timeout_s,
     )
     try:
         from ...services.market_data_ingestion.calendar_utils import expected_last_completed_session
@@ -842,28 +804,14 @@ async def overlay_live_session(
         return series_by_symbol, benchmark, fill_source
 
     session = should_overlay_session([], None)
-    if session is None:
-        # Overlay helper can fail while the cash session is already open. If the
-        # caller asked for today's 1D bar (Pine Screener), still fetch live quotes.
-        try:
-            from ...services.market_data_ingestion.nse_sessions import is_nse_cash_session
-            from ...services.trading_hours_service import OPEN_TIME, TradingHoursService, trading_hours
-
-            th = trading_hours if trading_hours is not None else TradingHoursService()
-            ist = th.now_ist()
-            if is_nse_cash_session(end_date) and end_date == ist.date() and ist.time() >= OPEN_TIME:
-                session = end_date
-        except Exception:
-            logger.warning("STRATEGY_TESTER_LIVE_SESSION_FALLBACK_FAILED", exc_info=True)
     if session is None or session > end_date:
         # Weekend/holiday: do not stamp last quotes onto a new date (that cloned
         # Thursday onto Friday and froze the scanner on 755 FYERS quote calls).
         return series_by_symbol, benchmark, fill_source
-    quote_timeout = _LIVE_QUOTE_TIMEOUT_S if fill_timeout_s is None else min(_LIVE_QUOTE_TIMEOUT_S, float(fill_timeout_s))
     try:
         bars, index_close = await asyncio.wait_for(
             fetch_live_session_bars(symbols),
-            timeout=quote_timeout,
+            timeout=_LIVE_QUOTE_TIMEOUT_S,
         )
     except asyncio.TimeoutError:
         logger.warning("STRATEGY_TESTER_LIVE_QUOTES_TIMEOUT | session=%s | universe=%s", session, len(symbols))
@@ -943,7 +891,6 @@ async def fill_missing_from_historical_candles(
     *,
     from_date: date,
     to_date: date,
-    session_dates: set[date] | None = None,
 ) -> int:
     """Fill names the strategy-grade store missed from the Production 1D candle table."""
     missing = [s for s in symbols if s not in series_by_symbol or len(series_by_symbol.get(s) or []) == 0]
@@ -1002,7 +949,7 @@ async def fill_missing_from_historical_candles(
         if symbol in series_by_symbol and len(series_by_symbol[symbol]) > 0:
             continue
         items.sort(key=lambda row: row[0])
-        series_by_symbol[symbol] = _series_from_rows(items, session_dates=session_dates)
+        series_by_symbol[symbol] = _series_from_rows(items)
         filled += 1
     if filled:
         logger.info("STRATEGY_TESTER_CANDLE_FALLBACK | missing=%s | filled=%s", len(missing), filled)
@@ -1020,11 +967,14 @@ async def load_benchmark_series(
     rows = [r for r in rows if r.get("trade_date") and r["trade_date"] <= to_date]
     if not rows:
         return None
-    tuples = [
-        (r["trade_date"], r.get("open"), r.get("high"), r.get("low"), r.get("close"), r.get("volume"))
-        for r in rows
-    ]
-    return _series_from_rows(tuples, apply_holiday_calendar=False)
+    return BarSeries(
+        dates=[r["trade_date"] for r in rows],
+        open=[_num(r.get("open")) for r in rows],
+        high=[_num(r.get("high")) for r in rows],
+        low=[_num(r.get("low")) for r in rows],
+        close=[_num(r.get("close")) for r in rows],
+        volume=[_num(r.get("volume")) for r in rows],
+    )
 
 
 def run_status_payload(run) -> dict[str, Any]:

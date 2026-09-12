@@ -44,8 +44,7 @@ export const TopReturnsCard: React.FC<TopReturnsCardProps> = ({
 }) => {
   const isPositive = type === "positive";
   const displayItems = React.useMemo(() => {
-    if (Array.isArray(items)) {
-      if (items.length === 0) return [];
+    if (items && items.length > 0) {
       const sorted = [...items].sort((a, b) => {
         const retA = a.return_pct ?? 0;
         const retB = b.return_pct ?? 0;
@@ -88,13 +87,6 @@ export const TopReturnsCard: React.FC<TopReturnsCardProps> = ({
           </tr>
         </thead>
         <tbody>
-          {displayItems.length === 0 ? (
-            <tr>
-              <td colSpan={7} style={{ textAlign: "center", color: "#64748b", padding: "16px 8px" }} data-testid={`top-${type}-empty`}>
-                No ranked returns for this scan yet.
-              </td>
-            </tr>
-          ) : null}
           {displayItems.map((item) => (
             <tr
               key={item.symbol}

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -241,7 +240,6 @@ class _CompileCtx:
                 column=1,
                 code="NO_OUTPUTS",
             )
-        self._warn_missing_screener_signal_plot()
         for inp in self.inputs:
             if inp.name not in self.used:
                 self.warnings.append(
@@ -281,29 +279,6 @@ class _CompileCtx:
             required_symbols=symbols,
             warnings=self.warnings,
             source=self.program.source,
-        )
-
-    def _warn_missing_screener_signal_plot(self) -> None:
-        has_signal_plot = any(
-            out.kind == "plot" and re.search(r"signal|scan$", out.name or "", re.I) for out in self.outputs
-        )
-        has_shape = any(out.kind in {"plotshape", "alertcondition"} for out in self.outputs)
-        first_plot = next((out for out in self.outputs if out.kind == "plot"), None)
-        if has_signal_plot or not has_shape or first_plot is None:
-            return
-        self.warnings.append(
-            CompileIssue(
-                line=first_plot.source_line or 1,
-                column=1,
-                severity="warning",
-                code="MISSING_SCREENER_SIGNAL_PLOT",
-                message=(
-                    "TradingView Pine Screener filters numeric plot() columns. This script's first plot is "
-                    f"'{first_plot.name}' (not a 0/1 signal), so setting that column to 1 matches nothing. "
-                    "Add plot(buySignal ? 1 : 0, \"Signal\") and filter Signal = 1 on TradingView. "
-                    "This scanner matches when the plotshape/alert condition is true on the same 1D bar."
-                ),
-            )
         )
 
     def _assignment(self, stmt: Assignment) -> None:
@@ -628,11 +603,6 @@ class _CompileCtx:
             elif qname == "ta.atr":
                 if expr.args:
                     length = self._length_value(expr.args[0])
-            elif qname in {"ta.crossover", "ta.crossunder", "crossover", "crossunder"}:
-                child = 1
-                for arg in expr.args:
-                    child = max(child, self._lookback(arg, 0))
-                return child + extra + 1
             child = 1
             for arg in expr.args:
                 child = max(child, self._lookback(arg, 0))

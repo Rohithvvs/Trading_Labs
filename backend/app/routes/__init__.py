@@ -25,14 +25,12 @@ from .analytics import router as analytics_router
 # declared in app.governance.router; the new governance_router above extends it
 # with promotion / kill-switch / attribution endpoints under the same prefix.
 from ..governance.router import governance_router as command_routing_governance_router
-from ..lean.routes import lean_router
 
 api_router = APIRouter()
 api_router.include_router(health_router)
 api_router.include_router(stocks_router)
 api_router.include_router(analysis_router)
 api_router.include_router(paper_trading_router)
-api_router.include_router(lean_router)
 
 api_router.include_router(token_router)
 api_router.include_router(internal_router)

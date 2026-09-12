@@ -925,41 +925,27 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("QUARANTINE MODE: Legacy alert monitor bypassed.")
 
-    # Offline gap replay: wait for today's FYERS token (generated in the
-    # background bootstrap task), then back-fill fills/exits. Must not run
-    # before auth is ready — empty 1m fetches would skip the offline window.
+    # ADD: Run offline gap replay on startup to handle fills/exits while server was down
     if not settings.quarantine_mode:
-        async def _gap_replay_job():
-            from .core.gap_replay import run_startup_gap_replay
-            from .db.session import is_db_connection_error
+        try:
+            from .core.gap_replay import run_gap_replay
 
-            fyers = FyersService()
-            try:
-                summary = await run_startup_gap_replay(AsyncSessionLocal, fyers)
-            except asyncio.CancelledError:
-                logger.info("[GAP_REPLAY] Cancelled during shutdown")
-                raise
-            except Exception as exc:
-                if is_db_connection_error(exc):
-                    logger.warning("[GAP_REPLAY] Stopped; DB connection closed | err=%s", exc)
-                    return
-                raise
+            async with AsyncSessionLocal() as db:
+                fyers = FyersService()
+                summary = await run_gap_replay(db, fyers)
+
             app.state.last_gap_replay = summary
             if summary.get("skipped_reason"):
                 print(f"[GAP_REPLAY] Skipped: {summary['skipped_reason']}")
-                logger.info("[GAP_REPLAY] Skipped: %s", summary["skipped_reason"])
             else:
                 print("[GAP_REPLAY] Complete!")
                 print(f"  Orders filled:     {len(summary.get('orders_filled', []))}")
                 print(f"  Positions exited:  {len(summary.get('positions_exited', []))}")
                 for w in summary.get("warnings", []):
                     print(f"  [WARNING]  {w}")
-
-        try:
-            app.state.task_supervisor.start("gap-replay", _gap_replay_job)
-            logger.info("STARTUP: Gap replay scheduled (waits for FYERS token)")
-        except Exception:
-            logger.exception("Failed to schedule gap replay")
+        except Exception as e:
+            logger.exception("GAP_REPLAY startup failed: %s", e)
+            print(f"[GAP_REPLAY] Startup replay failed: {e}")
     else:
         logger.info("QUARANTINE MODE: Offline gap replay bypassed.")
 
@@ -971,17 +957,16 @@ async def lifespan(app: FastAPI):
     # Shutdown
     logger.info("APP_SHUTDOWN | Application is shutting down")
     log_process_event("PROCESS_STOP", reason="lifespan_shutdown")
-    # Cancel jobs that hold DB sessions before tearing down the engine/pool.
-    try:
-        await app.state.task_supervisor.shutdown()
-    except Exception:
-        logger.exception("Failed to stop supervised tasks")
     if settings.app_env != "test" and scheduler.running:
         scheduler.shutdown()
     try:
         await market_engine.shutdown()
     except Exception:
         logger.exception("Failed to stop market engine loop")
+    try:
+        await app.state.task_supervisor.shutdown()
+    except Exception:
+        logger.exception("Failed to stop supervised tasks")
     try:
         from .core.server_state import write_shutdown_time
 
