@@ -142,6 +142,35 @@ def indicator_end_date(scan_date: date | None, now: datetime | None = None) -> d
     return scan_date
 
 
+def resolve_available_scan_end(
+    requested_end: date,
+    series_by_symbol: dict[str, Any],
+    *,
+    min_coverage: float = 0.05,
+) -> tuple[date, str | None]:
+    """Use the last stored 1D session when the requested bar is missing for (almost) everyone.
+
+    After 09:15 IST the scanner prefers today's forming candle. If live overlay / EOD
+    load did not produce that bar, evaluating it would skip the whole universe and
+    look like a broken scan. Fall back to the latest stored session instead.
+    """
+    dated = [s.dates[-1] for s in series_by_symbol.values() if s is not None and getattr(s, "dates", None)]
+    if not dated:
+        return requested_end, None
+    have_target = sum(1 for day in dated if day >= requested_end)
+    if have_target / len(dated) >= min_coverage:
+        return requested_end, None
+    latest = max(dated)
+    if latest >= requested_end:
+        return requested_end, None
+    note = (
+        f"Requested scan bar {requested_end.isoformat()} is not in daily OHLCV "
+        f"(latest stored session {latest.isoformat()}). "
+        "Evaluating the last available 1D session so the scan is not empty."
+    )
+    return latest, note
+
+
 def last_bar_covers_scan(last_bar: date, end_date: date, now: datetime | None = None) -> bool:
     """True when the latest stored bar can be evaluated for `end_date`.
 
@@ -478,6 +507,7 @@ async def execute_scan(
 
     requested_date = scan_date
     end_date = indicator_end_date(scan_date)
+    pine_target = end_date
     logger.info("INDICATOR_SCAN_AS_OF | run_id=%s | scan_date=%s | end_date=%s", run_id, scan_date, end_date)
     from ...services.market_data_ingestion.nse_sessions import (
         is_nse_cash_session,
@@ -524,6 +554,17 @@ async def execute_scan(
     if run_id in _cancel_requested:
         await _mark_cancelled(run_id)
         return
+    fallback_note: str | None
+    resolved_end, fallback_note = resolve_available_scan_end(end_date, series_by_symbol)
+    if resolved_end != end_date:
+        logger.warning(
+            "INDICATOR_SCAN_FALLBACK_AS_OF | run_id=%s | requested=%s | available=%s",
+            run_id,
+            end_date,
+            resolved_end,
+        )
+        end_date = resolved_end
+        from_date = nth_session_ending(end_date, needed)
     max_available_date = max(
         (s.dates[-1] for s in series_by_symbol.values() if s is not None and s.dates),
         default=None,
@@ -687,8 +728,8 @@ async def execute_scan(
     await persistence.update_scan(run_id, stage="applying_filters", progress_pct=99)
     await persistence.save_results(run_id, results)
     as_of = max(as_of_counts, key=as_of_counts.get) if as_of_counts else end_date.isoformat()
-    calendar_requested = requested_date.isoformat() if requested_date else end_date.isoformat()
-    pine_screener_as_of = end_date.isoformat()
+    calendar_requested = requested_date.isoformat() if requested_date else pine_target.isoformat()
+    pine_screener_as_of = pine_target.isoformat()
     analytics = build_indicator_scan_analytics(
         results,
         universe_size=total,
@@ -715,7 +756,9 @@ async def execute_scan(
         "disclaimer": "For research and paper-trading only. Not investment advice.",
     }
     closed_request = requested_date is not None and not is_nse_cash_session(requested_date)
-    if closed_request and as_of != calendar_requested:
+    if fallback_note:
+        summary["scan_bar_note"] = fallback_note
+    elif closed_request and as_of != calendar_requested:
         summary["scan_bar_note"] = (
             f"NSE cash market was closed on {calendar_requested}. "
             f"Scan bar is the last 1D session {as_of}."

@@ -157,6 +157,16 @@ function isScanActive(status: IndicatorScanStatus | null): boolean {
   return status.status === "queued" || status.status === "running" || status.status === "cancelling";
 }
 
+const STALE_SCAN_MS = 10 * 60 * 1000;
+
+function isFreshActiveScan(status: IndicatorScanStatus | null): boolean {
+  if (!isScanActive(status)) return false;
+  if (!status?.started_at) return true;
+  const started = Date.parse(status.started_at);
+  if (!Number.isFinite(started)) return true;
+  return Date.now() - started < STALE_SCAN_MS;
+}
+
 function scanBarDate(scan: IndicatorScanStatus | null, fallback: string): string {
   const summary = scan?.summary && typeof scan.summary === "object" ? scan.summary : null;
   const fromSummary = summary && typeof summary.scan_as_of === "string" ? summary.scan_as_of : "";
@@ -673,9 +683,15 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
   useEffect(() => {
     const scanId = scan?.scan_id;
     if (!scanId) return;
-    if (isScanActive(scan)) {
+    if (isFreshActiveScan(scan)) {
       setBusy(true);
       poll(scanId);
+    } else if (scan && isScanActive(scan)) {
+      setScan({
+        ...scan,
+        status: "failed",
+        error_detail: "Previous scan was interrupted. Start a new scan.",
+      });
     } else if (scan?.status === "completed") {
       fetchIndicatorScan(scanId)
         .then((status) => {

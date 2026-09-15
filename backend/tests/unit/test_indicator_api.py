@@ -442,6 +442,46 @@ def test_last_bar_covers_scan_requires_today_after_open():
     assert last_bar_covers_scan(date(2026, 9, 10), date(2026, 9, 10), now=thursday_open) is True
 
 
+def test_resolve_available_scan_end_falls_back_when_target_bar_missing():
+    from datetime import date
+
+    from app.services.indicator_scanner.scan_service import resolve_available_scan_end
+    from app.services.strategy_tester.indicators import BarSeries
+
+    def bars(*days: date) -> BarSeries:
+        n = len(days)
+        return BarSeries(
+            dates=list(days),
+            open=[1.0] * n,
+            high=[1.0] * n,
+            low=[1.0] * n,
+            close=[1.0] * n,
+            volume=[1.0] * n,
+        )
+
+    stale = {
+        "AAA": bars(date(2026, 9, 10), date(2026, 9, 11)),
+        "BBB": bars(date(2026, 9, 10), date(2026, 9, 11)),
+    }
+    end, note = resolve_available_scan_end(date(2026, 9, 15), stale)
+    assert end == date(2026, 9, 11)
+    assert note is not None
+    assert "2026-09-15" in note
+    assert "2026-09-11" in note
+
+    end_ok, note_ok = resolve_available_scan_end(date(2026, 9, 11), stale)
+    assert end_ok == date(2026, 9, 11)
+    assert note_ok is None
+
+    live = {
+        "AAA": bars(date(2026, 9, 11), date(2026, 9, 15)),
+        "BBB": bars(date(2026, 9, 11), date(2026, 9, 15)),
+    }
+    end_live, note_live = resolve_available_scan_end(date(2026, 9, 15), live)
+    assert end_live == date(2026, 9, 15)
+    assert note_live is None
+
+
 def test_indicator_end_date_uses_today_during_rth_even_if_overlay_helper_is_none():
     from datetime import date, datetime
     from zoneinfo import ZoneInfo

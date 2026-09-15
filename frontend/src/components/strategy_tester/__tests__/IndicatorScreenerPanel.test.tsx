@@ -523,6 +523,45 @@ describe("IndicatorScreenerPanel", () => {
     await waitFor(() => expect(screen.getByTestId("indicator-diagnostics").textContent).toContain("Skipped"));
   });
 
+  it("does not keep polling a stale running scan restored from localStorage", async () => {
+    saveIndicatorScannerState({
+      selectedId: "ind-1",
+      appliedIndicator: applied,
+      indicators: [applied],
+      timeframe: "1D",
+      scanDate: "2026-08-31",
+      filters: [],
+      scan: {
+        id: "run-zombie",
+        scan_id: "IND-20260831-003",
+        indicator_name: applied.name,
+        universe: "nse-755",
+        universe_size: 750,
+        timeframe: "1D",
+        status: "running",
+        stage: "repairing_market_data",
+        progress_pct: 0,
+        processed_count: 0,
+        total_count: 750,
+        matched_count: 0,
+        started_at: "2026-08-31T05:26:40.000Z",
+      },
+      results: [],
+      total: 0,
+      page: 1,
+      sortField: "symbol",
+      sortDir: "asc",
+      search: "",
+      matchedOnly: false,
+      diagnostics: null,
+    });
+    renderPanel();
+    await waitFor(() => expect(screen.getByTestId("card-run-info").textContent).toMatch(/Failed/));
+    expect(screen.getByTestId("card-run-info").textContent).toMatch(/interrupted/i);
+    expect(fetchIndicatorScan).not.toHaveBeenCalled();
+    expect(startIndicatorScan).not.toHaveBeenCalled();
+  });
+
   it("replaces the restored run when Scan is clicked", async () => {
     saveIndicatorScannerState({
       selectedId: "ind-1",
