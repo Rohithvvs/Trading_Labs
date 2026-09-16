@@ -29,6 +29,13 @@ const flaskIcon = (
   </svg>
 );
 
+const compareIcon = (
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+    <rect x="3" y="4" width="7" height="16" rx="1.5" />
+    <rect x="14" y="4" width="7" height="16" rx="1.5" />
+  </svg>
+);
+
 /** Retail primary navigation — Markets, Strategy Tester, Paper Desk, Performance, Profile.
  *  Scanner lives inside Profile → Scanner Dashboard. */
 export const RETAIL_NAV: NavItem[] = [
@@ -50,6 +57,15 @@ export const RETAIL_NAV: NavItem[] = [
     featureKey: "advanced_scanner",
     mobilePrimary: true,
     icon: flaskIcon,
+  },
+  {
+    id: "strategy-comparison",
+    label: "Strategy Comparison",
+    path: "/strategy-comparison",
+    match: "/strategy-comparison",
+    testId: "nav-strategy-comparison",
+    featureKey: "advanced_scanner",
+    icon: compareIcon,
   },
   {
     id: "paper",

@@ -109,6 +109,7 @@ export function AppShell({ children, topActions, title }: Props) {
 
   const isStrategyTester =
     location.pathname.startsWith("/strategy-tester") ||
+    location.pathname.startsWith("/strategy-comparison") ||
     location.pathname.startsWith("/stock");
 
   return (

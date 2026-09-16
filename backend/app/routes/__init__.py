@@ -12,6 +12,7 @@ from .workstation import router as workstation_router
 from .logs import router as logs_router
 from .scanner import router as scanner_router
 from .strategy_tester import router as strategy_tester_router
+from .strategy_comparison import router as strategy_comparison_router
 from .indicator_scanner import router as indicator_scanner_router, scan_router as indicator_scan_router
 from .system import router as system_router
 from .auth import router as auth_router
@@ -43,6 +44,7 @@ api_router.include_router(test_diagnostics_router)
 api_router.include_router(logs_router)
 api_router.include_router(scanner_router)
 api_router.include_router(strategy_tester_router)
+api_router.include_router(strategy_comparison_router)
 api_router.include_router(indicator_scanner_router)
 api_router.include_router(indicator_scan_router)
 api_router.include_router(system_router)

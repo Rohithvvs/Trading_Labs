@@ -11,6 +11,7 @@ test("app loads and main navigation is available", async ({ page }) => {
   await expect(page.getByTestId("nav-markets")).toBeVisible();
   await expect(page.getByTestId("nav-scanner")).toHaveCount(0);
   await expect(page.getByTestId("nav-strategy-tester")).toBeVisible();
+  await expect(page.getByTestId("nav-strategy-comparison")).toBeVisible();
   await expect(page.getByTestId("nav-paper-trading")).toBeVisible();
   await expect(page.getByTestId("nav-profile")).toBeVisible();
 });

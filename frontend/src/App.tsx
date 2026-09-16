@@ -110,6 +110,9 @@ const PerformancePage = lazy(() =>
 const StrategyTesterPage = lazy(() =>
   import("./pages/StrategyTesterPage").then((m) => ({ default: m.StrategyTesterPage })),
 );
+const StrategyComparisonPage = lazy(() =>
+  import("./pages/StrategyComparisonPage").then((m) => ({ default: m.StrategyComparisonPage })),
+);
 const StockDetailsPage = lazy(() =>
   import("./pages/StockDetailsPage").then((m) => ({ default: m.StockDetailsPage })),
 );
@@ -1344,6 +1347,16 @@ export default function App() {
                   <FeatureGuard feature="advanced_scanner" fallback={<AccessDenied />}>
                     <Suspense fallback={<ViewFallback />}>
                       <StrategyTesterPage />
+                    </Suspense>
+                  </FeatureGuard>
+                }
+              />
+              <Route
+                path="/strategy-comparison"
+                element={
+                  <FeatureGuard feature="advanced_scanner" fallback={<AccessDenied />}>
+                    <Suspense fallback={<ViewFallback />}>
+                      <StrategyComparisonPage />
                     </Suspense>
                   </FeatureGuard>
                 }

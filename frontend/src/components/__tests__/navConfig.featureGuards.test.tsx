@@ -59,11 +59,13 @@ describe("navConfig featureKey annotations (schema)", () => {
     expect(byId.scanner).toBeUndefined(); // Scanner lives inside Profile, not primary nav
     expect(byId["strategy-tester"].featureKey).toBe("advanced_scanner");
     expect(byId["strategy-tester"].path).toBe("/strategy-tester");
+    expect(byId["strategy-comparison"].featureKey).toBe("advanced_scanner");
+    expect(byId["strategy-comparison"].path).toBe("/strategy-comparison");
     expect(byId.performance.featureKey).toBe("portfolio_analytics");
     expect(byId.paper.featureKey).toBeUndefined();
     expect(byId.profile.featureKey).toBeUndefined();
     const order = RETAIL_NAV.map((n) => n.id);
-    expect(order).toEqual(["markets", "strategy-tester", "paper", "performance", "profile"]);
+    expect(order).toEqual(["markets", "strategy-tester", "strategy-comparison", "paper", "performance", "profile"]);
   });
 
   it("annotates admin nav items with expected feature keys", () => {
@@ -79,6 +81,9 @@ describe("navConfig featureKey annotations (schema)", () => {
     const tester = RETAIL_NAV.find((n) => n.id === "strategy-tester")!;
     expect(isNavActive("/strategy-tester", tester)).toBe(true);
     expect(isNavActive("/scanner", tester)).toBe(false);
+    const comparison = RETAIL_NAV.find((n) => n.id === "strategy-comparison")!;
+    expect(isNavActive("/strategy-comparison", comparison)).toBe(true);
+    expect(isNavActive("/strategy-tester", comparison)).toBe(false);
     const performance = RETAIL_NAV.find((n) => n.id === "performance")!;
     const adminPanel = ADMIN_NAV.find((n) => n.id === "admin-panel")!;
     const logs = ADMIN_NAV.find((n) => n.id === "admin-logs")!;
@@ -123,6 +128,7 @@ describe("AppShell Dynamic Navigation Filtering (Sprint 5)", () => {
     expect(screen.getByTestId("nav-markets")).toBeTruthy();
     expect(screen.queryByTestId("nav-scanner")).toBeNull();
     expect(screen.getByTestId("nav-strategy-tester")).toBeTruthy();
+    expect(screen.getByTestId("nav-strategy-comparison")).toBeTruthy();
     expect(screen.getByTestId("nav-performance")).toBeTruthy();
     expect(screen.getByTestId("nav-paper-trading")).toBeTruthy();
     expect(screen.getByTestId("nav-profile")).toBeTruthy();
@@ -150,6 +156,8 @@ describe("AppShell Dynamic Navigation Filtering (Sprint 5)", () => {
 
     expect(screen.getByTestId("nav-markets")).toBeTruthy();
     expect(screen.queryByTestId("nav-scanner")).toBeNull();
+    expect(screen.queryByTestId("nav-strategy-tester")).toBeNull();
+    expect(screen.queryByTestId("nav-strategy-comparison")).toBeNull();
     expect(screen.queryByTestId("nav-performance")).toBeNull();
     // Ungated items remain
     expect(screen.getByTestId("nav-paper-trading")).toBeTruthy();
@@ -174,6 +182,7 @@ describe("AppShell Dynamic Navigation Filtering (Sprint 5)", () => {
     expect(screen.queryByTestId("nav-performance")).toBeNull();
     expect(screen.getByTestId("nav-markets")).toBeTruthy();
     expect(screen.getByTestId("nav-strategy-tester")).toBeTruthy();
+    expect(screen.getByTestId("nav-strategy-comparison")).toBeTruthy();
     expect(screen.queryByTestId("nav-scanner")).toBeNull();
   });
 

@@ -41,6 +41,14 @@ function ProtectedAppRoutes() {
         }
       />
       <Route
+        path="/strategy-comparison"
+        element={
+          <FeatureGuard feature="advanced_scanner" fallback={<AccessDenied />}>
+            <div data-testid="strategy-comparison-page">Strategy Comparison</div>
+          </FeatureGuard>
+        }
+      />
+      <Route
         path="/performance"
         element={
           <FeatureGuard feature="portfolio_analytics" fallback={<AccessDenied />}>
@@ -115,6 +123,7 @@ describe("Feature route protection matrix (Sprint 5)", () => {
     pageTestId: string;
   }> = [
     { path: "/scanner", feature: "advanced_scanner", pageTestId: "scanner-page" },
+    { path: "/strategy-comparison", feature: "advanced_scanner", pageTestId: "strategy-comparison-page" },
     { path: "/performance", feature: "portfolio_analytics", pageTestId: "performance-page" },
     { path: "/admin/logs", feature: "system_logs", pageTestId: "logs-page" },
     { path: "/admin/command", feature: "central_command", pageTestId: "command-page" },
