@@ -1533,8 +1533,11 @@ class PaperTradingService:
 
         raw = (symbol or "").strip().upper()
         canon = canonical_symbol(raw)
-        allowed = settings.nifty500_symbols
-        if canon in allowed or raw in allowed:
+        allowed = settings.nifty500_symbols or []
+        allowed_canon = {canonical_symbol(item) or str(item).strip().upper() for item in allowed}
+        if canon in allowed or raw in allowed or (canon and canon in allowed_canon):
+            return
+        if canon and f"{canon}-EQ" in allowed:
             return
         raise ValueError("Only configured Nifty 500 cash symbols are allowed.")
 

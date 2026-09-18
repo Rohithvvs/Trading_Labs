@@ -8,7 +8,7 @@ Public surface for strategies:
 - pipelines: full_load, daily_update
 """
 from .derived import adtv_20, compute_delivery_pct, compute_turnover, weekly_ohlcv
-from .ensure import ensure_latest_market_data
+from .ensure import backfill_index_history, ensure_latest_market_data
 from .freshness import check_delivery_for_strategy, evaluate_freshness
 from .reader import get_equity_history, get_index_history
 
@@ -19,6 +19,7 @@ __all__ = [
     "weekly_ohlcv",
     "check_delivery_for_strategy",
     "evaluate_freshness",
+    "backfill_index_history",
     "ensure_latest_market_data",
     "get_equity_history",
     "get_index_history",

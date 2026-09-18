@@ -1,0 +1,76 @@
+{
+  "id": "76ad022a-6abd-40ad-947e-e75fb4899db3",
+  "name": "Buy and Hold Top Momentum [SCAN]",
+  "description": "252-session momentum gate screen (momentum > 0.50) for one-time top-momentum book. One-time purchase, never rebalanced.",
+  "source_code": "//@version=6\nindicator(\"Buy and Hold Top Momentum [SCAN]\", overlay=false)\n\n// Buy-and-Hold Top Momentum: 252-session momentum screen.\n// Same momentum kernel as Long-Term Buy & Hold Momentum (17_long_term_mom):\n//   Momentum_252 = Close[t] / Close[t-252] - 1.0\n//   Eligibility gate: Momentum_252 > 0.50 (strict)\n// Buy-and-hold variant: the top-ranked names are purchased once and never\n// rebalanced. The scan evaluates the last completed 1D bar per symbol.\n\nmomentumGate = input.float(0.50, \"Momentum Gate\", minval=0.0, step=0.01)\n\ncloseNow = close\nclosePast = close[252]\nhasHistory = not na(closeNow) and not na(closePast) and closePast > 0 and closeNow > 0\nmomentum252 = hasHistory ? (closeNow / closePast - 1.0) : na\neligible = hasHistory and not na(momentum252) and momentum252 > momentumGate\nscanSignal = eligible ? 1 : 0\n\nplot(scanSignal, \"BHTM Eligible Signal\")\nplot(momentum252, \"Momentum 252\")\nplot(closeNow, \"Close\")\nplot(closePast, \"Close t-252\")\n\nalertcondition(\n     eligible,\n     title=\"BHTM Momentum Eligible\",\n     message=\"252-session momentum above gate\"\n)\n",
+  "script_version": 6,
+  "language_mode": "pine_subset_v1",
+  "timeframe": "1D",
+  "parsed_definition": {
+    "title": "Buy and Hold Top Momentum [SCAN]",
+    "inputs": [
+      {
+        "kind": "float",
+        "name": "momentumGate",
+        "step": 0.01,
+        "title": "Momentum Gate",
+        "maxval": null,
+        "minval": 0.0,
+        "default": 0.5
+      }
+    ],
+    "outputs": [
+      {
+        "kind": "plot",
+        "name": "BHTM Eligible Signal",
+        "source_line": 20
+      },
+      {
+        "kind": "plot",
+        "name": "Momentum 252",
+        "source_line": 21
+      },
+      {
+        "kind": "plot",
+        "name": "Close",
+        "source_line": 22
+      },
+      {
+        "kind": "plot",
+        "name": "Close t-252",
+        "source_line": 23
+      },
+      {
+        "kind": "alertcondition",
+        "name": "BHTM Momentum Eligible",
+        "source_line": 25
+      }
+    ],
+    "overlay": false,
+    "version": 6,
+    "warnings": [],
+    "language_mode": "pine_subset_v1",
+    "required_bars": 253,
+    "security_calls": [],
+    "entry_conditions": [
+      {
+        "id": "c1",
+        "name": "Momentum 252 > 0.5"
+      }
+    ],
+    "required_symbols": []
+  },
+  "validation_status": "valid",
+  "validation_errors": [],
+  "required_bars": 253,
+  "created_at": "2026-09-10T08:04:23.385208+00:00",
+  "updated_at": "2026-09-10T08:04:23.385208+00:00",
+  "last_used_at": null,
+  "is_archived": false,
+  "entry_conditions": [
+    {
+      "id": "c1",
+      "name": "Momentum 252 > 0.5"
+    }
+  ]
+}

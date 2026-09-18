@@ -211,6 +211,7 @@ class MarketEngineService:
                     "active_monitored_symbols_count": len(symbols),
                     "active_symbols": symbols,
                     "trading_date": session.trading_date,
+                    "market_hours_active": self.is_market_hours(),
                 }
 
     async def _run_loop(self) -> None:

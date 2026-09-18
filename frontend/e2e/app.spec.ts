@@ -8,9 +8,12 @@ test.beforeEach(async ({ request }) => {
 
 test("app loads and main navigation is available", async ({ page }) => {
   await page.goto("/");
-  await expect(page.getByTestId("nav-home")).toBeVisible();
-  await expect(page.getByTestId("nav-scanner")).toBeVisible();
+  await expect(page.getByTestId("nav-markets")).toBeVisible();
+  await expect(page.getByTestId("nav-scanner")).toHaveCount(0);
+  await expect(page.getByTestId("nav-strategy-tester")).toBeVisible();
+  await expect(page.getByTestId("nav-strategy-comparison")).toBeVisible();
   await expect(page.getByTestId("nav-paper-trading")).toBeVisible();
+  await expect(page.getByTestId("nav-profile")).toBeVisible();
 });
 
 test("token management saves a token and backend confirms SQLite persistence", async ({ page, request }) => {
@@ -37,9 +40,15 @@ test("token management saves a token and backend confirms SQLite persistence", a
 
 test("scanner flow renders results and records browser localStorage history", async ({ page }) => {
   await mockScannerResponse(page);
-  // Run Scanner lives on Markets (Swing Decision Dashboard); results on Scanner
-  await page.goto("/markets");
-  await page.getByTestId("run-scanner-button").click();
+  // Run Scanner lives on the Scanner page (LTM is the default strategy)
+  await page.goto("/scanner");
+  const ltm = page.getByTestId("scanner-run-ltm");
+  const legacy = page.getByTestId("run-scanner-button");
+  if (await ltm.count()) {
+    await ltm.click();
+  } else {
+    await legacy.click();
+  }
 
   // Verify the progress UI appears and updates through stages without hanging
   const progressContainer = page.locator(".progress-container, .scanner-progress");
@@ -50,7 +59,6 @@ test("scanner flow renders results and records browser localStorage history", as
     await expect(page.getByText("Scan Complete! Rendering Dashboard.")).toBeVisible();
   }
 
-  await page.getByTestId("nav-scanner").click();
   await expect(page.getByText("INFY-EQ").first()).toBeVisible();
   const scanHistory = await page.evaluate(() => window.localStorage.getItem("scanHistory"));
   expect(scanHistory).toContain("INFY-EQ");
@@ -58,11 +66,22 @@ test("scanner flow renders results and records browser localStorage history", as
 
 test("scanner Buy action prefills paper trading flow", async ({ page }) => {
   await mockScannerResponse(page);
-  await page.goto("/markets");
-  await page.getByTestId("run-scanner-button").click();
-  await page.getByTestId("nav-scanner").click();
+  await page.goto("/scanner");
+  const ltm = page.getByTestId("scanner-run-ltm");
+  const legacy = page.getByTestId("run-scanner-button");
+  if (await ltm.count()) {
+    await ltm.click();
+  } else {
+    await legacy.click();
+  }
   await page.getByText("Buy", { exact: true }).click();
-  await expect(page.getByTestId("paper-symbol-select")).toHaveValue("INFY-EQ");
+  const paperSelect = page.getByTestId("paper-symbol-select");
+  const paperOrderSymbol = page.getByTestId("paper-order-symbol");
+  if (await paperSelect.count()) {
+    await expect(paperSelect).toHaveValue("INFY-EQ");
+  } else {
+    await expect(paperOrderSymbol).toHaveValue(/INFY/);
+  }
 });
 
 

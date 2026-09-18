@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import csv
 import logging
 from pathlib import Path
 from functools import cached_property
@@ -310,6 +309,40 @@ class Settings(BaseSettings):
     ltm_lock_name: str = Field(default="scan:17_long_term_mom", alias="LTM_LOCK_NAME")
     ltm_default_mode: str = Field(default="A", alias="LTM_DEFAULT_MODE")
 
+    # 52-Week High Breakout scanner (038)
+    w52_initial_capital: float = Field(default=100_000.0, alias="W52_INITIAL_CAPITAL")
+    w52_lock_name: str = Field(default="scan:09_52w_breakout", alias="W52_LOCK_NAME")
+    w52_default_mode: str = Field(default="B", alias="W52_DEFAULT_MODE")
+    # Bounded daily_ohlcv fetch. Matches TimeframeConfig.lookback_window (260 / max 2000).
+    w52_ohlcv_lookback_sessions: int = Field(
+        default=260, ge=1, le=2000, alias="W52_OHLCV_LOOKBACK_SESSIONS"
+    )
+    # Stock-detail 1Y/3Y/5Y/ALL must not look successful when history is a stub.
+    w52_backtest_min_coverage_ratio: float = Field(
+        default=0.5, ge=0.1, le=1.0, alias="W52_BACKTEST_MIN_COVERAGE_RATIO"
+    )
+    # Deterministic safety net for the portfolio backtest (replay_book) so a run
+    # can never stay RUNNING indefinitely. Expected 755-stock 18Y time is well
+    # under a minute; 300s is a generous hard ceiling that fails the scan safely.
+    w52_portfolio_backtest_timeout_seconds: int = Field(
+        default=300, ge=30, le=3600, alias="W52_PORTFOLIO_BACKTEST_TIMEOUT_SECONDS"
+    )
+    # KERNEL preserves 038 signal-close fills. TV_COMPAT uses next-bar-open + intrabar stops.
+    w52_execution_profile: str = Field(default="KERNEL", alias="W52_EXECUTION_PROFILE")
+    w52_historical_fill_mode: str = Field(default="DEFAULT_OHLC", alias="W52_HISTORICAL_FILL_MODE")
+    ohlcv_lookback_max_sessions: int = Field(
+        default=2000, ge=1, le=2000, alias="OHLCV_LOOKBACK_MAX_SESSIONS"
+    )
+
+    # QuantConnect LEAN Backtesting Engine Settings
+    lean_engine_enabled: bool = Field(default=True, alias="LEAN_ENGINE_ENABLED")
+    lean_default_engine: str = Field(default="LEAN", alias="LEAN_DEFAULT_ENGINE")
+    lean_data_dir: str = Field(default="data/lean", alias="LEAN_DATA_DIR")
+    lean_results_dir: str = Field(default="data/lean_results", alias="LEAN_RESULTS_DIR")
+    lean_max_concurrent_jobs: int = Field(default=4, ge=1, le=16, alias="LEAN_MAX_CONCURRENT_JOBS")
+    lean_default_commission_rate: float = Field(default=0.0005, alias="LEAN_DEFAULT_COMMISSION_RATE")
+    lean_default_slippage_rate: float = Field(default=0.0005, alias="LEAN_DEFAULT_SLIPPAGE_RATE")
+
     def is_strategy_market_data_gate_enabled(self) -> bool:
         """Live feature-flag for pre-scanner strategy market-data freshness gate."""
         try:
@@ -591,22 +624,13 @@ class Settings(BaseSettings):
         if not csv_path.exists():
             return []
 
-        symbols: list[str] = []
         try:
-            with csv_path.open(newline="", encoding="utf-8-sig") as handle:
-                reader = csv.DictReader(handle)
-                from app.utils.symbol import canonical_symbol
-                for row in reader:
-                    symbol = (row.get("Symbol") or "").strip().upper()
-                    series = (row.get("Series") or "").strip().upper()
-                    if not symbol:
-                        continue
-                    combined = f"{symbol}-{series}" if series else symbol
-                    symbols.append(canonical_symbol(combined))
+            from app.services.universe_csv import load_unique_nifty500_csv_rows
+
+            return [row["canonical_symbol"] for row in load_unique_nifty500_csv_rows(csv_path)]
         except Exception:
             # Degrade gracefully if file is malformed, empty, or unreadable
             return []
-        return list(dict.fromkeys(symbols))
 
     def log_portfolio_config_snapshot(self) -> None:
         """Emit non-secret portfolio config for ops (Spec 1 NON-BINDING contract)."""

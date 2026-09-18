@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import csv
 import json
 import time as time_module
 from datetime import datetime, timezone
@@ -77,19 +76,22 @@ class WorkstationService:
         if not csv_path.is_absolute():
             csv_path = ROOT_DIR / csv_path
         if csv_path.exists():
-            with csv_path.open(newline="", encoding="utf-8-sig") as handle:
-                for row in csv.DictReader(handle):
-                    symbol = (row.get("Symbol") or "").strip().upper()
-                    series = (row.get("Series") or "").strip().upper()
-                    industry = (row.get("Industry") or "Other").strip() or "Other"
-                    if not symbol:
-                        continue
-                    combined = f"{symbol}-{series}" if series else symbol
-                    groups.setdefault(industry, []).append(combined)
+            from .universe_csv import load_unique_nifty500_csv_rows
+
+            for parsed in load_unique_nifty500_csv_rows(csv_path):
+                industry = parsed["industry"] or "Other"
+                series = parsed["series"]
+                combined = f"{parsed['symbol']}-{series}" if series else parsed["symbol"]
+                groups.setdefault(industry, []).append(combined)
         return [
             UniverseGroup(name=name, symbols=list(dict.fromkeys(symbols)), count=len(list(dict.fromkeys(symbols))))
             for name, symbols in sorted(groups.items(), key=lambda item: (item[0] != "NIFTY500", item[0]))
         ]
+
+    async def list_universe_instruments(self, universe: str | None = "NIFTY500") -> list:
+        from .universe_service import UniverseService
+
+        return await UniverseService.list_active_instruments(universe)
 
     async def save_scan(self, payload: SavedScanCreate) -> SavedScanItem:
         existing = await self.db.scalar(select(SavedScan).where(SavedScan.name == payload.name))

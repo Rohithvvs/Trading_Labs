@@ -44,6 +44,7 @@ async def test_ensure_already_fresh_fast_path():
                 }
             ),
         ),
+        patch.object(ens.repository, "index_row_count", new=AsyncMock(return_value=300)),
         patch.object(ens, "acquire_market_data_load_lock", new=AsyncMock()) as lock_mock,
     ):
         result = await ens.ensure_latest_market_data(trigger_source="SCANNER")
@@ -118,6 +119,7 @@ async def test_ensure_fetches_when_index_missing():
             ),
         ),
         patch.object(ens.repository, "index_present", new=AsyncMock(return_value=False)),
+        patch.object(ens.repository, "index_row_count", new=AsyncMock(return_value=0)),
         patch.object(ens.repository, "symbols_present_on", new=AsyncMock(return_value=present)),
         patch.object(
             ens.repository, "symbols_with_delivery_on", new=AsyncMock(return_value=present)

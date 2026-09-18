@@ -2,11 +2,16 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from typing import Any
+from ..core.deps import get_token_principal
 from ..db.session import get_db
 from ..services.walk_forward_service import WalkForwardService
 from ..models.walk_forward import WalkForwardSummary, VetoHistory
 
-router = APIRouter(prefix="/api/walk-forward", tags=["Walk Forward Evaluation"])
+router = APIRouter(
+    prefix="/api/walk-forward",
+    tags=["Walk Forward Evaluation"],
+    dependencies=[Depends(get_token_principal)],
+)
 
 @router.post("/evaluate", response_model=dict)
 async def evaluate_symbol_walk_forward(symbol: str, min_windows: int = 4, db: AsyncSession = Depends(get_db)) -> Any:

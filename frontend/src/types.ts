@@ -1,3 +1,15 @@
+export type StrategyScanStatus =
+  | "idle"
+  | "starting"
+  | "queued"
+  | "evaluating"
+  | "backtesting"
+  | "publishing"
+  | "completed"
+  | "failed"
+  | "blocked_stale"
+  | "cancelled";
+
 export type AnalysisMode = "intraday" | "swing" | "both";
 
 export type ThemeMode = "dark" | "light";
@@ -46,6 +58,8 @@ export type BacktestEquityPoint = {
 };
 
 export type BacktestResult = {
+  symbol?: string;
+  company_name?: string | null;
   mode: AnalysisMode;
   strategy_name: string;
   total_return: number;
@@ -73,6 +87,7 @@ export type RecommendationReasoning = {
 export type TradePlan = {
   mode: AnalysisMode;
   strategy_name: string;
+  strategy_id?: string;
   setup_type: string;
   timeframe: string;
   bias: string;
@@ -127,6 +142,7 @@ export type StockAnalysisResult = {
 export type RankingItem = {
   rank: number;
   symbol: string;
+  company_name?: string | null;
   overall_score: number;
   recommendation: string;
   best_for_mode?: string | null;
@@ -150,6 +166,7 @@ export type FullAnalysisResponse = {
 
 export type ScreenerConditionResult = {
   symbol: string;
+  company_name?: string | null;
   close: number;
   ema_20: number;
   ema_50?: number;
@@ -206,12 +223,22 @@ export type ScreenerResponse = {
   last_scan_completed_at?: string;
 };
 
+export type CandidateScoreKind = "composite" | "momentum_252" | "momentum_60";
+
 export type CandidateRow = {
   rank: number | null;
   symbol: string;
-  signal: "BUY" | "WATCH" | "REJECT";
-  /** Composite recommendation score; null when full analysis did not complete. */
+  /** Company/legal name from stocks_master. Display only — never used as a ticker. */
+  companyName?: string | null;
+  signal: "BUY" | "HOLD" | "WATCH" | "REJECT";
+  /** Composite 0–100 recommendation score; null when not a composite-score strategy. */
   score: number | null;
+  /** What the displayed numeric metric actually is. */
+  scoreKind?: CandidateScoreKind;
+  scoreLabel?: string;
+  /** Momentum percent (71.2 means +71.2%). Not a composite score. */
+  momentumValue?: number | null;
+  strategyId?: string;
   confidence: number | null;
   entryLow: number | null;
   entryHigh: number | null;
@@ -230,6 +257,17 @@ export type CandidateRow = {
   recommendationSummary: string;
   analysisItem?: StockAnalysisResult;
   screenerMatch?: ScreenerConditionResult;
+  /** Present when the row comes from 52-Week High Breakout. */
+  w52?: {
+    technicals?: Record<string, unknown>;
+    backtest_1y?: Record<string, unknown> | null;
+    equity_curve?: { date?: string; label?: string; equity?: number }[];
+    blotter?: Record<string, unknown>[];
+    book_metrics?: Record<string, unknown> | null;
+    index_curve?: { date?: string; close?: number }[];
+    initial_capital?: number | null;
+    evaluation_date?: string | null;
+  };
   /** Present when the row comes from Long-Term Buy & Hold Momentum. */
   ltm?: {
     technicals?: Record<string, unknown>;

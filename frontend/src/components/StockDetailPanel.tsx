@@ -22,7 +22,9 @@ import type {
   TradePlan,
   SymbolDetail,
 } from "../types";
-import { fetchLtmSymbolDetail, fetchSymbolDetail } from "../api";
+import { fetchLtmSymbolDetail, fetchSymbolDetail, fetchW52SymbolDetail } from "../api";
+import { LTM_DISPLAY_NAME, W52_DISPLAY_NAME, W52_STRATEGY_ID } from "../utils/strategyIdentity";
+import { TechnicalsDecisionPanel, displayMetric } from "./TechnicalsDecisionPanel";
 import { getCached } from "../utils/appCache";
 import { isPrefetched } from "../utils/researchPrefetcher";
 import { ResearchDashboard } from "./ResearchDashboard";
@@ -30,8 +32,9 @@ import {
   BacktestAnalyticsDashboard,
   type BacktestDashboardModel,
   type BacktestRange,
-  type DashboardTrade,
 } from "./BacktestAnalyticsDashboard";
+import { asDashboardTrade, hydrateStrategyBacktest } from "../utils/strategyBacktestDashboard";
+import { displayCanonicalSymbol } from "../utils/canonicalSymbol";
 
 type StockDetailPanelProps = {
   row: CandidateRow | null;
@@ -151,14 +154,26 @@ export function StockDetailPanel({ row, onBack, onSendToPaperTrading }: StockDet
         <div className="detail-header-info">
           <p className="section-label">Selected stock</p>
           <div className="detail-title-row">
-            <h2>{row.symbol}</h2>
+            <h2>{displayCanonicalSymbol(row.symbol)}</h2>
+            {row.companyName ? <p className="muted-copy">{row.companyName}</p> : null}
+            {row.w52 ? <span className="helper-chip">52-Week High Breakout</span> : null}
             {row.ltm ? <span className="helper-chip">Long-Term Buy & Hold Momentum</span> : null}
             <span className={`signal-badge signal-${row.signal.toLowerCase()}`}>{row.signal}</span>
           </div>
           <p className="detail-summary">{row.recommendationSummary}</p>
         </div>
         <div className="detail-header-metrics">
-          <MetricTile label="Score" value={row.score === null || row.score === undefined ? "N/A" : row.score.toFixed(1)} help="Weighted final score after full analysis." />
+          <MetricTile
+            label={row.scoreLabel || "Score"}
+            value={formatDetailMetric(row)}
+            help={
+              row.scoreKind === "momentum_252"
+                ? "252-session momentum. Signal is clock-based (BUY only on rebalance day), not derived from this number."
+                : row.scoreKind === "momentum_60"
+                  ? "60-session momentum used for ranking. Signal comes from the 52-week breakout book, not a 68/55 score cutoff."
+                  : "Weighted final composite score after full analysis. BUY ≥ 68, WATCH 55–67.99, REJECT < 55."
+            }
+          />
           <MetricTile
             label="Confidence"
             value={row.confidence === null ? "--" : `${Math.round(row.confidence * 100)}%`}
@@ -179,7 +194,7 @@ export function StockDetailPanel({ row, onBack, onSendToPaperTrading }: StockDet
           <button
             type="button"
             className="ds-btn ds-btn--buy"
-            onClick={() => onSendToPaperTrading(row, currentPrice ?? undefined, "BUY")}
+            onClick={() => onSendToPaperTrading(row, row.entryLow ?? row.entryHigh ?? currentPrice ?? undefined, "BUY")}
             aria-label="Place buy trade"
           >
             BUY
@@ -187,7 +202,7 @@ export function StockDetailPanel({ row, onBack, onSendToPaperTrading }: StockDet
           <button
             type="button"
             className="ds-btn ds-btn--sell"
-            onClick={() => onSendToPaperTrading(row, currentPrice ?? undefined, "SELL")}
+            onClick={() => onSendToPaperTrading(row, row.entryLow ?? row.entryHigh ?? currentPrice ?? undefined, "SELL")}
             aria-label="Place sell trade"
           >
             SELL / Trade
@@ -195,7 +210,7 @@ export function StockDetailPanel({ row, onBack, onSendToPaperTrading }: StockDet
           <button
             type="button"
             className="ds-btn ds-btn--secondary"
-            onClick={() => onSendToPaperTrading(row, currentPrice ?? undefined)}
+            onClick={() => onSendToPaperTrading(row, row.entryLow ?? row.entryHigh ?? currentPrice ?? undefined)}
             aria-label="Open paper trade"
           >
             Paper trade
@@ -258,6 +273,7 @@ export function StockDetailPanel({ row, onBack, onSendToPaperTrading }: StockDet
           ) : null}
           {tab === "backtest" ? (
             <BacktestTab
+              key={`${row.strategyId || "row"}:${row.symbol}`}
               backtest={backtest}
               backtestDetail={symbolDetail?.backtest_extras ?? null}
               row={row}
@@ -382,7 +398,15 @@ function OverviewTab({
       <section className="subpanel">
         <h3>Ranking context</h3>
         <div className="score-breakdown">
-          <MetricTile label="Final score" value={row.score === null || row.score === undefined ? "N/A" : row.score.toFixed(1)} help="Combined recommendation score." />
+          <MetricTile
+            label={row.scoreLabel || "Final score"}
+            value={formatDetailMetric(row)}
+            help={
+              row.scoreKind === "momentum_252" || row.scoreKind === "momentum_60"
+                ? "Strategy momentum metric — not the composite score used by the 68/55 Production classifier."
+                : "Combined recommendation score. BUY ≥ 68, WATCH 55–67.99, REJECT < 55."
+            }
+          />
           <MetricTile
             label="Technical"
             value={typeof techScore === "number" ? techScore.toFixed(1) : "--"}
@@ -435,7 +459,7 @@ function OverviewTab({
             <button
               type="button"
               className="ds-btn ds-btn--buy"
-              onClick={() => onSendToPaperTrading?.(row, currentPrice ?? undefined, "BUY")}
+              onClick={() => onSendToPaperTrading?.(row, row.entryLow ?? row.entryHigh ?? currentPrice ?? undefined, "BUY")}
               disabled={loadingDetail || !onSendToPaperTrading}
             >
               {loadingDetail ? "Loading…" : "BUY"}
@@ -443,7 +467,7 @@ function OverviewTab({
             <button
               type="button"
               className="ds-btn ds-btn--trade"
-              onClick={() => onSendToPaperTrading?.(row, currentPrice ?? undefined)}
+              onClick={() => onSendToPaperTrading?.(row, row.entryLow ?? row.entryHigh ?? currentPrice ?? undefined)}
               disabled={loadingDetail || !onSendToPaperTrading}
             >
               Paper trade
@@ -467,37 +491,124 @@ function TechnicalsTab({
   row: CandidateRow;
   symbolDetail?: SymbolDetail | null;
 }) {
+  if (row.w52?.technicals) {
+    const t = row.w52.technicals as Record<string, any>;
+    const close = displayMetric(t.close_t, { digits: 2 });
+    const prior = displayMetric(t.high_252_prior, { digits: 2 });
+    const vsHigh =
+      t.close_vs_prior_high == null
+        ? { value: "—", state: "na" as const }
+        : t.close_vs_prior_high
+          ? { value: "At / above", state: "pass" as const }
+          : { value: "Below", state: "fail" as const };
+    const vol = displayMetric(t.volume, { digits: 0 });
+    const vsma = displayMetric(t.vol_sma20, { digits: 0 });
+    const volGate =
+      t.volume_vs_average == null
+        ? { value: "—", state: "na" as const }
+        : t.volume_vs_average
+          ? { value: "Above average", state: "pass" as const }
+          : { value: "Below average", state: "fail" as const };
+    const atr = displayMetric(t.atr14, { digits: 2 });
+    const mom = displayMetric(t.mom60, { percent: true, digits: 2 });
+    const rank = displayMetric(t.rank_among_signals);
+    const mkt =
+      t.market_ok === true
+        ? { value: "On", state: "pass" as const }
+        : t.market_ok === false
+          ? { value: "Off", state: "off" as const }
+          : { value: "—", state: "na" as const };
+    return (
+      <TechnicalsDecisionPanel
+        testId="w52-technicals"
+        strategyName="52-Week High Breakout"
+        signal={row.signal}
+        hardFiltersPass={t.hard_filters_pass}
+        sections={[
+          {
+            title: "Price action",
+            metrics: [
+              { label: "Close", ...close },
+              { label: "Prior 252-session high", ...prior },
+              { label: "Close vs prior high", ...vsHigh },
+            ],
+          },
+          {
+            title: "Volume",
+            metrics: [
+              { label: "Current volume", ...vol },
+              { label: "Volume SMA20", ...vsma },
+              { label: "Volume vs average", ...volGate },
+            ],
+          },
+          {
+            title: "Momentum & volatility",
+            metrics: [
+              { label: "ATR(14) SMA", ...atr },
+              { label: "Momentum 60", ...mom },
+              { label: "Rank among signals", ...rank },
+            ],
+          },
+          {
+            title: "Market context",
+            metrics: [
+              { label: "Market filter", ...mkt },
+              { label: "NIFTY close", ...displayMetric(t.nifty_close, { digits: 2 }) },
+              { label: "NIFTY SMA50", ...displayMetric(t.nifty_sma50, { digits: 2 }) },
+            ],
+          },
+          {
+            title: "Trade management",
+            metrics: [
+              { label: "Slot", ...displayMetric(t.slot_status) },
+              { label: "High-water mark", ...displayMetric(t.hwm, { digits: 2 }) },
+              { label: "Trailing stop", ...displayMetric(t.tsl, { digits: 2 }) },
+            ],
+          },
+        ]}
+      />
+    );
+  }
   if (row.ltm?.technicals) {
     const t = row.ltm.technicals as Record<string, any>;
-    const tiles = [
-      ["Momentum 252", t.momentum_252 == null ? "unavailable" : `${(Number(t.momentum_252) * 100).toFixed(2)}%`],
-      ["Close T", t.close_t ?? "unavailable"],
-      ["Close T−252", t.close_t_minus_252 ?? "unavailable"],
-      ["Rank among eligible", t.rank_among_eligible ?? "—"],
-      ["Gate > +50%", t.gate_pass ? "Pass" : "Fail"],
-      ["Selected", t.selected ? "Yes" : "No"],
-      ["Clock", t.clock_status ?? "—"],
-      ["Sessions to rebalance", t.sessions_to_rebalance ?? "—"],
-    ];
+    const gate =
+      t.gate_pass == null
+        ? { value: "—", state: "na" as const }
+        : t.gate_pass
+          ? { value: "Pass", state: "pass" as const }
+          : { value: "Fail", state: "fail" as const };
     return (
-      <div className="detail-stack" data-testid="ltm-technicals">
-        <section className="subpanel">
-          <div className="subpanel-header">
-            <h3>Technical decision</h3>
-            <span className={`signal-badge signal-${row.signal.toLowerCase()}`}>{row.signal}</span>
-            <span className="helper-chip">Long-Term Buy & Hold Momentum</span>
-            <span className="helper-chip">Hard filters passed: {t.hard_filters_pass ? "Yes" : "No"}</span>
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(10rem,1fr))", gap: 10 }}>
-            {tiles.map(([label, value]) => (
-              <div key={String(label)} className="metric-card">
-                <span className="section-label">{label}</span>
-                <strong>{String(value)}</strong>
-              </div>
-            ))}
-          </div>
-        </section>
-      </div>
+      <TechnicalsDecisionPanel
+        testId="ltm-technicals"
+        strategyName="Long-Term Buy & Hold Momentum"
+        signal={row.signal}
+        hardFiltersPass={t.hard_filters_pass}
+        sections={[
+          {
+            title: "Momentum",
+            metrics: [
+              { label: "Momentum 252", ...displayMetric(t.momentum_252, { percent: true, digits: 2 }) },
+              { label: "Close T", ...displayMetric(t.close_t, { digits: 2 }) },
+              { label: "Close T−252", ...displayMetric(t.close_t_minus_252, { digits: 2 }) },
+            ],
+          },
+          {
+            title: "Selection",
+            metrics: [
+              { label: "Rank among eligible", ...displayMetric(t.rank_among_eligible) },
+              { label: "Gate > +50%", ...gate },
+              { label: "Selected", ...displayMetric(t.selected) },
+            ],
+          },
+          {
+            title: "Rebalance clock",
+            metrics: [
+              { label: "Clock", ...displayMetric(t.clock_status) },
+              { label: "Sessions to rebalance", ...displayMetric(t.sessions_to_rebalance) },
+            ],
+          },
+        ]}
+      />
     );
   }
   const indicators = technical?.indicators ?? {};
@@ -847,7 +958,35 @@ function TradePlanTab({
   symbolDetail?: SymbolDetail | null;
   currentPrice?: number | null;
 }) {
-  if (!plan) {
+  const resolvedPlan: TradePlan | undefined =
+    plan ||
+    (row.ltm || row.w52 || row.entryLow != null || row.stopLoss != null || row.target1 != null
+      ? {
+          mode: "swing",
+          strategy_name: row.ltm
+            ? LTM_DISPLAY_NAME
+            : row.w52
+              ? W52_DISPLAY_NAME
+              : "Scanner recommendation",
+          strategy_id: row.strategyId || (row.w52 ? W52_STRATEGY_ID : undefined),
+          setup_type: row.ltm ? "Buy and hold" : row.w52 ? "52-week breakout" : "Scanner",
+          timeframe: "1D",
+          bias: "long",
+          entry_low: row.entryLow as number,
+          entry_high: row.entryHigh as number,
+          stop_loss: row.stopLoss as number,
+          target_1: row.target1 as number,
+          target_2: row.target2 as number,
+          risk_reward_ratio: row.riskReward as number,
+          notes: row.ltm
+            ? "LTM does not publish a stop loss or profit target. Paper Trade will leave those fields unavailable unless you enter them manually."
+            : row.w52
+              ? "52-Week High Breakout manages risk with an ATR trailing stop and does not publish a profit target."
+              : "Scanner recommendation levels.",
+        }
+      : undefined);
+
+  if (!resolvedPlan) {
     return (
       <section className="subpanel">
         <h3>No detailed trade plan</h3>
@@ -857,12 +996,12 @@ function TradePlanTab({
   }
 
   // Trade plans may omit levels (null) — never call .toFixed on null/undefined.
-  const entryLow = numOrNull(plan.entry_low);
-  const entryHigh = numOrNull(plan.entry_high);
-  const stopLoss = numOrNull(plan.stop_loss);
-  const target1 = numOrNull(plan.target_1);
-  const target2 = numOrNull(plan.target_2);
-  const rr = numOrNull(plan.risk_reward_ratio);
+  const entryLow = numOrNull(resolvedPlan.entry_low);
+  const entryHigh = numOrNull(resolvedPlan.entry_high);
+  const stopLoss = numOrNull(resolvedPlan.stop_loss);
+  const target1 = numOrNull(resolvedPlan.target_1);
+  const target2 = numOrNull(resolvedPlan.target_2);
+  const rr = numOrNull(resolvedPlan.risk_reward_ratio);
   const priceRef =
     entryMidFrom(entryLow, entryHigh) ??
     numOrNull(currentPrice) ??
@@ -886,8 +1025,8 @@ function TradePlanTab({
       <section className="tradeplan-hero">
         <div>
           <p className="section-label">Execution plan</p>
-          <h3>{plan.setup_type || "Swing plan"}</h3>
-          <p className="muted-copy">{plan.notes || "Execution levels (partial levels shown as —)."}</p>
+          <h3>{resolvedPlan.setup_type || "Swing plan"}</h3>
+          <p className="muted-copy">{resolvedPlan.notes || "Execution levels (partial levels shown as —)."}</p>
         </div>
         <div className="tradeplan-grid">
           <MetricTile
@@ -901,9 +1040,9 @@ function TradePlanTab({
             }
             help="Preferred swing entry area."
           />
-          <MetricTile label="Stop loss" value={fmtPrice(stopLoss)} help="If price breaks this, the setup is invalidated." />
-          <MetricTile label="Target 1" value={fmtPrice(target1)} help="First realistic swing objective." />
-          <MetricTile label="Target 2" value={fmtPrice(target2)} help="Second objective if momentum continues." />
+          <MetricTile label="Stop loss" value={stopLoss != null ? fmtPrice(stopLoss) : "Not available"} help="If price breaks this, the setup is invalidated." />
+          <MetricTile label="Target 1" value={target1 != null ? fmtPrice(target1) : "Not available"} help="First realistic swing objective." />
+          <MetricTile label="Target 2" value={target2 != null ? fmtPrice(target2) : "Not available"} help="Second objective if momentum continues." />
         </div>
       </section>
       <section className="subpanel">
@@ -913,7 +1052,11 @@ function TradePlanTab({
             ? `Exit 50% position at Target 1 (₹${fmtPrice(target1)}). Move stop loss to entry price. Let remaining 50% ride to Target 2 (₹${fmtPrice(target2)}).`
             : target1 != null
               ? `Consider taking profits near Target 1 (₹${fmtPrice(target1)}) and manage the remainder with structure / trailing stop.`
-              : "Exit levels incomplete for this plan — use stop and structure rules, or wait for a fuller recommendation."}
+              : row.ltm
+                ? "Long-Term Buy & Hold Momentum does not publish stop-loss or target levels."
+                : row.w52
+                  ? "52-Week High Breakout exits on the ATR trailing stop. No profit target is published."
+                  : "Exit levels incomplete for this plan — use stop and structure rules, or wait for a fuller recommendation."}
         </div>
 
         <div style={{ marginTop: 12 }}>
@@ -921,16 +1064,18 @@ function TradePlanTab({
             <MetricTile
               label="Trailing Stop"
               value={
-                symbolDetail?.technical_extras?.atr != null &&
-                Number.isFinite(Number(symbolDetail.technical_extras.atr))
-                  ? `₹${Number(symbolDetail.technical_extras.atr).toFixed(2)} below current price (1× ATR)`
-                  : "--"
+                row.stopLoss != null
+                  ? fmtPrice(row.stopLoss)
+                  : symbolDetail?.technical_extras?.atr != null &&
+                      Number.isFinite(Number(symbolDetail.technical_extras.atr))
+                    ? `₹${Number(symbolDetail.technical_extras.atr).toFixed(2)} below current price (1× ATR)`
+                    : "Not available"
               }
               help="Suggested trailing stop distance using ATR"
             />
             <MetricTile
               label="Suggested Holding"
-              value={plan.suggested_holding_days ?? (plan as { holding_horizon?: string }).holding_horizon ?? plan.timeframe ?? "--"}
+              value={resolvedPlan.suggested_holding_days ?? (resolvedPlan as { holding_horizon?: string }).holding_horizon ?? resolvedPlan.timeframe ?? "—"}
               help="Suggested holding period for the trade"
             />
           </div>
@@ -941,7 +1086,7 @@ function TradePlanTab({
         <div className="subpanel">
           <h3>Trade mechanics</h3>
           <div className="score-breakdown">
-            <MetricTile label="Bias" value={plan.bias || "—"} help="Direction of the setup." />
+            <MetricTile label="Bias" value={resolvedPlan.bias || "—"} help="Direction of the setup." />
             <MetricTile
               label="Risk / share"
               value={riskPerShare > 0 ? riskPerShare.toFixed(2) : "—"}
@@ -969,8 +1114,16 @@ function TradePlanTab({
           </label>
           <div className="score-breakdown">
             <MetricTile label="Suggested quantity" value={positionSize > 0 ? positionSize : "—"} help="Estimated quantity using risk amount / risk per share." />
-            <MetricTile label="Holding horizon" value={plan.timeframe || "—"} help="Expected swing holding window." />
-            <MetricTile label="Strategy" value={plan.strategy_name || "—"} help="Backtest strategy used for context." />
+            <MetricTile label="Holding horizon" value={resolvedPlan.timeframe || "—"} help="Expected swing holding window." />
+            <MetricTile
+              label="Strategy"
+              value={resolvedPlan.strategy_name || "—"}
+              help={
+                resolvedPlan.strategy_id
+                  ? `Same registered strategy used by Scanner and Backtest (${resolvedPlan.strategy_id}).`
+                  : "Backtest strategy used for context."
+              }
+            />
             <MetricTile label="Signal" value={row.signal} help="Recommendation outcome for this setup." />
           </div>
         </div>
@@ -1071,23 +1224,9 @@ function yearsAgo(range: BacktestRange): Date {
   if (range === "1Y") d.setFullYear(d.getFullYear() - 1);
   else if (range === "3Y") d.setFullYear(d.getFullYear() - 3);
   else if (range === "5Y") d.setFullYear(d.getFullYear() - 5);
+  else if (range === "8Y") d.setFullYear(d.getFullYear() - 8);
   else d.setFullYear(1970);
   return d;
-}
-
-function asTrade(raw: any): DashboardTrade {
-  const pnl = raw?.pnl_percent ?? (raw?.pnl_pct != null ? Number(raw.pnl_pct) * (Math.abs(Number(raw.pnl_pct)) <= 2 ? 100 : 1) : null);
-  return {
-    entry_date: raw?.entry_date ?? null,
-    exit_date: raw?.exit_date ?? null,
-    type: raw?.type ?? "LONG",
-    entry_price: raw?.entry_price ?? null,
-    exit_price: raw?.exit_price ?? null,
-    pnl_percent: pnl,
-    holding_days: raw?.holding_days ?? null,
-    reason: raw?.reason ?? null,
-    open: Boolean(raw?.open),
-  };
 }
 
 function normalizeEngineBacktest(src: any, range: BacktestRange): BacktestDashboardModel | null {
@@ -1100,7 +1239,7 @@ function normalizeEngineBacktest(src: any, range: BacktestRange): BacktestDashbo
       return { date: label, label, equity: Number(p.equity ?? p.value ?? 0) };
     })
     .filter((p) => p.label && !Number.isNaN(p.equity) && new Date(p.label) >= cutoff);
-  const tradesAll = ((src.trades ?? []) as any[]).map(asTrade);
+  const tradesAll = ((src.trades ?? []) as any[]).map(asDashboardTrade);
   const trades = tradesAll.filter((t) => {
     const d = t.exit_date || t.entry_date;
     return !d || new Date(d) >= cutoff;
@@ -1138,99 +1277,44 @@ function normalizeEngineBacktest(src: any, range: BacktestRange): BacktestDashbo
     drawdown_curve,
     monthly_returns: monthly,
     trades,
-    best_trade: src.best_trade ? asTrade(src.best_trade) : winners[0] ?? null,
-    worst_trade: src.worst_trade ? asTrade(src.worst_trade) : losers[0] ?? null,
+    best_trade: src.best_trade ? asDashboardTrade(src.best_trade) : winners[0] ?? null,
+    worst_trade: src.worst_trade ? asDashboardTrade(src.worst_trade) : losers[0] ?? null,
     top_winning: winners.slice(0, 5),
     top_losing: losers.slice(0, 5),
     never_selected_in_window: trades.length === 0,
   };
 }
 
-function decToPct(value: unknown): number | null {
-  if (value === null || value === undefined || Number.isNaN(Number(value))) return null;
-  return Number(value) * 100;
+function isoDay(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }
 
-function hydrateLtmPieces(row: CandidateRow | undefined, range: BacktestRange, api?: Record<string, any> | null): BacktestDashboardModel | null {
-  if (api?.dashboard && (api.dashboard.equity_curve?.length || api.dashboard.trade_count != null)) {
-    return api.dashboard as BacktestDashboardModel;
+function asofFromRow(row?: CandidateRow): Date {
+  const raw = row?.w52?.evaluation_date || row?.ltm?.evaluation_date;
+  if (raw) {
+    const d = new Date(`${String(raw).slice(0, 10)}T00:00:00`);
+    if (!Number.isNaN(d.getTime())) return d;
   }
-  const ltm = row?.ltm;
-  const bt = (api?.backtest || ltm?.backtest_1y || {}) as Record<string, any>;
-  const curveRaw = (api?.equity_curve || ltm?.equity_curve || []) as any[];
-  const metrics = (api?.book_metrics || ltm?.book_metrics || {}) as Record<string, any>;
-  const want = String(row?.symbol || "").toUpperCase();
-  const tradesSrc = ((api?.dashboard?.trades || bt.trades || ltm?.blotter || []) as any[]).filter((t) => {
-    const s = String(t?.symbol || "").toUpperCase();
-    return !s || !want || s === want;
-  });
-  const hasCurve = Array.isArray(curveRaw) && curveRaw.length > 0;
-  const hasTrades = Array.isArray(tradesSrc) && tradesSrc.length > 0;
-  const hasMetrics = metrics && (metrics.total_return != null || metrics.cagr != null);
-  if (!hasCurve && !hasTrades && !hasMetrics) return null;
+  return new Date();
+}
 
-  const cutoff = yearsAgo(range);
-  const equity = curveRaw
-    .map((p) => ({
-      date: String(p.date ?? p.label ?? ""),
-      label: String(p.date ?? p.label ?? ""),
-      equity: Number(p.equity ?? p.value ?? 0),
-    }))
-    .filter((p) => p.date && !Number.isNaN(p.equity) && new Date(p.date) >= cutoff);
-  const trades = (hasTrades ? tradesSrc : []).map(asTrade).filter((t) => {
-    const d = t.exit_date || t.entry_date;
-    return !d || new Date(d) >= cutoff;
-  });
-  const winners = trades.filter((t) => (t.pnl_percent ?? 0) > 0).sort((a, b) => (b.pnl_percent ?? 0) - (a.pnl_percent ?? 0));
-  const losers = trades.filter((t) => (t.pnl_percent ?? 0) < 0).sort((a, b) => (a.pnl_percent ?? 0) - (b.pnl_percent ?? 0));
-  let peak = -Infinity;
-  const drawdown_curve = equity.map((p) => {
-    peak = Math.max(peak, p.equity);
-    const dd = peak ? ((p.equity - peak) / Math.abs(peak)) * 100 : 0;
-    return { date: p.date, label: p.label, drawdown: Number(dd.toFixed(4)) };
-  });
-  const monthlyMap: Record<string, number[]> = {};
-  for (const p of equity) {
-    const m = p.date.slice(0, 7);
-    if (m.length < 7) continue;
-    (monthlyMap[m] ||= []).push(p.equity);
+const KERNEL_ALL_START = "2008-07-22";
+
+function boundsForRange(
+  range: BacktestRange,
+  asof: Date,
+): { start: string; end: string } {
+  const end = isoDay(asof);
+  if (range === "ALL") {
+    return { start: KERNEL_ALL_START, end };
   }
-  const months = Object.keys(monthlyMap).sort();
-  let prev = equity[0]?.equity;
-  const monthly_returns = months.map((month) => {
-    const end = monthlyMap[month][monthlyMap[month].length - 1];
-    const ret = prev ? end / prev - 1 : null;
-    prev = end;
-    return { month, return: ret };
-  });
-  const benchRaw = (api?.index_curve || ltm?.index_curve || []) as any[];
-  return {
-    window: range,
-    period_start: equity[0]?.date ?? null,
-    period_end: equity[equity.length - 1]?.date ?? null,
-    total_return: decToPct(metrics.total_return) ?? decToPct(bt.net_return),
-    cagr: decToPct(metrics.cagr),
-    max_drawdown: decToPct(metrics.max_dd ?? metrics.max_drawdown ?? bt.max_drawdown),
-    win_rate: bt.win_rate == null ? null : Number(bt.win_rate) <= 1.0001 ? Number(bt.win_rate) * 100 : Number(bt.win_rate),
-    trade_count: bt.trade_count ?? trades.length,
-    sharpe_ratio: metrics.sharpe_ratio ?? null,
-    profit_factor: bt.profit_factor ?? null,
-    profit_factor_infinite: bt.profit_factor == null && (bt.win_rate ?? 0) > 0,
-    initial_capital: Number(metrics.initial_capital ?? ltm?.initial_capital ?? equity[0]?.equity ?? null),
-    ending_capital: Number(metrics.ending_equity ?? equity[equity.length - 1]?.equity ?? null),
-    avg_trade_return: trades.length ? trades.reduce((s, t) => s + (t.pnl_percent ?? 0), 0) / trades.length : decToPct(bt.net_return),
-    verdict: null,
-    equity_curve: equity,
-    drawdown_curve,
-    benchmark_curve: benchRaw.map((p) => ({ date: String(p.date ?? p.label ?? ""), close: Number(p.close ?? p.equity) })),
-    monthly_returns,
-    trades,
-    best_trade: winners[0] ?? null,
-    worst_trade: losers[0] ?? null,
-    top_winning: winners.slice(0, 5),
-    top_losing: losers.slice(0, 5),
-    never_selected_in_window: trades.length === 0 && !hasCurve,
-  };
+  const years = range === "1Y" ? 1 : range === "5Y" ? 5 : range === "8Y" ? 8 : 3;
+  const start = new Date(asof);
+  start.setFullYear(start.getFullYear() - years);
+  return { start: isoDay(start), end };
 }
 
 function BacktestTab({
@@ -1242,33 +1326,73 @@ function BacktestTab({
   backtestDetail?: any | null;
   row?: CandidateRow;
 }) {
+  const asof = asofFromRow(row);
+  const initial = boundsForRange("3Y", asof);
   const [range, setRange] = useState<BacktestRange>("3Y");
+  const [startDate, setStartDate] = useState(initial.start);
+  const [endDate, setEndDate] = useState(initial.end);
   const [ltmDash, setLtmDash] = useState<BacktestDashboardModel | null>(null);
   const [ltmLoading, setLtmLoading] = useState(false);
   const [ltmError, setLtmError] = useState<string | null>(null);
   const [niftyData, setNiftyData] = useState<{label: string, close: number}[]>([]);
 
   useEffect(() => {
-    if (!row?.ltm || !row.symbol) {
+    if (range === "ALL") {
+      const bounds = boundsForRange("ALL", asofFromRow(row));
+      setStartDate(bounds.start);
+      setEndDate(bounds.end);
+    }
+  }, [row?.symbol]);
+
+  const handleRangeChange = (next: BacktestRange) => {
+    const bounds = boundsForRange(next === "CUSTOM" ? "3Y" : next, asofFromRow(row));
+    setRange(next);
+    setStartDate(bounds.start);
+    setEndDate(bounds.end);
+  };
+
+  const handleCustomRange = (start: string, end: string) => {
+    setRange("CUSTOM");
+    setStartDate(start);
+    setEndDate(end);
+  };
+
+  useEffect(() => {
+    const pack = row?.w52 || row?.ltm;
+    if (!pack || !row.symbol) {
       setLtmDash(null);
       setLtmError(null);
       return;
     }
     let cancelled = false;
     setLtmLoading(true);
+    setLtmDash(null);
     setLtmError(null);
-    fetchLtmSymbolDetail(row.symbol, range)
+    if (typeof console !== "undefined") {
+      console.debug("BACKTEST_UI_REQUEST", {
+        symbol: row.symbol,
+        period: range,
+        startDate,
+        endDate,
+        executionProfile: row.w52 ? "KERNEL" : undefined,
+      });
+    }
+    const req = row.w52
+      ? fetchW52SymbolDetail(row.symbol, range, { startDate, endDate, executionProfile: "KERNEL" })
+      : fetchLtmSymbolDetail(row.symbol, range === "CUSTOM" ? "ALL" : range);
+    req
       .then((res) => {
         if (cancelled) return;
-        const dash = hydrateLtmPieces(row, range, res);
+        const dash = hydrateStrategyBacktest(row, range, res);
         setLtmDash(dash);
-        if (!dash) setLtmError(null);
+        if (!dash) {
+          setLtmError("Backtest result did not match the selected symbol and period.");
+        }
       })
       .catch((err: unknown) => {
         if (cancelled) return;
-        const fallback = hydrateLtmPieces(row, range, null);
-        setLtmDash(fallback);
-        if (!fallback) setLtmError(err instanceof Error ? err.message : "Unable to load backtest data");
+        setLtmDash(null);
+        setLtmError(err instanceof Error ? err.message : "Unable to load backtest data");
       })
       .finally(() => {
         if (!cancelled) setLtmLoading(false);
@@ -1276,10 +1400,10 @@ function BacktestTab({
     return () => {
       cancelled = true;
     };
-  }, [row?.ltm, row?.symbol, range]);
+  }, [row?.ltm, row?.w52, row?.symbol, range, startDate, endDate]);
 
   useEffect(() => {
-    if (row?.ltm) return;
+    if (row?.ltm || row?.w52) return;
     fetchSymbolDetail("NIFTY 500")
       .then((res: any) => {
         if (res?.ohlcv) {
@@ -1292,26 +1416,50 @@ function BacktestTab({
         }
       })
       .catch(() => {});
-  }, [row?.ltm]);
+  }, [row?.ltm, row?.w52]);
 
   const engineModel = useMemo(() => {
-    if (row?.ltm) return ltmDash ?? hydrateLtmPieces(row, range, null);
+    if (row?.ltm || row?.w52) return ltmDash;
     const src = backtestDetail ?? backtest ?? null;
     const model = normalizeEngineBacktest(src, range);
     if (model && niftyData.length) {
       model.benchmark_curve = niftyData.map((n) => ({ date: n.label, label: n.label, close: n.close }));
     }
     return model;
-  }, [row?.ltm, row, ltmDash, backtest, backtestDetail, range, niftyData]);
+  }, [row?.ltm, row?.w52, row, ltmDash, backtest, backtestDetail, range, niftyData]);
+
+  const strategyName = row?.w52
+    ? "52-Week High Breakout"
+    : row?.ltm
+      ? "LTM Breakout"
+      : (row as any)?.strategyName || "52-Week High Breakout";
 
   return (
-    <BacktestAnalyticsDashboard
-      model={engineModel}
-      range={range}
-      onRangeChange={setRange}
-      loading={Boolean(row?.ltm && ltmLoading)}
-      loadError={row?.ltm ? ltmError : null}
-    />
+    <div>
+      {row?.w52 ? (
+        <div className="bt-range" role="group" aria-label="Backtest engine" style={{ marginBottom: 12 }}>
+          <button
+            type="button"
+            className="bt-range__btn is-active"
+          >
+            52W kernel
+          </button>
+        </div>
+      ) : null}
+      <BacktestAnalyticsDashboard
+        model={engineModel}
+        range={range}
+        onRangeChange={handleRangeChange}
+        startDate={startDate}
+        endDate={endDate}
+        onCustomRange={handleCustomRange}
+        loading={Boolean((row?.ltm || row?.w52) && ltmLoading)}
+        loadError={row?.ltm || row?.w52 ? ltmError : null}
+        symbol={row?.symbol}
+        strategyName={strategyName}
+        timeframe="1D"
+      />
+    </div>
   );
 }
 
@@ -1675,6 +1823,13 @@ function fmtPrice(value: number | null | undefined): string {
   return n != null ? n.toFixed(2) : "—";
 }
 
+function formatDetailMetric(row: CandidateRow): string {
+  if (row.scoreKind === "momentum_252" || row.scoreKind === "momentum_60") {
+    return row.momentumValue == null ? "—" : `${row.momentumValue.toFixed(1)}%`;
+  }
+  return row.score == null ? "—" : row.score.toFixed(1);
+}
+
 function entryMidFrom(low: number | null, high: number | null): number | null {
   if (low != null && high != null) return (low + high) / 2;
   if (high != null) return high;
@@ -1730,6 +1885,9 @@ function buildRankContext(row: CandidateRow) {
     return `This stock is ranked #${row.rank} because its technical quality, trade plan, and supporting evidence place it above the rest of the shortlist.`;
   }
   if (row.signal === "WATCH") {
+    if (row.ltm) {
+      return `This stock is ranked #${row.rank} in the current LTM book. Mid-cycle selected names stay WATCH until the next 252-session rebalance.`;
+    }
     return `This stock still has rank #${row.rank}, but the recommendation layer prefers waiting for cleaner confirmation before promoting it to BUY.`;
   }
   return `This stock was shortlisted but fell below the final quality bar, so it remains lower in the decision stack despite passing earlier scan stages.`;

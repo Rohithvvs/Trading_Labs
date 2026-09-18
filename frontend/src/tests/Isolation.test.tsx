@@ -14,8 +14,8 @@ describe('ScannerProgress Component Isolation Tests', () => {
   it('renders default/active state correctly', () => {
     render(<ScannerProgress data={{ stage: "Fetching Data", progress: 45, current_symbol: "", done: 0, remaining: 0, eta_sec: 0 }} error={null} startTime={Date.now()} />);
 
-    expect(screen.getByText('Scanner Active')).toBeDefined();
-    expect(screen.getByText('Fetching Data')).toBeDefined();
+    expect(screen.getByText('SCAN IN PROGRESS')).toBeDefined();
+    expect(screen.getByText(/Current stage: Fetching Data/)).toBeDefined();
     expect(screen.getByText('45%')).toBeDefined();
   });
 
@@ -24,7 +24,7 @@ describe('ScannerProgress Component Isolation Tests', () => {
     render(<ScannerProgress data={{ stage: "Fetching Data", progress: 45 }} error="Connection failed" startTime={Date.now()} onRetry={onRetry} />);
 
     expect(screen.getByText('Connection failed')).toBeDefined();
-    expect(screen.queryByText('Scanner Active')).toBeNull();
+    expect(screen.queryByText('SCAN IN PROGRESS')).toBeNull();
 
     const retryBtn = screen.getByText('Retry Scan');
     fireEvent.click(retryBtn);
@@ -40,7 +40,7 @@ describe('ScannerProgress Component Isolation Tests', () => {
     });
 
     // 5 seconds ago + 1 second elapsed = 6s
-    expect(screen.getByText(/6s elapsed/)).toBeDefined();
+    expect(screen.getByText(/00m 06s elapsed/)).toBeDefined();
   });
 
   it('does not render elapsed timer or progress if completed (progress >= 100)', () => {
@@ -53,6 +53,6 @@ describe('ScannerProgress Component Isolation Tests', () => {
       vi.advanceTimersByTime(10000);
     });
 
-    expect(screen.getByText(/0s elapsed/)).toBeDefined();
+    expect(screen.getByText(/00m 00s elapsed/)).toBeDefined();
   });
 });

@@ -17,11 +17,18 @@ from ....models.market_data import HistoricalCandle
 from ....models.strategy_market_data import DailyOhlcv, IndexOhlcv
 from ....services.lock_service import DistributedLockService
 from ....services.market_data_ingestion.freshness import evaluate_freshness
+from ....services.market_data_ingestion.repository import (
+    extend_scan_statement_timeout,
+    fetch_daily_ohlcv_for_symbols,
+    iter_symbol_chunks,
+)
 from ....services.universe_service import UniverseService
+from ....utils.symbol import canonical_symbol
 from . import persistence
-from .attribution import build_boards, empty_backtest, per_name_backtests
+from .attribution import apply_windowed_attribution, build_boards, empty_backtest, per_name_backtests
 from .book_engine import BookState, evaluate_session, replay_book, snapshot_open_trades
 from .identity import (
+    ATTRIBUTION_YEARS,
     CACHE_KEY_LATEST,
     DEFAULT_CAPITAL,
     DEFAULT_MODE,
@@ -34,6 +41,28 @@ from .identity import (
 from .rejection import breakdown
 
 logger = logging.getLogger("app.strategies.ltm.scan")
+
+
+def _pos(value: Any) -> float | None:
+    try:
+        n = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(n) or n <= 0:
+        return None
+    return n
+
+
+def published_trade_levels(*, signal: str, close_t: Any) -> dict[str, float | None]:
+    """LTM is buy-and-hold: publish signal-close entry, never invent SL/target."""
+    if signal not in {"BUY", "WATCH"}:
+        return {"entry": None, "stop_loss": None, "target": None, "risk_reward": None}
+    return {
+        "entry": _pos(close_t),
+        "stop_loss": None,
+        "target": None,
+        "risk_reward": None,
+    }
 
 LIMITATIONS = [
     "Published historical numbers may be survivorship-biased if only the current NIFTY 500 list is available.",
@@ -61,7 +90,7 @@ def _json_safe(value: Any) -> Any:
 
 def _trade_dict(tr) -> dict[str, Any]:
     return {
-        "symbol": tr.symbol,
+        "symbol": canonical_symbol(tr.symbol),
         "entry_date": tr.entry_date.isoformat(),
         "exit_date": tr.exit_date.isoformat() if tr.exit_date else None,
         "entry_price": tr.entry_price,
@@ -80,17 +109,14 @@ def _as_session_date(value: date | datetime) -> date:
 
 
 async def _load_matrix_from_strategy(symbols: list[str]) -> tuple[list[date], dict[str, dict[date, float]], dict[date, float]]:
+    rows = await fetch_daily_ohlcv_for_symbols(
+        symbols,
+        columns=(DailyOhlcv.trade_date, DailyOhlcv.symbol, DailyOhlcv.close),
+    )
     async with AsyncSessionLocal() as db:
-        stmt = (
-            select(DailyOhlcv.trade_date, DailyOhlcv.symbol, DailyOhlcv.close)
-            .where(DailyOhlcv.symbol.in_(symbols))
-            .order_by(DailyOhlcv.trade_date.asc())
-        )
-        rows = (await db.execute(stmt)).all()
         idx_stmt = (
             select(IndexOhlcv.trade_date, IndexOhlcv.close)
             .where(IndexOhlcv.symbol == settings.strategy_index_store_symbol)
-            .order_by(IndexOhlcv.trade_date.asc())
         )
         idx_rows = (await db.execute(idx_stmt)).all()
 
@@ -108,16 +134,19 @@ async def _load_matrix_from_historical_candles(
     symbols: list[str],
 ) -> tuple[list[date], dict[str, dict[date, float]], dict[date, float]]:
     """Fallback when strategy-grade daily_ohlcv is empty (Production candle store)."""
+    rows: list[Any] = []
     async with AsyncSessionLocal() as db:
-        stmt = (
-            select(HistoricalCandle.timestamp, HistoricalCandle.symbol, HistoricalCandle.close)
-            .where(
-                HistoricalCandle.symbol.in_(symbols),
+        await extend_scan_statement_timeout(db)
+        for chunk in iter_symbol_chunks(symbols):
+            stmt = select(
+                HistoricalCandle.timestamp,
+                HistoricalCandle.symbol,
+                HistoricalCandle.close,
+            ).where(
+                HistoricalCandle.symbol.in_(chunk),
                 HistoricalCandle.resolution.in_(("1D", "D", "1d")),
             )
-            .order_by(HistoricalCandle.timestamp.asc())
-        )
-        rows = (await db.execute(stmt)).all()
+            rows.extend((await db.execute(stmt)).all())
 
     matrix: dict[str, dict[date, float]] = defaultdict(dict)
     dates_set: set[date] = set()
@@ -202,6 +231,7 @@ def build_payload(
     mode: str,
     survivorship_biased: bool,
     initial_capital: float,
+    company_name_map: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     t_idx = len(dates) - 1
     prices = {s: matrix.get(s, {}).get(evaluation_date) for s in universe}
@@ -209,16 +239,26 @@ def build_payload(
     open_tr = snapshot_open_trades(state, prices, evaluation_date)
     all_trades = list(replay["trades"]) + open_tr
     history_valid = {s for s in universe if _history_valid(matrix, dates, s, t_idx)}
-    reports = per_name_backtests(all_trades, asof=evaluation_date, years=1, history_valid=history_valid)
+    reports = per_name_backtests(
+        all_trades, asof=evaluation_date, years=ATTRIBUTION_YEARS, history_valid=history_valid
+    )
 
     signals = {row["symbol"]: row["signal"] for row in ev["rows"]}
     recs = []
+    if company_name_map is None:
+        try:
+            company_name_map = UniverseService.get_company_name_map_sync()
+        except Exception:
+            company_name_map = {}
+
     fail_codes: list[str] = []
     data_valid = 0
     evaluated = 0
     data_failures = 0
     for row in ev["rows"]:
         sym = row["symbol"]
+        canon_sym = canonical_symbol(sym)
+        comp_name = company_name_map.get(canon_sym) or company_name_map.get(sym)
         hv = sym in history_valid
         if row.get("data_source_failed"):
             data_failures += 1
@@ -229,16 +269,23 @@ def build_payload(
             fail_codes.append(row["first_failure"])
         bt = reports.get(sym) if hv else None
         if hv and bt is None:
-            bt = empty_backtest(evaluation_date)
+            bt = empty_backtest(evaluation_date, years=ATTRIBUTION_YEARS)
+        levels = published_trade_levels(signal=row["signal"], close_t=row.get("close_t"))
         recs.append(
             {
                 "rank": row.get("eligible_rank"),
-                "symbol": sym,
+                "symbol": canon_sym,
+                "company_name": comp_name,
                 "signal": row["signal"],
                 "momentum_252": row.get("momentum_252"),
+                "score_kind": "momentum_252",
                 "gate_pass": bool(row.get("momentum_252") is not None and (row["momentum_252"] or 0) > 0.50),
                 "selected": row["selected"],
                 "first_failure": row["first_failure"],
+                "entry": levels["entry"],
+                "stop_loss": levels["stop_loss"],
+                "target": levels["target"],
+                "risk_reward": levels["risk_reward"],
                 "target_weight": (1.0 / len(ev["selected"])) if ev["selected"] and row["selected"] else None,
                 "technicals": {
                     "momentum_252": row.get("momentum_252"),
@@ -271,10 +318,11 @@ def build_payload(
     buy = [r["symbol"] for r in recs if r["signal"] == "BUY"]
     watch = [r["symbol"] for r in recs if r["signal"] == "WATCH"]
     reject_n = sum(1 for r in recs if r["signal"] == "REJECT")
-    top5, least5 = build_boards(reports, signals)
+    top5, least5 = build_boards(reports, signals, company_names=company_name_map)
     holdings = [
         {
-            "symbol": h.symbol,
+            "symbol": canonical_symbol(h.symbol),
+            "company_name": company_name_map.get(canonical_symbol(h.symbol)),
             "shares": h.shares,
             "avg_cost": h.avg_cost,
             "mark": prices.get(h.symbol),
@@ -283,7 +331,7 @@ def build_payload(
         for h in state.holdings.values()
     ]
     last_cohort = replay["cohorts"][-1] if replay["cohorts"] else None
-    return {
+    payload = {
         "strategy_id": STRATEGY_ID,
         "display_name": DISPLAY_NAME,
         "short_name": SHORT_NAME,
@@ -325,21 +373,38 @@ def build_payload(
         "initial_capital": initial_capital,
         "limitations": LIMITATIONS,
     }
+    return apply_windowed_attribution(payload, years=ATTRIBUTION_YEARS)
 
 
-async def run_scan(*, mode: str | None = None, progress_cb=None) -> dict[str, Any]:
+async def run_scan(*, mode: str | None = None, progress_cb=None, scan_id: uuid.UUID | None = None) -> dict[str, Any]:
     mode_u = (mode or settings.ltm_default_mode or DEFAULT_MODE).upper()
     capital = float(settings.ltm_initial_capital or DEFAULT_CAPITAL)
     lock = DistributedLockService(settings.ltm_lock_name or LOCK_NAME, ttl_seconds=3600)
     got = await lock.acquire(timeout_seconds=2)
     if not got:
+        if scan_id is not None:
+            latest = await persistence.load_latest(STRATEGY_ID)
+            await persistence.update_run(
+                scan_id, status="failed", error_code="LTM_SCAN_IN_PROGRESS", finished=True
+            )
+            if latest is None or latest.scan_id == scan_id:
+                await persistence.save_latest(
+                    STRATEGY_ID,
+                    scan_id=scan_id,
+                    status="failed",
+                    payload={"error_code": "LTM_SCAN_IN_PROGRESS", "recommendations_final": False},
+                    error_code="LTM_SCAN_IN_PROGRESS",
+                )
         return {"error_code": "LTM_SCAN_IN_PROGRESS", "status": "failed"}
 
-    run = await persistence.create_run(STRATEGY_ID)
-    scan_id = run.scan_id
+    if scan_id is None:
+        run = await persistence.create_run(STRATEGY_ID)
+        scan_id = run.scan_id
 
-    async def stage(name: str, pct: int, status: str) -> None:
-        await persistence.update_run(scan_id, status=status, stage=name, progress_pct=pct)
+    async def stage(name: str, pct: int, status: str, **progress_meta: Any) -> None:
+        await persistence.update_run(
+            scan_id, status=status, stage=name, progress_pct=pct, progress_meta=progress_meta or None
+        )
         await persistence.save_latest(
             STRATEGY_ID,
             scan_id=scan_id,
@@ -347,7 +412,7 @@ async def run_scan(*, mode: str | None = None, progress_cb=None) -> dict[str, An
             payload={"scan_id": str(scan_id), "status": status, "recommendations_final": False, "stage": name},
         )
         if progress_cb:
-            await progress_cb({"stage": name, "progress": pct, "scan_id": str(scan_id)})
+            await progress_cb({"stage": name, "progress": pct, "scan_id": str(scan_id), **progress_meta})
 
     try:
         await stage("evaluating", 5, "evaluating")
@@ -385,10 +450,26 @@ async def run_scan(*, mode: str | None = None, progress_cb=None) -> dict[str, An
         t_idx = len(dates) - 1
         evaluation_date = dates[t_idx]
         prev_idx = t_idx - 252
-        closes_t = {s: matrix.get(s, {}).get(evaluation_date) for s in universe}
-        closes_prev = {
-            s: matrix.get(s, {}).get(dates[prev_idx]) if prev_idx >= 0 else None for s in universe
-        }
+        closes_t: dict[str, float | None] = {}
+        closes_prev: dict[str, float | None] = {}
+        symbols_list = sorted(universe)
+        total = len(symbols_list)
+        for i, symbol in enumerate(symbols_list, 1):
+            closes_t[symbol] = matrix.get(symbol, {}).get(evaluation_date)
+            closes_prev[symbol] = matrix.get(symbol, {}).get(dates[prev_idx]) if prev_idx >= 0 else None
+            if i == 1 or i == total or i % 20 == 0:
+                pct = 8 + int(28 * i / max(total, 1))
+                await persistence.update_run(
+                    scan_id,
+                    status="evaluating",
+                    stage="evaluating",
+                    progress_pct=min(pct, 38),
+                    progress_meta={
+                        "current_symbol": symbol,
+                        "processed_count": i,
+                        "total_count": total,
+                    },
+                )
 
         await stage("backtesting", 40, "backtesting")
         replay = replay_book(
@@ -468,17 +549,28 @@ async def start_scan_background(mode: str | None = None) -> dict[str, Any]:
     if active:
         return {"error_code": "LTM_SCAN_IN_PROGRESS", "scan_id": str(active.scan_id), "status": active.status}
 
+    run = await persistence.create_run(STRATEGY_ID)
+    await persistence.save_latest(
+        STRATEGY_ID,
+        scan_id=run.scan_id,
+        status="queued",
+        payload={
+            "scan_id": str(run.scan_id),
+            "status": "queued",
+            "recommendations_final": False,
+            "stage": "queued",
+        },
+    )
+
     import asyncio
 
     async def _runner() -> None:
-        await run_scan(mode=mode)
+        await run_scan(mode=mode, scan_id=run.scan_id)
 
     asyncio.create_task(_runner())
-    # Give the task a moment to persist the queued/evaluating row
-    await asyncio.sleep(0.05)
-    latest = await persistence.load_latest(STRATEGY_ID)
     return {
-        "scan_id": str(latest.scan_id) if latest and latest.scan_id else None,
-        "status": latest.status if latest else "queued",
+        "scan_id": str(run.scan_id),
+        "status": "queued",
         "strategy_id": STRATEGY_ID,
+        "started_at": run.started_at.isoformat() if run.started_at else None,
     }

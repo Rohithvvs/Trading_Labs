@@ -1,0 +1,33 @@
+# HERMES agent configuration.
+# Safe configuration only. Do not put API keys or credentials in this file.
+
+agent:
+  name: "Hermes"
+  purpose: "TradingView Backtesting Research and Validation"
+  part: 1
+  part_name: "foundation"
+
+llm:
+  provider: "opencode-go"
+  model: "glm-5.2"
+
+approval:
+  production_code_changes_required: true
+  live_trading_changes_allowed: false
+
+directories:
+  reference: "hermes-research/tradingview_reference"
+  research: "hermes-research/research"
+  experiments: "hermes-research/experiments"
+  comparisons: "hermes-research/comparisons"
+  discrepancies: "hermes-research/discrepancies"
+  proposals: "hermes-research/proposals"
+  iterations: "hermes-research/iterations"
+  reports: "hermes-research/reports"
+  state: "hermes-research/state"
+
+integrity:
+  manifest: "hermes-research/state/reference_manifest.json"
+  on_reference_hash_mismatch: "REFERENCE_CHANGED"
+  auto_replace_reference: false
+  user_confirmation_required: true

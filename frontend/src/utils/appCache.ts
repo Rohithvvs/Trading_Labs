@@ -297,6 +297,7 @@ export const CACHE_KEYS = {
   apiHealth: "api_health",
   latestScan: "latest_scan",
   universes: "universes",
+  universeInstruments: "universe_instruments",
   savedScans: "saved_scans",
   workstationAlerts: "workstation_alerts",
   riskSettings: "risk_settings",

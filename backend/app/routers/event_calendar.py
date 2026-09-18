@@ -2,10 +2,15 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime
 from typing import Any
+from ..core.deps import get_token_principal
 from ..db.session import get_db
 from ..services.event_calendar_service import EventCalendarService
 
-router = APIRouter(prefix="/api/events", tags=["Event Risk Calendar"])
+router = APIRouter(
+    prefix="/api/events",
+    tags=["Event Risk Calendar"],
+    dependencies=[Depends(get_token_principal)],
+)
 
 @router.post("/ingest/mock", response_model=dict)
 async def ingest_mock_events(db: AsyncSession = Depends(get_db)) -> Any:

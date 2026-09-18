@@ -119,3 +119,41 @@ async def test_incomplete_daily_cache_triggers_fallback(monkeypatch):
     assert len(candles) == 260
     assert fetch_calls != []
     assert service.get_ohlcv_source("INFY-EQ", AnalysisMode.swing, "1d") == "FYERS_PRIMARY"
+
+
+@pytest.mark.asyncio
+async def test_fetch_ohlcv_honors_max_points_for_intraday(monkeypatch):
+    service = FyersService()
+    FyersService._ohlcv_cache.clear()
+    monkeypatch.setattr(service, "_is_fyers_configured", lambda: True)
+
+    captured: list[int] = []
+
+    async def fake_fetch_fyers(symbol, resolution, lookback_window, points):
+        captured.append(points)
+        now = datetime.now(timezone.utc)
+        return [
+            OHLCVPoint(
+                timestamp=now - timedelta(minutes=i),
+                open=100,
+                high=101,
+                low=99,
+                close=100,
+                volume=1,
+            )
+            for i in range(points)
+        ]
+
+    monkeypatch.setattr(service, "_fetch_fyers_candles", fake_fetch_fyers)
+
+    candles = await service.fetch_ohlcv(
+        "ANANTRAJ",
+        AnalysisMode.intraday,
+        "1m",
+        2,
+        allow_mock=False,
+        bypass_authoritative_store=True,
+        max_points=800,
+    )
+    assert captured == [800]
+    assert len(candles) == 800

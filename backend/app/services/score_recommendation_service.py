@@ -15,10 +15,14 @@ deterministic replacement for the old ``RecommendationService``:
     score/confidence, complete trade plan) must pass; otherwise the signal is
     REJECT with reason "Analysis Failed".
 
-Thresholds (production, per RECOMMENDATION_ENGINE_ANALYSIS.md):
-    score >= 70            -> BUY
-    55 <= score < 70       -> WATCH
+Thresholds (authoritative composite-score classification):
+    score >= 68            -> BUY
+    55 <= score < 68       -> WATCH
     score < 55             -> REJECT
+
+These thresholds apply only to the composite 0–100 Production score.
+Strategy scanners such as LTM and 52-Week High Breakout publish their own
+signals and must not be reclassified from momentum.
 
 NOTE on composite semantics: the pre-removal production path used dynamic
 weights (tech 50% / backtest 25% / fundamental 25% / news 0%) when Market
@@ -52,8 +56,8 @@ from ..schemas import (
 
 logger = logging.getLogger("app.score_recommendation_service")
 
-# Pure score-based signal thresholds (production classification).
-BUY_SCORE_THRESHOLD = 70.0
+# Pure score-based signal thresholds (composite 0–100 Production score only).
+BUY_SCORE_THRESHOLD = 68.0
 WATCH_SCORE_THRESHOLD = 55.0
 ANALYSIS_FAILED_REASON = "Analysis Failed"
 
@@ -61,9 +65,11 @@ ANALYSIS_FAILED_REASON = "Analysis Failed"
 def classify_signal_from_score(score: float) -> str:
     """Classify BUY / WATCH / REJECT from composite score only.
 
-    score >= 70 -> BUY
-    55 <= score < 70 -> WATCH
+    score >= 68 -> BUY
+    55 <= score < 68 -> WATCH
     score < 55 -> REJECT
+
+    Do not use this on LTM momentum_252 or 52W mom60.
     """
     if math.isnan(score) or math.isinf(score):
         return "REJECT"

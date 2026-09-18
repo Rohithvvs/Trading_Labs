@@ -10,6 +10,9 @@ export type NavItem = {
   icon: ReactNode;
   testId: string;
   featureKey?: FeatureKey | string;
+  /** Include in the mobile bottom nav (Profile is added separately). */
+  mobilePrimary?: boolean;
+  badge?: string;
 };
 
 const icon = (d: string) => (
@@ -18,7 +21,23 @@ const icon = (d: string) => (
   </svg>
 );
 
-/** Retail primary navigation — Markets, Scanner, Watchlist, Paper Desk, Performance, Profile */
+const flaskIcon = (
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+    <path d="M10 2v7.527a2 2 0 0 1-.211.896L4.72 20.55a1 1 0 0 0 .9 1.45h12.76a1 1 0 0 0 .9-1.45l-5.069-10.127A2 2 0 0 1 14 9.527V2" />
+    <path d="M8.5 2h7" />
+    <path d="M7 16h10" />
+  </svg>
+);
+
+const compareIcon = (
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+    <rect x="3" y="4" width="7" height="16" rx="1.5" />
+    <rect x="14" y="4" width="7" height="16" rx="1.5" />
+  </svg>
+);
+
+/** Retail primary navigation — Markets, Strategy Tester, Paper Desk, Performance, Profile.
+ *  Scanner lives inside Profile → Scanner Dashboard. */
 export const RETAIL_NAV: NavItem[] = [
   {
     id: "markets",
@@ -26,16 +45,27 @@ export const RETAIL_NAV: NavItem[] = [
     path: "/markets",
     match: "/markets",
     testId: "nav-markets",
+    mobilePrimary: true,
     icon: icon("M3 3v18h18 M7 14l4-4 3 3 5-6"),
   },
   {
-    id: "scanner",
-    label: "Scanner",
-    path: "/scanner",
-    match: "/scanner",
-    testId: "nav-scanner",
+    id: "strategy-tester",
+    label: "Strategy Tester",
+    path: "/strategy-tester",
+    match: "/strategy-tester",
+    testId: "nav-strategy-tester",
     featureKey: "advanced_scanner",
-    icon: icon("M11 5a7 7 0 1 0 4.5 12.3L21 21 M11 8v3h3"),
+    mobilePrimary: true,
+    icon: flaskIcon,
+  },
+  {
+    id: "strategy-comparison",
+    label: "Strategy Comparison",
+    path: "/strategy-comparison",
+    match: "/strategy-comparison",
+    testId: "nav-strategy-comparison",
+    featureKey: "advanced_scanner",
+    icon: compareIcon,
   },
   {
     id: "paper",
@@ -43,6 +73,7 @@ export const RETAIL_NAV: NavItem[] = [
     path: "/paper",
     match: "/paper",
     testId: "nav-paper-trading",
+    mobilePrimary: true,
     icon: icon("M4 19h16 M6 16V8l6-4 6 4v8 M10 12h4"),
   },
   {

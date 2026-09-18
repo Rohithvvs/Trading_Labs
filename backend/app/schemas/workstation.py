@@ -63,6 +63,35 @@ class UniverseGroup(BaseModel):
     count: int
 
 
+class UniverseInstrument(BaseModel):
+    """Canonical display identity plus the stored/broker forms used for lookups."""
+
+    symbol: str
+    universe_symbol: str
+    company_name: str | None = None
+    exchange: str = "NSE"
+    series: str | None = None
+    broker_symbol: str
+    isin: str | None = None
+    is_active: bool = True
+    universe: str | None = None
+    stock_id: int | None = None
+
+
+class UniverseValidationReport(BaseModel):
+    total_stocks: int
+    symbols_present: int
+    symbols_missing: int
+    duplicates: int
+    invalid_symbols: int
+    inactive_symbols: int
+    broker_mappings_missing: int
+    historical_data_mappings: int | None = None
+    missing: list[dict[str, str]] = Field(default_factory=list)
+    duplicate_symbols: list[str] = Field(default_factory=list)
+    invalid: list[dict[str, str]] = Field(default_factory=list)
+
+
 class MarketIndexItem(BaseModel):
     symbol: str
     label: str

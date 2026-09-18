@@ -6,7 +6,7 @@ import time
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..agents import RouterAgent
-from ..core.deps import require_feature
+from ..core.deps import get_token_principal, require_feature
 from ..db import get_db
 from ..models.auth import User
 from ..db.scan_store import load_latest_scan, save_latest_scan
@@ -37,7 +37,11 @@ from ..services.workstation_service import WorkstationService
 
 
 
-router = APIRouter(prefix="/analysis", tags=["analysis"])
+router = APIRouter(
+    prefix="/analysis",
+    tags=["analysis"],
+    dependencies=[Depends(get_token_principal)],
+)
 logger = get_logger("app.routes.analysis")
 
 

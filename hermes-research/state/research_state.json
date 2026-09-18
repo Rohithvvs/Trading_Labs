@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "updated_utc": "2026-08-24T08:00:00+00:00",
+  "part": 1,
+  "part_note": "Reference identity correction after PART 1 foundation.",
+  "reference_status": {
+    "strategy_identity": "INCOMPLETE",
+    "golden_files": "MATCH",
+    "reason": "Exact Pine strategy source producing TradingView tester results has not yet been verified."
+  },
+  "tracks": {
+    "STR-001": {
+      "type": "indicator",
+      "title": "STR-001 | 52W High Breakout Scanner",
+      "status": "identified",
+      "source": "hermes-research/tradingview_reference/Strategy_001/strategy.pine"
+    },
+    "52W Breakout - Test": {
+      "type": "strategy",
+      "status": "source_unverified",
+      "source": null,
+      "evidence": [
+        "hermes-research/tradingview_reference/Strategy_001/test_config.yaml",
+        "hermes-research/tradingview_reference/Strategy_001/trades.csv",
+        "hermes-research/tradingview_reference/Strategy_001/strategy_report.xlsx"
+      ]
+    }
+  },
+  "comparison_status": {
+    "allowed": false,
+    "reason": "Exact Pine strategy source producing TradingView tester results has not yet been verified."
+  },
+  "production_modification_allowed": false,
+  "live_trading_changes_allowed": false,
+  "database_modifications_allowed": false,
+  "reports": {
+    "identity": "hermes-research/reports/reference_strategy_identity.md",
+    "missing_source": "hermes-research/reports/exact_strategy_source_missing.md",
+    "tracks": "hermes-research/reports/reference_tracks.md",
+    "labs_engines": "hermes-research/reports/labs_backtest_engine_candidates.md",
+    "data_history": "hermes-research/reports/data_history_gap.md"
+  }
+}

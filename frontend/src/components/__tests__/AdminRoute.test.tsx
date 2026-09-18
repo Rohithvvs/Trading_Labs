@@ -22,6 +22,7 @@ function renderAt(path: string) {
           }
         />
         <Route path="/login" element={<div data-testid="login-page">Login</div>} />
+        <Route path="/markets" element={<div>Markets</div>} />
         <Route path="/scanner" element={<div>Scanner</div>} />
       </Routes>
     </MemoryRouter>,

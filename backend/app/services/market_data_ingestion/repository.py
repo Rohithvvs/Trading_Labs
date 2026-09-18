@@ -1,15 +1,19 @@
 """Bulk upsert and query helpers for strategy-grade market data."""
 from __future__ import annotations
 
+import logging
+import time
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any, Iterable
 
-from sqlalchemy import func, select
-from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy import bindparam, func, select, text
+from sqlalchemy.dialects.postgresql import ARRAY, VARCHAR, insert as pg_insert
 
 from ...db.session import AsyncSessionLocal
 from ...models.strategy_market_data import DailyOhlcv, IndexOhlcv
+
+_ohlcv_log = logging.getLogger("app.market_data.ohlcv")
 
 
 def _utc_now() -> datetime:
@@ -28,10 +32,37 @@ async def max_equity_trade_date(symbols: list[str] | None = None) -> date | None
         return (await db.execute(stmt)).scalar_one_or_none()
 
 
+async def equity_date_span(symbol: str) -> tuple[date | None, date | None, int]:
+    """Return (min_trade_date, max_trade_date, row_count) for one equity symbol."""
+    async with AsyncSessionLocal() as db:
+        row = (
+            await db.execute(
+                select(
+                    func.min(DailyOhlcv.trade_date),
+                    func.max(DailyOhlcv.trade_date),
+                    func.count(),
+                ).where(DailyOhlcv.symbol == symbol)
+            )
+        ).one()
+        return row[0], row[1], int(row[2] or 0)
+
+
 async def max_index_trade_date(symbol: str = "NIFTY500") -> date | None:
     async with AsyncSessionLocal() as db:
         stmt = select(func.max(IndexOhlcv.trade_date)).where(IndexOhlcv.symbol == symbol)
         return (await db.execute(stmt)).scalar_one_or_none()
+
+
+async def min_index_trade_date(symbol: str = "NIFTY500") -> date | None:
+    async with AsyncSessionLocal() as db:
+        stmt = select(func.min(IndexOhlcv.trade_date)).where(IndexOhlcv.symbol == symbol)
+        return (await db.execute(stmt)).scalar_one_or_none()
+
+
+async def index_row_count(symbol: str = "NIFTY500") -> int:
+    async with AsyncSessionLocal() as db:
+        stmt = select(func.count()).select_from(IndexOhlcv).where(IndexOhlcv.symbol == symbol)
+        return int((await db.execute(stmt)).scalar() or 0)
 
 
 async def symbols_present_on(trade_date: date, symbols: list[str] | None = None) -> set[str]:
@@ -264,6 +295,30 @@ async def upsert_daily_bars(rows: list[dict[str, Any]]) -> tuple[int, int]:
         await db.execute(stmt)
         await db.commit()
     return len(payload), 0
+
+
+async def delete_cloned_daily_bars(session: date, previous: date) -> int:
+    """Delete rows on `session` whose OHLCV is an exact copy of `previous`."""
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            text(
+                """
+                DELETE FROM daily_ohlcv AS d
+                USING daily_ohlcv AS p
+                WHERE d.trade_date = :session
+                  AND p.trade_date = :previous
+                  AND d.symbol = p.symbol
+                  AND d.open = p.open
+                  AND d.high = p.high
+                  AND d.low = p.low
+                  AND d.close = p.close
+                  AND d.volume = p.volume
+                """
+            ),
+            {"session": session, "previous": previous},
+        )
+        await db.commit()
+        return int(result.rowcount or 0)
 
 
 async def update_delivery_fields(rows: list[dict[str, Any]]) -> int:
@@ -512,23 +567,42 @@ async def upsert_index_bars(rows: list[dict[str, Any]]) -> int:
                 "loaded_at": loaded_at,
             }
         )
+    chunk = 500
     async with AsyncSessionLocal() as db:
-        stmt = pg_insert(IndexOhlcv).values(payload)
-        stmt = stmt.on_conflict_do_update(
-            index_elements=["trade_date", "symbol"],
-            set_={
-                "open": stmt.excluded.open,
-                "high": stmt.excluded.high,
-                "low": stmt.excluded.low,
-                "close": stmt.excluded.close,
-                "volume": stmt.excluded.volume,
-                "source": stmt.excluded.source,
-                "loaded_at": stmt.excluded.loaded_at,
-            },
-        )
-        await db.execute(stmt)
+        for i in range(0, len(payload), chunk):
+            part = payload[i : i + chunk]
+            stmt = pg_insert(IndexOhlcv).values(part)
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["trade_date", "symbol"],
+                set_={
+                    "open": stmt.excluded.open,
+                    "high": stmt.excluded.high,
+                    "low": stmt.excluded.low,
+                    "close": stmt.excluded.close,
+                    "volume": stmt.excluded.volume,
+                    "source": stmt.excluded.source,
+                    "loaded_at": stmt.excluded.loaded_at,
+                },
+            )
+            await db.execute(stmt)
         await db.commit()
     return len(payload)
+
+
+def _equity_row_dict(r: DailyOhlcv) -> dict[str, Any]:
+    return {
+        "trade_date": r.trade_date,
+        "symbol": r.symbol,
+        "open": float(r.open),
+        "high": float(r.high),
+        "low": float(r.low),
+        "close": float(r.close),
+        "volume": int(r.volume),
+        "delivery_qty": r.delivery_qty,
+        "delivery_pct": float(r.delivery_pct) if r.delivery_pct is not None else None,
+        "turnover": float(r.turnover) if r.turnover is not None else None,
+        "adtv_20": float(r.adtv_20) if getattr(r, "adtv_20", None) is not None else None,
+    }
 
 
 async def fetch_equity_history(
@@ -537,30 +611,29 @@ async def fetch_equity_history(
     from_date: date | None = None,
     limit: int | None = None,
 ) -> list[dict[str, Any]]:
+    from ...utils.symbol import ohlcv_symbol_variants, preferred_ohlcv_store_symbol
+
+    variants = ohlcv_symbol_variants(symbol) or [symbol]
     async with AsyncSessionLocal() as db:
-        stmt = select(DailyOhlcv).where(DailyOhlcv.symbol == symbol)
+        stmt = select(DailyOhlcv).where(DailyOhlcv.symbol.in_(variants))
         if from_date:
             stmt = stmt.where(DailyOhlcv.trade_date >= from_date)
         stmt = stmt.order_by(DailyOhlcv.trade_date.asc())
+        rows = list((await db.scalars(stmt)).all())
+        store = preferred_ohlcv_store_symbol([r.symbol for r in rows])
+        if store:
+            rows = [r for r in rows if r.symbol == store]
         if limit:
-            stmt = stmt.limit(limit)
-        rows = (await db.scalars(stmt)).all()
-        return [
-            {
-                "trade_date": r.trade_date,
-                "symbol": r.symbol,
-                "open": float(r.open),
-                "high": float(r.high),
-                "low": float(r.low),
-                "close": float(r.close),
-                "volume": int(r.volume),
-                "delivery_qty": r.delivery_qty,
-                "delivery_pct": float(r.delivery_pct) if r.delivery_pct is not None else None,
-                "turnover": float(r.turnover) if r.turnover is not None else None,
-                "adtv_20": float(r.adtv_20) if getattr(r, "adtv_20", None) is not None else None,
-            }
-            for r in rows
-        ]
+            rows = rows[: int(limit)]
+        if store and store != symbol:
+            _ohlcv_log.info(
+                "EQUITY_HISTORY_RESOLVED requested=%s store_symbol=%s rows=%s from_date=%s",
+                symbol,
+                store,
+                len(rows),
+                from_date.isoformat() if from_date else None,
+            )
+        return [_equity_row_dict(r) for r in rows]
 
 
 async def fetch_index_history(
@@ -596,3 +669,245 @@ async def symbol_has_sufficient_history(symbol: str, min_rows: int = 500) -> boo
             )
         ).scalar() or 0
         return int(cnt) >= min_rows
+
+
+# Universe scans used to SELECT 700+ symbols in one IN (...) ORDER BY trade_date.
+# That plan sorts ~2M rows and is killed by the pool's 30s statement_timeout.
+SCAN_OHLCV_SYMBOL_CHUNK = 50
+SCAN_OHLCV_STATEMENT_TIMEOUT = "90s"
+OHLCV_LOOKBACK_MAX_DEFAULT = 2000  # TimeframeConfig.lookback_window le=2000
+_OHLCV_SQL_COLUMNS = frozenset(
+    {
+        "trade_date",
+        "symbol",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "delivery_qty",
+        "delivery_pct",
+        "turnover",
+        "adtv_20",
+        "source",
+        "loaded_at",
+    }
+)
+
+
+def iter_symbol_chunks(
+    symbols: Iterable[str], size: int = SCAN_OHLCV_SYMBOL_CHUNK
+) -> list[list[str]]:
+    """Stable unique chunks for IN-list queries. Empty / duplicate names are dropped."""
+    unique = list(dict.fromkeys(s for s in symbols if s))
+    if not unique:
+        return []
+    if size <= 0:
+        return [unique]
+    return [unique[i : i + size] for i in range(0, len(unique), size)]
+
+
+def clamp_ohlcv_lookback(
+    lookback: int,
+    *,
+    maximum: int | None = None,
+    minimum: int = 1,
+) -> int:
+    """Reject non-positive lookback; cap at the configured maximum."""
+    try:
+        n = int(lookback)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("lookback must be a positive integer") from exc
+    if n < minimum:
+        raise ValueError(f"lookback must be >= {minimum}")
+    max_n = int(maximum) if maximum is not None else _configured_lookback_max()
+    if max_n < minimum:
+        max_n = minimum
+    return min(n, max_n)
+
+
+def _configured_lookback_max() -> int:
+    try:
+        from ...config.settings import settings
+
+        return int(getattr(settings, "ohlcv_lookback_max_sessions", OHLCV_LOOKBACK_MAX_DEFAULT))
+    except Exception:
+        return OHLCV_LOOKBACK_MAX_DEFAULT
+
+
+def _ohlcv_column_names(columns: tuple[Any, ...] | None) -> list[str]:
+    if not columns:
+        return ["trade_date", "symbol", "high", "low", "close", "volume"]
+    names: list[str] = []
+    for col in columns:
+        name = getattr(col, "key", None) or getattr(col, "name", None)
+        if not name or name not in _OHLCV_SQL_COLUMNS:
+            raise ValueError(f"unsupported daily_ohlcv column: {col!r}")
+        names.append(str(name))
+    return names
+
+
+def _default_ohlcv_columns() -> tuple[Any, ...]:
+    return (
+        DailyOhlcv.trade_date,
+        DailyOhlcv.symbol,
+        DailyOhlcv.high,
+        DailyOhlcv.low,
+        DailyOhlcv.close,
+        DailyOhlcv.volume,
+    )
+
+
+async def extend_scan_statement_timeout(db: Any, timeout: str = SCAN_OHLCV_STATEMENT_TIMEOUT) -> None:
+    bind = getattr(db, "bind", None)
+    dialect = getattr(bind, "dialect", None)
+    if getattr(dialect, "name", None) != "postgresql":
+        return
+    await db.execute(text(f"SET LOCAL statement_timeout = '{timeout}'"))
+
+
+def _dialect_name(db: Any) -> str:
+    bind = getattr(db, "bind", None)
+    return str(getattr(getattr(bind, "dialect", None), "name", "") or "")
+
+
+def latest_n_ohlcv_sql(column_names: list[str]) -> str:
+    """Indexed latest-N per symbol. Caller must whitelist column_names."""
+    cols = ", ".join(column_names)
+    return (
+        "SELECT "
+        + ", ".join(f"d.{c}" for c in column_names)
+        + " FROM unnest(CAST(:symbols AS varchar[])) AS s(symbol) "
+        "CROSS JOIN LATERAL ("
+        f" SELECT {cols} FROM daily_ohlcv"
+        " WHERE daily_ohlcv.symbol = s.symbol"
+        " ORDER BY daily_ohlcv.trade_date DESC"
+        " LIMIT :lookback"
+        ") AS d"
+        " ORDER BY d.symbol ASC, d.trade_date ASC"
+    )
+
+
+async def fetch_daily_ohlcv_for_symbols(
+    symbols: Iterable[str],
+    *,
+    columns: tuple[Any, ...] | None = None,
+    lookback: int | None = None,
+    from_date: date | None = None,
+    to_date: date | None = None,
+) -> list[Any]:
+    """Load daily bars for a universe.
+
+    ``lookback=None`` keeps the unbounded (chunked) path for other strategies.
+    A positive ``lookback`` fetches only the latest N sessions per symbol via
+    an indexed LATERAL query — no full-table sort.
+    ``from_date`` / ``to_date`` constrain the store by trade_date (used by
+    historical 52W boards). Date bounds take precedence over lookback.
+    """
+    unique = list(dict.fromkeys(s for s in symbols if s))
+    col_names = _ohlcv_column_names(columns)
+    cols = columns or _default_ohlcv_columns()
+    bound = None if from_date is not None else (clamp_ohlcv_lookback(lookback) if lookback is not None else None)
+    _ohlcv_log.info(
+        "OHLCV_FETCH_STARTED symbol_count=%s lookback=%s from_date=%s to_date=%s",
+        len(unique),
+        bound,
+        from_date.isoformat() if from_date else None,
+        to_date.isoformat() if to_date else None,
+    )
+    started = time.perf_counter()
+    if not unique:
+        _ohlcv_log.info(
+            "OHLCV_FETCH_COMPLETED symbol_count=0 rows_returned=0 duration_ms=0"
+        )
+        return []
+
+    async with AsyncSessionLocal() as db:
+        if from_date is not None:
+            await extend_scan_statement_timeout(db, "180s")
+            rows = await _fetch_date_range_chunked(
+                db, unique, cols, from_date=from_date, to_date=to_date
+            )
+        elif bound is not None:
+            rows = await _fetch_latest_n(db, unique, col_names, cols, bound)
+        else:
+            rows = await _fetch_unbounded_chunked(db, unique, cols)
+
+    duration_ms = int((time.perf_counter() - started) * 1000)
+    _ohlcv_log.info(
+        "OHLCV_FETCH_COMPLETED symbol_count=%s lookback=%s from_date=%s to_date=%s rows_returned=%s duration_ms=%s",
+        len(unique),
+        bound,
+        from_date.isoformat() if from_date else None,
+        to_date.isoformat() if to_date else None,
+        len(rows),
+        duration_ms,
+    )
+    return rows
+
+
+async def _fetch_latest_n(
+    db: Any,
+    symbols: list[str],
+    col_names: list[str],
+    cols: tuple[Any, ...],
+    lookback: int,
+) -> list[Any]:
+    if _dialect_name(db) == "sqlite":
+        return await _fetch_latest_n_portable(db, symbols, cols, lookback)
+    sql = text(latest_n_ohlcv_sql(col_names)).bindparams(
+        bindparam("symbols", type_=ARRAY(VARCHAR(32))),
+        bindparam("lookback"),
+    )
+    return list((await db.execute(sql, {"symbols": symbols, "lookback": lookback})).all())
+
+
+async def _fetch_latest_n_portable(
+    db: Any,
+    symbols: list[str],
+    cols: tuple[Any, ...],
+    lookback: int,
+) -> list[Any]:
+    """SQLite / tests: per-symbol DESC LIMIT, then chronological order."""
+    rows: list[Any] = []
+    for symbol in symbols:
+        stmt = (
+            select(*cols)
+            .where(DailyOhlcv.symbol == symbol)
+            .order_by(DailyOhlcv.trade_date.desc())
+            .limit(lookback)
+        )
+        part = list((await db.execute(stmt)).all())
+        part.reverse()
+        rows.extend(part)
+    return rows
+
+
+async def _fetch_unbounded_chunked(db: Any, symbols: list[str], cols: tuple[Any, ...]) -> list[Any]:
+    rows: list[Any] = []
+    for chunk in iter_symbol_chunks(symbols):
+        stmt = select(*cols).where(DailyOhlcv.symbol.in_(chunk))
+        rows.extend((await db.execute(stmt)).all())
+    return rows
+
+
+async def _fetch_date_range_chunked(
+    db: Any,
+    symbols: list[str],
+    cols: tuple[Any, ...],
+    *,
+    from_date: date,
+    to_date: date | None = None,
+) -> list[Any]:
+    """Indexed per-chunk history: symbol IN (...) AND trade_date >= from_date."""
+    rows: list[Any] = []
+    for chunk in iter_symbol_chunks(symbols):
+        stmt = select(*cols).where(
+            DailyOhlcv.symbol.in_(chunk),
+            DailyOhlcv.trade_date >= from_date,
+        )
+        if to_date is not None:
+            stmt = stmt.where(DailyOhlcv.trade_date <= to_date)
+        stmt = stmt.order_by(DailyOhlcv.symbol.asc(), DailyOhlcv.trade_date.asc())
+        rows.extend((await db.execute(stmt)).all())
+    return rows

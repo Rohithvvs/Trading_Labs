@@ -51,6 +51,53 @@ def canonical_symbol(raw_symbol: str) -> str:
     return s
 
 
+def ohlcv_symbol_variants(symbol: str) -> list[str]:
+    """Stored forms used by daily_ohlcv / historical_candles for one ticker.
+
+    Scans publish the canonical display name (GLAXO). Strategy bars are stored
+    as the universe identity (GLAXO-EQ). Lookup must try both, plus NSE: prefix
+    drift, or a 3Y backtest returns 0 sessions for every name.
+    """
+    raw = (symbol or "").strip()
+    if not raw:
+        return []
+    can = canonical_symbol(raw)
+    variants = [
+        raw,
+        raw.upper(),
+        can,
+        f"{can}-EQ" if can else "",
+        f"NSE:{can}-EQ" if can else "",
+        f"NSE:{can}" if can else "",
+    ]
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in variants:
+        if item and item not in seen:
+            seen.add(item)
+            out.append(item)
+    return out
+
+
+def preferred_ohlcv_store_symbol(symbols: list[str]) -> str | None:
+    """Pick the daily_ohlcv identity when several alias forms are present."""
+    if not symbols:
+        return None
+    counts: dict[str, int] = {}
+    for item in symbols:
+        if item:
+            counts[item] = counts.get(item, 0) + 1
+    if not counts:
+        return None
+
+    def score(item: str) -> tuple[int, int, int]:
+        universe_eq = 1 if item.endswith("-EQ") and ":" not in item else 0
+        any_eq = 1 if item.endswith("-EQ") else 0
+        return (counts[item], universe_eq, any_eq)
+
+    return max(counts, key=score)
+
+
 def fyers_symbol(canonical: str, is_index: bool = False, exchange: str = "NSE") -> str:
     """
     Converts a canonical symbol to FYERS API format.

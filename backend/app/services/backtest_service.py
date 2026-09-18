@@ -10,6 +10,7 @@ from ta.trend import EMAIndicator, MACD
 
 from ..schemas import AnalysisMode, BacktestResult, OHLCVPoint
 from ..utils import get_logger
+from ..utils.symbol import canonical_symbol
 
 logger = get_logger("app.backtest")
 
@@ -55,7 +56,7 @@ COST_SCENARIOS = {
         "exc_trans_rate": 0.0000325,   # 0.00325% NSE
         "sebi_rate": 0.000001,         # 0.0001%
         "stamp_duty_rate": 0.00015,     # 0.015% buy only
-        "dp_charge": 13.5,
+        "dp_charge": 15.93,
         "gst_rate": 0.18,              # 18% on (brokerage + exchange fee + SEBI fee)
         "slippage_rate": 0.0002,       # 0.02% slippage
     },
@@ -67,7 +68,7 @@ COST_SCENARIOS = {
         "exc_trans_rate": 0.0000345,
         "sebi_rate": 0.000001,
         "stamp_duty_rate": 0.00015,
-        "dp_charge": 13.5,
+        "dp_charge": 15.93,
         "gst_rate": 0.18,
         "slippage_rate": 0.0005,       # 0.05% slippage
     },
@@ -79,7 +80,7 @@ COST_SCENARIOS = {
         "exc_trans_rate": 0.0000345,
         "sebi_rate": 0.000001,
         "stamp_duty_rate": 0.00015,
-        "dp_charge": 15.0,
+        "dp_charge": 15.93,
         "gst_rate": 0.18,
         "slippage_rate": 0.0015,       # 0.15% slippage
     }
@@ -138,7 +139,7 @@ def calculate_transaction_costs(
     # GST (18% on brokerage, etc, and sebi)
     gst = config["gst_rate"] * (brokerage + etc + sebi)
 
-    # DP charges (only on sell side for delivery/swing, standard flat ₹13.5 per company/day)
+    # DP charges (only on sell side for delivery/swing, standard flat ₹15.93 per company/day)
     dp = 0.0
     if side == "SELL" and not is_intraday:
         dp = config["dp_charge"]
@@ -211,11 +212,21 @@ class BacktestService:
         feat008_enabled: bool = True,
         stop_loss_pct: float | None = None,
         target_pct: float | None = None,
+        company_name: str | None = None,
     ) -> BacktestResult:
         execution_model = normalize_execution_model(execution_model)
         strategy_name = "ema_rsi_volume" if mode == AnalysisMode.intraday else "sma_rsi_macd"
+        canon_symbol = canonical_symbol(symbol) if symbol else ""
         if len(candles) < 35:
-            return self._empty_result(mode, strategy_name, cost_scenario, position_sizing_pct, feat008_enabled)
+            return self._empty_result(
+                mode,
+                strategy_name,
+                cost_scenario,
+                position_sizing_pct,
+                feat008_enabled,
+                symbol=canon_symbol,
+                company_name=company_name,
+            )
 
         frame = pd.DataFrame(
             {
@@ -907,6 +918,8 @@ class BacktestService:
         )
 
         return BacktestResult(
+            symbol=canon_symbol or None,
+            company_name=company_name,
             mode=mode,
             strategy_name=strategy_name,
             total_return=primary_total_return,
@@ -958,6 +971,8 @@ class BacktestService:
         cost_scenario: str = "BASE_COST",
         position_sizing_pct: float = 20.0,
         feat008_enabled: bool = True,
+        symbol: str = "",
+        company_name: str | None = None,
     ) -> BacktestResult:
         # FEAT-008 cost metadata from active cost scenario
         cost_cfg = COST_SCENARIOS.get(cost_scenario, COST_SCENARIOS["BASE_COST"])
@@ -976,6 +991,8 @@ class BacktestService:
         feat008_cost_bps = round(total_rate * 10000, 2)
 
         return BacktestResult(
+            symbol=canonical_symbol(symbol) if symbol else None,
+            company_name=company_name,
             mode=mode,
             strategy_name=strategy_name,
             total_return=0.0,

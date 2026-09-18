@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import csv
 import requests
 from ..config import settings
 
@@ -69,25 +68,20 @@ class MarketInfoService:
             return profiles
 
         try:
-            with csv_path.open(newline="", encoding="utf-8-sig") as handle:
-                sample = handle.read(4096)
-                handle.seek(0)
-                dialect = csv.Sniffer().sniff(sample, delimiters=",\t")
-                reader = csv.DictReader(handle, dialect=dialect)
-                for row in reader:
-                    raw_symbol = (row.get("Symbol") or "").strip().upper()
-                    if not raw_symbol:
-                        continue
-                    series = (row.get("Series") or "").strip().upper()
-                    symbol_key = self._normalize_symbol(f"{raw_symbol}-{series}" if series else raw_symbol)
-                    industry = (row.get("Industry") or "").strip() or None
-                    company_name = (row.get("Company Name") or "").strip() or None
-                    profiles[symbol_key] = {
-                        "company_name": company_name,
-                        "company_description": company_name,
-                        "sector": industry,
-                        "industry": industry,
-                    }
+            from .universe_csv import load_unique_nifty500_csv_rows
+
+            for parsed in load_unique_nifty500_csv_rows(csv_path):
+                symbol_key = self._normalize_symbol(
+                    f"{parsed['symbol']}-{parsed['series']}" if parsed["series"] else parsed["symbol"]
+                )
+                industry = parsed["industry"] or None
+                company_name = parsed["company_name"] or None
+                profiles[symbol_key] = {
+                    "company_name": company_name,
+                    "company_description": company_name,
+                    "sector": industry,
+                    "industry": industry,
+                }
         except Exception:
             return profiles
         return profiles

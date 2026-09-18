@@ -431,6 +431,10 @@ async def get_current_access_token(db: AsyncSession) -> str | None:
         logger.warning("TOKEN_NOT_FOUND | No FyersToken row found in database")
         _clear_token_cache()
         return None
+    if not row.is_active or (getattr(row, "status", "") or "").lower() == "failed":
+        logger.warning("TOKEN_NOT_ACTIVE | DB token has status=%s, is_active=%s", getattr(row, "status", None), row.is_active)
+        _clear_token_cache()
+        return None
     if not row.access_token:
         logger.warning("TOKEN_NOT_FOUND | FyersToken row exists but access_token is empty")
         _clear_token_cache()
@@ -439,6 +443,12 @@ async def get_current_access_token(db: AsyncSession) -> str | None:
     plain = _decrypt_from_storage(row.access_token)
     if not plain:
         logger.warning("TOKEN_NOT_FOUND | Stored token could not be decrypted")
+        _clear_token_cache()
+        return None
+
+    jwt_exp = _decode_jwt_expiry(plain)
+    if jwt_exp and _ensure_utc(jwt_exp) <= now:
+        logger.warning("TOKEN_EXPIRED | Stored DB token expired at %s", jwt_exp.isoformat())
         _clear_token_cache()
         return None
 
@@ -489,6 +499,10 @@ def get_current_access_token_sync() -> tuple[str | None, str]:
                     logger.warning("TOKEN_NOT_FOUND | No FyersToken row found in database")
                     _clear_token_cache()
                     return None, "database"
+                if not row.is_active or (getattr(row, "status", "") or "").lower() == "failed":
+                    logger.warning("TOKEN_NOT_ACTIVE | DB token has status=%s, is_active=%s", getattr(row, "status", None), row.is_active)
+                    _clear_token_cache()
+                    return None, "database"
                 if not row.access_token:
                     logger.warning(
                         "TOKEN_NOT_FOUND | FyersToken row exists but access_token is empty"
@@ -500,6 +514,12 @@ def get_current_access_token_sync() -> tuple[str | None, str]:
                     logger.warning(
                         "TOKEN_NOT_FOUND | Stored token could not be decrypted"
                     )
+                    _clear_token_cache()
+                    return None, "database"
+
+                jwt_exp = _decode_jwt_expiry(plain)
+                if jwt_exp and _ensure_utc(jwt_exp) <= now:
+                    logger.warning("TOKEN_EXPIRED | Stored DB token expired at %s", jwt_exp.isoformat())
                     _clear_token_cache()
                     return None, "database"
 
@@ -819,19 +839,22 @@ async def _record_generation_failure(db: AsyncSession, exc: BaseException) -> No
                 access_token=_NO_TOKEN_PLACEHOLDER,
                 status="Failed",
                 last_error=err_text,
-                access_token_saved_at=now,
+                access_token_saved_at=None,
                 is_active=False,
                 created_at=now,
             )
             db.add(row)
         else:
-            # Preserve access_token and is_active so trading can keep using last good token.
             row.status = "Failed"
             row.last_error = err_text
-            row.access_token_saved_at = now
-            # Never activate a missing/placeholder credential on failure.
+            # Deactivate if missing or already expired
             if not row.access_token:
                 row.is_active = False
+            else:
+                plain = _decrypt_from_storage(row.access_token)
+                exp = _decode_jwt_expiry(plain) if plain else None
+                if not exp or _ensure_utc(exp) <= now:
+                    row.is_active = False
 
         await _commit_with_timeout(db)
         await _invalidate_token_status_cache()

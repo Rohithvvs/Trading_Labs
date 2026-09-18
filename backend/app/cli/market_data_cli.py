@@ -27,7 +27,12 @@ async def _cmd_full_load(args: argparse.Namespace) -> int:
     symbols = None
     if args.symbols:
         symbols = [x.strip().upper() for x in args.symbols.split(",") if x.strip()]
-    result = await run_full_load(years=args.years, symbols=symbols, trigger_source="CLI")
+    result = await run_full_load(
+        years=args.years,
+        symbols=symbols,
+        trigger_source="CLI",
+        skip_delivery=bool(args.skip_delivery),
+    )
     print(json.dumps(result, indent=2, default=str))
     return int(result.get("exit_code", 1))
 
@@ -89,8 +94,13 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="command", required=True)
 
     fl = sub.add_parser("full-load", help="Full historical load")
-    fl.add_argument("--years", type=int, default=3)
+    fl.add_argument("--years", type=int, default=3, help="Calendar years of daily history to load")
     fl.add_argument("--symbols", type=str, default="", help="Comma-separated subset for debug")
+    fl.add_argument(
+        "--skip-delivery",
+        action="store_true",
+        help="Skip NSE delivery archives (recommended for multi-year price backfills)",
+    )
     fl.set_defaults(func=_cmd_full_load)
 
     du = sub.add_parser("daily-update", help="Daily incremental update")

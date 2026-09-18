@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..core.deps import get_token_principal
 from ..db import get_db
 from ..models import FyersToken
 from ..schemas import FyersTokenCreate, FyersTokenResponse
@@ -140,7 +141,11 @@ async def generate_fyers_token(
 
 
 @router.post("/token")
-async def save_fyers_token(payload: FyersTokenCreate, db: AsyncSession = Depends(get_db)):
+async def save_fyers_token(
+    payload: FyersTokenCreate,
+    db: AsyncSession = Depends(get_db),
+    _: object = Depends(get_token_principal),
+):
     """Save a pre-existing FYERS access token (does NOT generate one)."""
     from ..services import token_service
     
@@ -153,7 +158,7 @@ async def save_fyers_token(payload: FyersTokenCreate, db: AsyncSession = Depends
 
 
 @router.get("/token/status")
-async def fyers_token_status(db: AsyncSession = Depends(get_db)):
+async def fyers_token_status(db: AsyncSession = Depends(get_db), _: object = Depends(get_token_principal)):
     try:
         row = (await db.scalars(select(FyersToken).filter(FyersToken.is_active == True).order_by(FyersToken.created_at.desc()))).first()
         if not row:
@@ -172,7 +177,7 @@ async def fyers_token_status(db: AsyncSession = Depends(get_db)):
 
 
 @router.delete("/token")
-async def clear_fyers_tokens(db: AsyncSession = Depends(get_db)):
+async def clear_fyers_tokens(db: AsyncSession = Depends(get_db), _: object = Depends(get_token_principal)):
     try:
         await db.execute(update(FyersToken).values(is_active=False, status="inactive"))
         await db.commit()
@@ -184,7 +189,7 @@ async def clear_fyers_tokens(db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/auth/url")
-async def fyers_auth_url():
+async def fyers_auth_url(_: object = Depends(get_token_principal)):
     """Return the FYERS OAuth authorization URL for frontend redirect."""
     app_id = (settings.fyers_app_id or "").strip().strip('"').strip("'")
     secret_id = (settings.fyers_secret_id or "").strip().strip('"').strip("'")
@@ -215,7 +220,11 @@ async def fyers_auth_url():
 
 
 @router.post("/auth/exchange")
-async def fyers_auth_exchange(payload: dict, db: AsyncSession = Depends(get_db)):
+async def fyers_auth_exchange(
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+    _: object = Depends(get_token_principal),
+):
     """Exchange a browser OAuth ``auth_code`` for an access token and persist it.
 
     This is **not** full auto-generation. You must already have ``auth_code``

@@ -251,19 +251,25 @@ def place_order(
 
 
 @router.post("/engine/start", response_model=MarketEngineStatusResponse)
-async def start_market_engine() -> MarketEngineStatusResponse:
+async def start_market_engine(
+    _user_id: uuid.UUID = Depends(get_current_user_id_sync),
+) -> MarketEngineStatusResponse:
     await market_engine.request_start()
     return JSONResponse(content=sanitize_for_json(await market_engine.status()))
 
 
 @router.post("/engine/stop", response_model=MarketEngineStatusResponse)
-async def stop_market_engine() -> MarketEngineStatusResponse:
+async def stop_market_engine(
+    _user_id: uuid.UUID = Depends(get_current_user_id_sync),
+) -> MarketEngineStatusResponse:
     await market_engine.request_stop()
     return JSONResponse(content=sanitize_for_json(await market_engine.status()))
 
 
 @router.get("/engine/status", response_model=MarketEngineStatusResponse)
-async def get_market_engine_status() -> MarketEngineStatusResponse:
+async def get_market_engine_status(
+    _user_id: uuid.UUID = Depends(get_current_user_id_sync),
+) -> MarketEngineStatusResponse:
     return JSONResponse(content=sanitize_for_json(await market_engine.status()))
 
 

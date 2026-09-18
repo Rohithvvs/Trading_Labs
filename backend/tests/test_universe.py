@@ -39,6 +39,32 @@ async def test_empty_universe():
     assert symbols == []
 
 @pytest.mark.asyncio
+async def test_active_nifty500_has_755_canonical_symbols():
+    from backend.app.config.settings import ROOT_DIR
+
+    await import_csv(str(ROOT_DIR / "ind_nifty500list.csv"), "NIFTY500")
+    instruments = await UniverseService.list_active_instruments("NIFTY500")
+    report = await UniverseService.validate_universe("NIFTY500")
+    symbols = [item.symbol for item in instruments]
+    store_symbols = [item.universe_symbol for item in instruments]
+
+    assert report.total_stocks == 750
+    assert report.symbols_present == 750
+    assert report.symbols_missing == 0
+    assert report.duplicates == 0
+    assert report.invalid_symbols == 0
+    assert report.broker_mappings_missing == 0
+    assert len(instruments) == 750
+    assert len(set(symbols)) == 750
+    assert all(not symbol.startswith("DUMMY") for symbol in symbols)
+    assert all(item.symbol for item in instruments)
+    assert all(item.broker_symbol.startswith("NSE:") for item in instruments)
+    assert all(item.company_name for item in instruments)
+    assert "360ONE" in symbols
+    assert "360ONE-EQ" in store_symbols
+
+
+@pytest.mark.asyncio
 async def test_duplicate_handling(sample_csv):
     # DUP is in the CSV twice
     await import_csv(sample_csv, "DUP_UNIVERSE")

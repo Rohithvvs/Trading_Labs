@@ -49,11 +49,11 @@ export function ForbiddenAdmin() {
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           {/* Hardening H-2: SPA Link (no full reload, no nested invalid button markup) */}
           <Link
-            to="/scanner"
+            to="/markets"
             className="ds-btn ds-btn--primary ds-btn--md"
             data-testid="admin-forbidden-back"
           >
-            <span className="ds-btn__label">Back to Scanner</span>
+            <span className="ds-btn__label">Back to Markets</span>
           </Link>
         </div>
       </Card>
@@ -61,7 +61,7 @@ export function ForbiddenAdmin() {
   );
 }
 
-/** @deprecated Prefer Navigate to /scanner — kept for import compatibility */
+/** @deprecated Prefer Navigate to /markets — kept for import compatibility */
 export function AdminRedirect() {
-  return <Navigate to="/scanner" replace />;
+  return <Navigate to="/markets" replace />;
 }

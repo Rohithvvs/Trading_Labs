@@ -12,11 +12,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..agents import RouterAgent
 from ..config.settings import settings
+from ..core.deps import get_token_principal
 from ..db import get_db
 from ..schemas import AnalysisRequest, AnalysisResponse
 
 
-router = APIRouter(prefix="/stocks", tags=["stocks"])
+router = APIRouter(prefix="/stocks", tags=["stocks"], dependencies=[Depends(get_token_principal)])
 
 
 @router.post("/analyze", response_model=AnalysisResponse)

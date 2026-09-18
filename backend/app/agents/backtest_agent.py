@@ -19,12 +19,14 @@ class BacktestAgent:
         composite_uses_realistic: bool = True,
         skip_on_missing_next_bar: bool = True,
         feat008_enabled: bool = True,
+        company_name: str | None = None,
     ) -> BacktestResult:
         return self.service.run(
             symbol, mode, candles, cost_scenario,
             position_sizing_pct, execution_model, composite_uses_realistic,
             skip_on_missing_next_bar=skip_on_missing_next_bar,
             feat008_enabled=feat008_enabled,
+            company_name=company_name,
         )
 
     async def run_async(
@@ -38,6 +40,7 @@ class BacktestAgent:
         composite_uses_realistic: bool = True,
         skip_on_missing_next_bar: bool = True,
         feat008_enabled: bool = True,
+        company_name: str | None = None,
     ) -> BacktestResult:
         bt_candles = candles
         if mode.value == "swing":
@@ -69,6 +72,7 @@ class BacktestAgent:
             position_sizing_pct, execution_model, composite_uses_realistic,
             skip_on_missing_next_bar=skip_on_missing_next_bar,
             feat008_enabled=feat008_enabled,
+            company_name=company_name,
         )
 
     async def run_with_authoritative_candles(
@@ -79,6 +83,7 @@ class BacktestAgent:
         start_date: str | None = None,
         end_date: str | None = None,
         cost_scenario: str = "BASE_COST",
+        company_name: str | None = None,
     ) -> BacktestResult:
         """Run backtest using Authoritative Candle Store as historical data source."""
         from ..config.settings import settings
@@ -90,4 +95,7 @@ class BacktestAgent:
             start_date=start_date,
             end_date=end_date,
         )
-        return self.run(symbol=symbol, mode=mode, candles=candles, cost_scenario=cost_scenario)
+        return self.run(
+            symbol=symbol, mode=mode, candles=candles,
+            cost_scenario=cost_scenario, company_name=company_name,
+        )

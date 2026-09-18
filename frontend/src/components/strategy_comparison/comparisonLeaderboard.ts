@@ -1,0 +1,1 @@
+export { ComparisonLeaderboard } from "./LeaderboardTable";

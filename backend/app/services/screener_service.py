@@ -23,6 +23,7 @@ def get_rss_mb():
 
 from ..schemas import AnalysisMode, OHLCVPoint, ScreenerConditionResult
 from ..utils import get_logger, safe_int
+from ..utils.symbol import canonical_symbol
 from .fyers_service import FyersService, FyersRateLimitError, FyersAuthExpiredError, FyersAuthInvalidError
 from .technical_analysis_service import TechnicalAnalysisService
 from ..core.log_manager import scanner_logger
@@ -115,12 +116,22 @@ class ScreenerService:
         except Exception:
             self.logger.exception("Failed to run scanner startup validation")
 
-    async def _process_single_symbol(self, symbol: str, lookback_window: int, stage_name: str, candles: list[OHLCVPoint], technical, total_candle_count: int | None = None) -> ScreenerConditionResult:
+    async def _process_single_symbol(
+        self,
+        symbol: str,
+        lookback_window: int,
+        stage_name: str,
+        candles: list[OHLCVPoint],
+        technical,
+        total_candle_count: int | None = None,
+        company_name: str | None = None,
+    ) -> ScreenerConditionResult:
         """Process a single symbol and return a ScreenerConditionResult.
         This contains the original symbol-level logic extracted from the
         sequential loop. Do NOT change the internal logic here when
         parallelizing the outer loop.
         """
+        canon_symbol = canonical_symbol(symbol)
         # total_candle_count: the real DB row count (may differ from len(candles) when tail-only)
         if total_candle_count is None:
             total_candle_count = len(candles)
@@ -160,7 +171,8 @@ class ScreenerService:
             if self._scan_log is not None:
                 self._scan_log.info("SKIP datasource_failed | symbol=%s | source=%s", symbol, candle_source)
             return ScreenerConditionResult(
-                symbol=symbol,
+                symbol=canon_symbol,
+                company_name=company_name,
                 close=0.0,
                 ema_20=0.0,
                 ema_50=0.0,
@@ -204,7 +216,8 @@ class ScreenerService:
                 except Exception:
                     pass
             return ScreenerConditionResult(
-                symbol=symbol,
+                symbol=canon_symbol,
+                company_name=company_name,
                 close=latest.close if latest else 0.0,
                 ema_20=0.0,
                 ema_50=0.0,
@@ -239,7 +252,8 @@ class ScreenerService:
         matched = broad_eligibility and screener_score >= 52
 
         result = ScreenerConditionResult(
-            symbol=symbol,
+            symbol=canon_symbol,
+            company_name=company_name,
             close=round(latest.close, 2),
             ema_20=float(indicators.get("ema_20", 0.0)),
             ema_50=float(indicators.get("ema_50", 0.0)),
@@ -791,11 +805,20 @@ class ScreenerService:
         _progress("Evaluating strategy conditions...", 62)
         score_t0 = time.perf_counter()
         SCORING_TAIL_SIZE = 30  # _passes_data_quality uses last 30 candles max
+        from .universe_service import UniverseService
+        company_name_map: dict[str, str] = {}
+        try:
+            company_name_map = await UniverseService.get_company_name_map()
+        except Exception:
+            pass
+
         for idx, symbol in enumerate(symbols):
+            canon_sym = canonical_symbol(symbol)
+            comp_name = company_name_map.get(canon_sym) or company_name_map.get(symbol)
             sym_df = symbol_frames.get(symbol)
             if sym_df is None or sym_df.empty:
                 results.append(ScreenerConditionResult(
-                    symbol=symbol, close=0.0, ema_20=0.0, ema_50=0.0, ema50_available=False, ema20_above_ema50=False, sma_30=0.0, sma_50=0.0,
+                    symbol=canon_sym, company_name=comp_name, close=0.0, ema_20=0.0, ema_50=0.0, ema50_available=False, ema20_above_ema50=False, sma_30=0.0, sma_50=0.0,
                     sma_100=0.0, sma_200=0.0, macd=0.0, macd_signal=0.0,
                     supertrend=0.0, volume=0, previous_volume=0, screener_score=0.0,
                     technical_signal="unknown", technical_score=0.0, candles_fetched=0,
@@ -806,7 +829,7 @@ class ScreenerService:
             technical = bulk_technical_results.get(symbol)
             if not technical:
                 results.append(ScreenerConditionResult(
-                    symbol=symbol, close=0.0, ema_20=0.0, ema_50=0.0, ema50_available=False, ema20_above_ema50=False, sma_30=0.0, sma_50=0.0,
+                    symbol=canon_sym, company_name=comp_name, close=0.0, ema_20=0.0, ema_50=0.0, ema50_available=False, ema20_above_ema50=False, sma_30=0.0, sma_50=0.0,
                     sma_100=0.0, sma_200=0.0, macd=0.0, macd_signal=0.0,
                     supertrend=0.0, volume=0, previous_volume=0, screener_score=0.0,
                     technical_signal="unknown", technical_score=0.0, candles_fetched=len(sym_df),
@@ -835,7 +858,10 @@ class ScreenerService:
 
             try:
                 # Scoring is pure CPU; call without await overhead when possible
-                result = await self._process_single_symbol(symbol, lookback_window, stage_name, candles, technical, total_candle_count=total_rows)
+                result = await self._process_single_symbol(
+                    symbol, lookback_window, stage_name, candles, technical,
+                    total_candle_count=total_rows, company_name=comp_name,
+                )
                 results.append(result)
             except Exception as e:
                 self.logger.error("SYMBOL ERROR symbol=%s error=%s", symbol, e)
@@ -843,7 +869,7 @@ class ScreenerService:
                 if scan_ctx:
                     log_symbol_failure(scan_ctx, symbol=symbol, stage="scoring", exc=e)
                 results.append(ScreenerConditionResult(
-                    symbol=symbol, close=0.0, ema_20=0.0, ema_50=0.0, ema50_available=False, ema20_above_ema50=False, sma_30=0.0, sma_50=0.0,
+                    symbol=canon_sym, company_name=comp_name, close=0.0, ema_20=0.0, ema_50=0.0, ema50_available=False, ema20_above_ema50=False, sma_30=0.0, sma_50=0.0,
                     sma_100=0.0, sma_200=0.0, macd=0.0, macd_signal=0.0,
                     supertrend=0.0, volume=0, previous_volume=0, screener_score=0.0,
                     technical_signal="unknown", technical_score=0.0, candles_fetched=total_rows,

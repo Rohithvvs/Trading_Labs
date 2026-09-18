@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import React from "react";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it, vi, beforeEach } from "vitest";
@@ -30,6 +30,17 @@ vi.mock("../../hooks/useFeaturePermissions", () => ({
   }),
 }));
 
+vi.mock("../../hooks/useInfrastructureHealth", () => ({
+  useInfrastructureHealth: () => ({
+    services: [
+      { label: "Render Server", key: "render", status: "active" },
+      { label: "Neon Database", key: "db", status: "active" },
+    ],
+    lastCheckedAt: null,
+    error: null,
+  }),
+}));
+
 function renderShell() {
   return render(
     <MemoryRouter>
@@ -45,10 +56,16 @@ describe("navConfig featureKey annotations (schema)", () => {
     const byId = Object.fromEntries(RETAIL_NAV.map((n) => [n.id, n]));
 
     expect(byId.markets.featureKey).toBeUndefined(); // ungated core
-    expect(byId.scanner.featureKey).toBe("advanced_scanner");
+    expect(byId.scanner).toBeUndefined(); // Scanner lives inside Profile, not primary nav
+    expect(byId["strategy-tester"].featureKey).toBe("advanced_scanner");
+    expect(byId["strategy-tester"].path).toBe("/strategy-tester");
+    expect(byId["strategy-comparison"].featureKey).toBe("advanced_scanner");
+    expect(byId["strategy-comparison"].path).toBe("/strategy-comparison");
     expect(byId.performance.featureKey).toBe("portfolio_analytics");
     expect(byId.paper.featureKey).toBeUndefined();
     expect(byId.profile.featureKey).toBeUndefined();
+    const order = RETAIL_NAV.map((n) => n.id);
+    expect(order).toEqual(["markets", "strategy-tester", "strategy-comparison", "paper", "performance", "profile"]);
   });
 
   it("annotates admin nav items with expected feature keys", () => {
@@ -61,14 +78,17 @@ describe("navConfig featureKey annotations (schema)", () => {
   });
 
   it("isNavActive matches path prefixes correctly for feature-gated routes", () => {
-    const scanner = RETAIL_NAV.find((n) => n.id === "scanner")!;
+    const tester = RETAIL_NAV.find((n) => n.id === "strategy-tester")!;
+    expect(isNavActive("/strategy-tester", tester)).toBe(true);
+    expect(isNavActive("/scanner", tester)).toBe(false);
+    const comparison = RETAIL_NAV.find((n) => n.id === "strategy-comparison")!;
+    expect(isNavActive("/strategy-comparison", comparison)).toBe(true);
+    expect(isNavActive("/strategy-tester", comparison)).toBe(false);
     const performance = RETAIL_NAV.find((n) => n.id === "performance")!;
     const adminPanel = ADMIN_NAV.find((n) => n.id === "admin-panel")!;
     const logs = ADMIN_NAV.find((n) => n.id === "admin-logs")!;
 
     // location.pathname never includes query string; prefix match uses path only
-    expect(isNavActive("/scanner", scanner)).toBe(true);
-    expect(isNavActive("/scanner/detail", scanner)).toBe(true);
     expect(isNavActive("/performance", performance)).toBe(true);
     expect(isNavActive("/admin", adminPanel)).toBe(true);
     expect(isNavActive("/admin/logs", adminPanel)).toBe(false); // exact admin panel
@@ -106,10 +126,16 @@ describe("AppShell Dynamic Navigation Filtering (Sprint 5)", () => {
     renderShell();
 
     expect(screen.getByTestId("nav-markets")).toBeTruthy();
-    expect(screen.getByTestId("nav-scanner")).toBeTruthy();
+    expect(screen.queryByTestId("nav-scanner")).toBeNull();
+    expect(screen.getByTestId("nav-strategy-tester")).toBeTruthy();
+    expect(screen.getByTestId("nav-strategy-comparison")).toBeTruthy();
     expect(screen.getByTestId("nav-performance")).toBeTruthy();
     expect(screen.getByTestId("nav-paper-trading")).toBeTruthy();
     expect(screen.getByTestId("nav-profile")).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("nav-profile-menu"));
+    expect(screen.getByTestId("nav-scanner-profile")).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: /scanner dashboard/i })).toBeTruthy();
   });
 
   it("filters out navigation links when feature permission is denied", () => {
@@ -130,6 +156,8 @@ describe("AppShell Dynamic Navigation Filtering (Sprint 5)", () => {
 
     expect(screen.getByTestId("nav-markets")).toBeTruthy();
     expect(screen.queryByTestId("nav-scanner")).toBeNull();
+    expect(screen.queryByTestId("nav-strategy-tester")).toBeNull();
+    expect(screen.queryByTestId("nav-strategy-comparison")).toBeNull();
     expect(screen.queryByTestId("nav-performance")).toBeNull();
     // Ungated items remain
     expect(screen.getByTestId("nav-paper-trading")).toBeTruthy();
@@ -153,10 +181,12 @@ describe("AppShell Dynamic Navigation Filtering (Sprint 5)", () => {
 
     expect(screen.queryByTestId("nav-performance")).toBeNull();
     expect(screen.getByTestId("nav-markets")).toBeTruthy();
-    expect(screen.getByTestId("nav-scanner")).toBeTruthy();
+    expect(screen.getByTestId("nav-strategy-tester")).toBeTruthy();
+    expect(screen.getByTestId("nav-strategy-comparison")).toBeTruthy();
+    expect(screen.queryByTestId("nav-scanner")).toBeNull();
   });
 
-  it("filters admin navigation items based on role and feature permissions", () => {
+  it("filters admin navigation items inside profile based on role and feature permissions", () => {
     mockUseAuth.mockReturnValue({
       isAuthenticated: true,
       isLoading: false,
@@ -171,12 +201,20 @@ describe("AppShell Dynamic Navigation Filtering (Sprint 5)", () => {
 
     renderShell();
 
-    expect(screen.getByTestId("nav-admin-panel")).toBeTruthy();
-    expect(screen.getByTestId("nav-system-logs")).toBeTruthy();
-    expect(screen.queryByTestId("nav-central-command")).toBeNull();
+    // Sidebar rail has only retail navigation
+    expect(screen.getByTestId("nav-markets")).toBeTruthy();
+    expect(screen.queryByTestId("nav-admin-panel")).toBeNull();
+
+    // Open profile dropdown menu
+    fireEvent.click(screen.getByTestId("nav-profile-menu"));
+
+    expect(screen.getByTestId("nav-admin-panel-profile")).toBeTruthy();
+    expect(screen.getByTestId("nav-system-logs-profile")).toBeTruthy();
+    expect(screen.getByTestId("nav-diagnostics-profile")).toBeTruthy();
+    expect(screen.queryByTestId("nav-central-command-profile")).toBeNull();
   });
 
-  it("hides all feature-gated admin nav items when canAccess denies admin features", () => {
+  it("hides all feature-gated admin items inside profile when canAccess denies admin features", () => {
     mockUseAuth.mockReturnValue({
       isAuthenticated: true,
       isLoading: false,
@@ -191,14 +229,17 @@ describe("AppShell Dynamic Navigation Filtering (Sprint 5)", () => {
 
     renderShell();
 
-    expect(screen.queryByTestId("nav-admin-panel")).toBeNull();
-    expect(screen.queryByTestId("nav-central-command")).toBeNull();
-    expect(screen.queryByTestId("nav-system-logs")).toBeNull();
-    // Diagnostics has no featureKey — still visible for admin role
-    expect(screen.getByTestId("nav-diagnostics")).toBeTruthy();
+    // Open profile menu
+    fireEvent.click(screen.getByTestId("nav-profile-menu"));
+
+    expect(screen.queryByTestId("nav-admin-panel-profile")).toBeNull();
+    expect(screen.queryByTestId("nav-central-command-profile")).toBeNull();
+    expect(screen.queryByTestId("nav-system-logs-profile")).toBeNull();
+    // Diagnostics has no featureKey — still visible for admin role inside profile
+    expect(screen.getByTestId("nav-diagnostics-profile")).toBeTruthy();
   });
 
-  it("trader role never receives admin nav items regardless of canAccess", () => {
+  it("trader role never receives admin nav items inside profile regardless of canAccess", () => {
     mockUseAuth.mockReturnValue({
       isAuthenticated: true,
       isLoading: false,
@@ -210,10 +251,13 @@ describe("AppShell Dynamic Navigation Filtering (Sprint 5)", () => {
 
     renderShell();
 
-    expect(screen.queryByTestId("nav-admin-panel")).toBeNull();
-    expect(screen.queryByTestId("nav-central-command")).toBeNull();
-    expect(screen.queryByTestId("nav-system-logs")).toBeNull();
-    expect(screen.queryByTestId("nav-diagnostics")).toBeNull();
+    // Open profile menu
+    fireEvent.click(screen.getByTestId("nav-profile-menu"));
+
+    expect(screen.queryByTestId("nav-admin-panel-profile")).toBeNull();
+    expect(screen.queryByTestId("nav-central-command-profile")).toBeNull();
+    expect(screen.queryByTestId("nav-system-logs-profile")).toBeNull();
+    expect(screen.queryByTestId("nav-diagnostics-profile")).toBeNull();
   });
 
   it("does not call canAccess for nav items without featureKey", () => {
@@ -252,8 +296,11 @@ describe("AppShell Dynamic Navigation Filtering (Sprint 5)", () => {
     expect(screen.getByTestId("nav-profile")).toBeTruthy();
     expect(screen.queryByTestId("nav-scanner")).toBeNull();
     expect(screen.queryByTestId("nav-performance")).toBeNull();
-    expect(screen.queryByTestId("nav-admin-panel")).toBeNull();
-    expect(screen.queryByTestId("nav-system-logs")).toBeNull();
-    expect(screen.queryByTestId("nav-central-command")).toBeNull();
+
+    // Open profile menu
+    fireEvent.click(screen.getByTestId("nav-profile-menu"));
+    expect(screen.queryByTestId("nav-admin-panel-profile")).toBeNull();
+    expect(screen.queryByTestId("nav-system-logs-profile")).toBeNull();
+    expect(screen.queryByTestId("nav-central-command-profile")).toBeNull();
   });
 });

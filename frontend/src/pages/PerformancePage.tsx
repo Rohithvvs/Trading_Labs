@@ -37,8 +37,14 @@ export function PerformancePage() {
     let cancelled = false;
     (async () => {
       const [dash, analyticsData] = await Promise.all([
-        fetchPaperTradingDashboard().catch(() => null),
-        fetchAnalytics().catch(() => null),
+        fetchPaperTradingDashboard().catch((err: Error) => {
+          if (!cancelled) setError(err.message || "Unable to load paper dashboard.");
+          return null;
+        }),
+        fetchAnalytics().catch((err: Error) => {
+          if (!cancelled) setError((prev) => prev || err.message || "Unable to load analytics.");
+          return null;
+        }),
       ]);
       if (cancelled) return;
       if (dash) setDashboard(dash);

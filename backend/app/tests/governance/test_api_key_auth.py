@@ -68,4 +68,13 @@ def test_verify_api_key_raises_on_bad_token(monkeypatch):
 
 def test_verify_api_key_ok_when_unset(monkeypatch):
     monkeypatch.delenv("API_KEY", raising=False)
+    monkeypatch.setenv("APP_ENV", "development")
     assert verify_api_key(None) is True
+
+
+def test_verify_api_key_fail_closed_in_production(monkeypatch):
+    monkeypatch.delenv("API_KEY", raising=False)
+    monkeypatch.setenv("APP_ENV", "production")
+    with pytest.raises(HTTPException) as exc:
+        verify_api_key(None)
+    assert exc.value.status_code == 401

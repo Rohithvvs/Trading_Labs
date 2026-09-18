@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { useTradingDashboard } from "../hooks/useTradingDashboard";
-import { cancelPaperOrder, placePaperOrder } from "../api";
+import { cancelPaperOrder, closePaperPosition, placePaperOrder } from "../api";
 import type { PaperOrderTicketState, PaperPosition, ScreenerConditionResult } from "../types";
 
 export function CentralCommand() {
@@ -8,10 +8,20 @@ export function CentralCommand() {
   const [selectedStock, setSelectedStock] = useState<ScreenerConditionResult | null>(null);
 
   const handleClosePosition = async (position: PaperPosition) => {
-    // API call to close position
-    // Usually this is submitting an opposite order or using a specific close endpoint
-    // For this example, we'll log it or use placePaperOrder
-    console.warn("[paper] close not implemented — stub only", position.symbol);
+    try {
+      await closePaperPosition(position.id);
+      window.dispatchEvent(
+        new CustomEvent("app:toast", {
+          detail: { level: "success", message: `Closed ${position.symbol}` },
+        }),
+      );
+    } catch (err: any) {
+      window.dispatchEvent(
+        new CustomEvent("app:toast", {
+          detail: { level: "error", message: "Close failed", description: err.message },
+        }),
+      );
+    }
   };
 
   const handleBuy = async () => {
@@ -21,7 +31,7 @@ export function CentralCommand() {
       symbol: selectedStock.symbol,
       side: "BUY",
       type: "MARKET",
-      qty: 10, // Default qty
+      qty: 1,
     };
     try {
       await placePaperOrder(ticket, crypto.randomUUID());

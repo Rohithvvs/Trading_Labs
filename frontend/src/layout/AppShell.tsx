@@ -2,10 +2,11 @@ import { useEffect, useRef, useState, useCallback, type ReactNode } from "react"
 import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
 import { useTheme } from "../hooks/useTheme";
-import { useDensity } from "../hooks/useDensity";
+
 import { useFeaturePermissions } from "../hooks/useFeaturePermissions";
 import { ADMIN_NAV, RETAIL_NAV, isNavActive } from "./navConfig";
 import { ThemeToggle } from "../components/ThemeToggle";
+import { InfrastructureStatus } from "../components/InfrastructureStatus";
 import { navigateToPaperOrder } from "../utils/paperOrderNavigation";
 
 type Props = {
@@ -34,8 +35,8 @@ function readSidebarCollapsed(): boolean {
 
 export function AppShell({ children, topActions, title }: Props) {
   const { user, logout, role } = useAuth();
-  const { theme } = useTheme();
-  const { density, setDensity } = useDensity();
+  const { theme, toggleTheme } = useTheme();
+
   const location = useLocation();
   const isAdmin = role === "admin";
   const navigate = useNavigate();
@@ -99,12 +100,17 @@ export function AppShell({ children, topActions, title }: Props) {
   const { canAccess } = useFeaturePermissions();
 
   const initials = (user?.full_name || user?.email || "U").slice(0, 1).toUpperCase();
-  // Sprint 4: admin destinations by real role; Sprint 5: filter by feature permissions
-  const baseNavItems = isAdmin ? [...RETAIL_NAV, ...ADMIN_NAV] : RETAIL_NAV;
+  // Sidebar rail uses retail nav; Admin settings (Admin, Central Command, System Logs, Diagnostics) live inside Profile
+  const baseNavItems = RETAIL_NAV;
   const navItems = baseNavItems.filter((item) => {
     if (item.featureKey && !canAccess(item.featureKey)) return false;
     return true;
   });
+
+  const isStrategyTester =
+    location.pathname.startsWith("/strategy-tester") ||
+    location.pathname.startsWith("/strategy-comparison") ||
+    location.pathname.startsWith("/stock");
 
   return (
     <div
@@ -112,6 +118,7 @@ export function AppShell({ children, topActions, title }: Props) {
         "app-shell-v2",
         sidebarCollapsed ? "app-shell-v2--collapsed" : "app-shell-v2--expanded",
         mobileMenuOpen ? "app-shell-v2--mobile-open" : "",
+        isStrategyTester ? "app-shell-v2--strategy-tester" : "",
       ]
         .filter(Boolean)
         .join(" ")}
@@ -152,33 +159,61 @@ export function AppShell({ children, topActions, title }: Props) {
                 title={item.label}
               >
                 <span className="app-sidebar__icon">{item.icon}</span>
-                <span className="app-sidebar__label">{item.label}</span>
+                <span className="app-sidebar__label-wrap">
+                  <span className="app-sidebar__label">{item.label}</span>
+                  {item.badge ? <span className="app-sidebar__badge">{item.badge}</span> : null}
+                </span>
               </NavLink>
             );
           })}
         </nav>
 
         <div className="app-sidebar__footer">
-          <div className="app-sidebar__meta">
-            <label className="app-density-toggle">
-              <span className="ds-caption app-sidebar__meta-label">Density</span>
-              <select
-                value={density}
-                onChange={(e) => setDensity(e.target.value as "comfortable" | "compact")}
-                aria-label="UI density"
-              >
-                <option value="comfortable">Comfortable</option>
-                <option value="compact">Compact</option>
-              </select>
-            </label>
-            {/* Developer mode toggle hidden (Sprint 4): unused for routes; never unlocks /admin/* */}
+          <div className="sidebar-universe-card">
+            <div className="sidebar-universe-label">Universe</div>
+            <div className="sidebar-universe-box">
+              <span className="sidebar-universe-icon">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+              </span>
+              <div className="sidebar-universe-text">
+                <div className="sidebar-universe-count">Nifty 500</div>
+                <div className="sidebar-universe-name">All stocks</div>
+              </div>
+            </div>
           </div>
-          <ThemeToggle />
+          <div className="sidebar-theme-card">
+            <span className="sidebar-theme-title">Theme</span>
+            <button
+              type="button"
+              className="sidebar-theme-toggle"
+              onClick={toggleTheme}
+              aria-label="Toggle theme"
+              title="Toggle theme"
+            >
+              <span className={`sidebar-theme-icon ${theme === "light" ? "is-active" : ""}`}>☼</span>
+              <span className={`sidebar-theme-icon ${theme === "dark" ? "is-active" : ""}`}>●</span>
+            </button>
+          </div>
+          <div
+            className="sidebar-user-card"
+            onClick={() => navigate("/profile")}
+            role="button"
+            tabIndex={0}
+            aria-label="User profile"
+          >
+            <div className="sidebar-user-avatar">{initials}</div>
+            <div className="sidebar-user-info">
+              <div className="sidebar-user-name">{user?.full_name || user?.email || "Account"}</div>
+              <div className="sidebar-user-email">{user?.email || "Signed in"}</div>
+            </div>
+            <div className="sidebar-user-chevron">⌄</div>
+          </div>
         </div>
       </aside>
 
       {/* Main column */}
       <div className="app-main-column">
+        {!isStrategyTester ? (
         <header className="app-topbar">
           <div className="app-topbar__left">
             <button
@@ -193,6 +228,7 @@ export function AppShell({ children, topActions, title }: Props) {
           </div>
           <div className="app-topbar__actions">
             {topActions}
+            <InfrastructureStatus variant="header" />
             <button
               type="button"
               className="ds-btn ds-btn--buy ds-btn--sm"
@@ -218,6 +254,14 @@ export function AppShell({ children, topActions, title }: Props) {
               }
             >
               SELL
+            </button>
+            <button
+              type="button"
+              className="ds-btn ds-btn--secondary ds-btn--sm"
+              data-testid="global-paper-cta"
+              onClick={() => navigate("/paper")}
+            >
+              Paper trade
             </button>
             <div className="nav-profile-wrap" ref={profileRef}>
               <button
@@ -246,18 +290,73 @@ export function AppShell({ children, topActions, title }: Props) {
                   <button type="button" role="menuitem" onClick={() => { setProfileOpen(false); navigate("/paper"); }}>
                     Paper Desk
                   </button>
-                  {isAdmin ? (
+                  {canAccess("advanced_scanner") ? (
                     <button
                       type="button"
                       role="menuitem"
-                      data-testid="nav-admin-panel-profile"
+                      data-testid="nav-scanner-profile"
                       onClick={() => {
                         setProfileOpen(false);
-                        navigate("/admin");
+                        navigate("/scanner");
                       }}
                     >
-                      Admin
+                      Scanner Dashboard
                     </button>
+                  ) : null}
+                  {isAdmin ? (
+                    <>
+                      <div className="nav-profile-divider" data-testid="nav-profile-admin-divider" />
+                      {canAccess("admin_panel") ? (
+                        <button
+                          type="button"
+                          role="menuitem"
+                          data-testid="nav-admin-panel-profile"
+                          onClick={() => {
+                            setProfileOpen(false);
+                            navigate("/admin");
+                          }}
+                        >
+                          Admin
+                        </button>
+                      ) : null}
+                      {canAccess("central_command") ? (
+                        <button
+                          type="button"
+                          role="menuitem"
+                          data-testid="nav-central-command-profile"
+                          onClick={() => {
+                            setProfileOpen(false);
+                            navigate("/admin/command");
+                          }}
+                        >
+                          Central Command
+                        </button>
+                      ) : null}
+                      {canAccess("system_logs") ? (
+                        <button
+                          type="button"
+                          role="menuitem"
+                          data-testid="nav-system-logs-profile"
+                          onClick={() => {
+                            setProfileOpen(false);
+                            navigate("/admin/logs");
+                          }}
+                        >
+                          System Logs
+                        </button>
+                      ) : null}
+                      <button
+                        type="button"
+                        role="menuitem"
+                        data-testid="nav-diagnostics-profile"
+                        onClick={() => {
+                          setProfileOpen(false);
+                          navigate("/diagnostics");
+                        }}
+                      >
+                        Diagnostics
+                      </button>
+                    </>
                   ) : null}
                   <button
                     type="button"
@@ -275,6 +374,7 @@ export function AppShell({ children, topActions, title }: Props) {
             </div>
           </div>
         </header>
+        ) : null}
 
         <div className="app-content">{children}</div>
       </div>
@@ -290,19 +390,24 @@ export function AppShell({ children, topActions, title }: Props) {
       ) : null}
 
       {/* Floating scan button — mobile only */}
-      <button
-        type="button"
-        className="floating-scan-btn"
-        aria-label="Run scanner"
-        title="Run scanner"
-        onClick={() => navigate("/scanner")}
-      >
-        ⚡
-      </button>
+      {canAccess("advanced_scanner") ? (
+        <button
+          type="button"
+          className="floating-scan-btn"
+          aria-label="Open scanner"
+          title="Open scanner"
+          onClick={() => navigate("/scanner")}
+        >
+          ⚡
+        </button>
+      ) : null}
 
       {/* Mobile bottom navigation */}
       <nav className="app-bottom-nav" aria-label="Primary">
-        {RETAIL_NAV.slice(0, 4).map((item) => {
+        {RETAIL_NAV.filter((item) => item.mobilePrimary && item.id !== "profile").filter((item) => {
+          if (item.featureKey && !canAccess(item.featureKey)) return false;
+          return true;
+        }).map((item) => {
           const active = isNavActive(location.pathname, item);
           return (
             <NavLink

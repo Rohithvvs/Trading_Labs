@@ -12,6 +12,7 @@ from backend.app.schemas import (
     ScreenerConditionResult,
     ScreenerRequest,
     ScreenerResponse,
+    ScreenerStageSummary,
 )
 from backend.app.services.ranking_service import RankingService
 
@@ -137,6 +138,90 @@ async def test_shortlist_breaks_equal_screener_scores_by_symbol():
         )
 
     assert response.shortlisted_symbols == ["INFY-EQ", "TCS-EQ"]
+
+
+def _stage_response(*, stage_name: str = "NIFTY500", buy: list[str] | None = None) -> ScreenerResponse:
+    buy_symbols = buy or ["INFY-EQ"]
+    return ScreenerResponse(
+        scanned_symbols=len(buy_symbols),
+        screener_name=f"{stage_name} Combined Swing Scanner ({len(buy_symbols)})",
+        data_valid_symbols=buy_symbols,
+        eligible_symbols=buy_symbols,
+        shortlisted_symbols=buy_symbols,
+        buy_candidate_symbols=buy_symbols,
+        watch_candidate_symbols=[],
+        matched_symbols=buy_symbols,
+        matches=[],
+        analysis=None,
+        disclaimer="test",
+        scan_stages=[
+            ScreenerStageSummary(
+                stage_name=stage_name,
+                source_universe_size=len(buy_symbols),
+                unique_symbols_scanned=len(buy_symbols),
+                duplicate_symbols_skipped=0,
+                matched_symbols=len(buy_symbols),
+                shortlisted_symbols=len(buy_symbols),
+                buy_candidate_symbols=buy_symbols,
+            )
+        ],
+    )
+
+
+def _orchestrator_for_impl() -> OrchestratorAgent:
+    orchestrator = object.__new__(OrchestratorAgent)
+    orchestrator.logger = SimpleNamespace(
+        info=lambda *args, **kwargs: None,
+        warning=lambda *args, **kwargs: None,
+    )
+    orchestrator._canonical_symbol = OrchestratorAgent._canonical_symbol.__get__(orchestrator)
+    orchestrator._dedupe_symbols = OrchestratorAgent._dedupe_symbols.__get__(orchestrator)
+    return orchestrator
+
+
+@pytest.mark.asyncio
+async def test_run_screener_impl_accepts_screener_response_from_stage():
+    """Regression: stage returns ScreenerResponse, not a 3-tuple.
+
+    Unpacking a Pydantic model as ``a, b, c = response`` raises
+    ``ValueError: too many values to unpack (expected 3)`` and aborts
+    automated screening after the first universe stage completes.
+    """
+    orchestrator = _orchestrator_for_impl()
+    stage_response = _stage_response(buy=["ACE-EQ", "BHEL-EQ"])
+
+    async def _stage(**kwargs):
+        return stage_response
+
+    async def _universes():
+        return [("NIFTY500", ["ACE-EQ", "BHEL-EQ"])]
+
+    orchestrator._run_screener_stage = _stage
+    orchestrator._prioritized_universes = _universes
+
+    result = await orchestrator._run_screener_impl(ScreenerRequest(top_n=20))
+
+    assert result.buy_candidate_symbols == ["ACE-EQ", "BHEL-EQ"]
+    assert result.stopped_at_stage == "NIFTY500"
+    assert result.scan_stages[-1].stopped_here is True
+
+
+@pytest.mark.asyncio
+async def test_run_screener_impl_custom_symbols_returns_stage_response():
+    orchestrator = _orchestrator_for_impl()
+    stage_response = _stage_response(stage_name="Custom symbols", buy=["INFY-EQ"])
+
+    async def _stage(**kwargs):
+        return stage_response
+
+    orchestrator._run_screener_stage = _stage
+
+    result = await orchestrator._run_screener_impl(
+        ScreenerRequest(top_n=2, symbols=["INFY-EQ"])
+    )
+
+    assert result is stage_response
+    assert result.buy_candidate_symbols == ["INFY-EQ"]
 
 
 @pytest.mark.unit

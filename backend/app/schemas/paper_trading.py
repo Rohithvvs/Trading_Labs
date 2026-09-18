@@ -200,6 +200,7 @@ class MarketEngineStatusResponse(BaseModel):
     active_monitored_symbols_count: int = 0
     active_symbols: list[str] = Field(default_factory=list)
     trading_date: str | None = None
+    market_hours_active: bool = False
 
 
 class PaperTradingAccountResetRequest(BaseModel):

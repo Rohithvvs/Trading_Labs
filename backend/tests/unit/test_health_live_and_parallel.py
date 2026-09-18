@@ -118,3 +118,70 @@ async def test_health_probes_run_in_parallel_not_serial():
     assert call_order.index("db_start") < call_order.index("redis_end")
     assert call_order.index("redis_start") < call_order.index("db_end")
 
+
+class _FastDbCM:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def execute(self, *a, **k):
+        return None
+
+
+@pytest.mark.asyncio
+async def test_health_redis_recreates_stale_client():
+    """A client left half-open after Redis was down must recover on the next probe."""
+    from app.routes import health as health_mod
+
+    class DeadRedis:
+        async def ping(self):
+            raise ConnectionError("stale pool")
+
+    class LiveRedis:
+        async def ping(self):
+            return True
+
+    clients = iter([DeadRedis(), LiveRedis()])
+
+    with patch("app.db.session.engine") as eng:
+        eng.connect = lambda: _FastDbCM()
+        with patch("app.core.redis.get_redis", side_effect=lambda: next(clients)):
+            with patch("app.core.redis.close_redis_client", new=AsyncMock()) as closed:
+                with patch(
+                    "app.services.market_engine_service.market_engine.status",
+                    new=AsyncMock(return_value={"websocket_connected": True, "running": True}),
+                ):
+                    result = await health_mod.health_check()
+
+    assert result.redis == "ok"
+    closed.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_health_websocket_idle_when_engine_stopped():
+    """After-hours STOPPED engine must not report websocket as disconnected."""
+    from app.routes import health as health_mod
+
+    class LiveRedis:
+        async def ping(self):
+            return True
+
+    with patch("app.db.session.engine") as eng:
+        eng.connect = lambda: _FastDbCM()
+        with patch("app.core.redis.get_redis", return_value=LiveRedis()):
+            with patch(
+                "app.services.market_engine_service.market_engine.status",
+                new=AsyncMock(
+                    return_value={
+                        "status": "STOPPED",
+                        "websocket_connected": False,
+                        "running": False,
+                    }
+                ),
+            ):
+                result = await health_mod.health_check()
+
+    assert result.websocket == "idle"
+

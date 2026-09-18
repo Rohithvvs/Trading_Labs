@@ -86,13 +86,25 @@ async def health_check() -> HealthResponse:
 
     async def _probe_redis() -> str:
         try:
-            from ..core.redis import get_redis
+            from ..core.redis import close_redis_client, get_redis
 
-            r = get_redis()
-            if r is None:
-                return "not_configured"
-            await asyncio.wait_for(r.ping(), timeout=_REDIS_PROBE_TIMEOUT_SEC)
-            return "ok"
+            async def _ping() -> str:
+                r = get_redis()
+                if r is None:
+                    return "not_configured"
+                await asyncio.wait_for(r.ping(), timeout=_REDIS_PROBE_TIMEOUT_SEC)
+                return "ok"
+
+            try:
+                return await _ping()
+            except Exception as first_exc:
+                logger.warning(
+                    "[health] redis probe failed (%s): %s — recreating client",
+                    type(first_exc).__name__,
+                    str(first_exc)[:160],
+                )
+                await close_redis_client()
+                return await _ping()
         except Exception as exc:
             explicit = (os.getenv("REDIS_URL") or "").strip()
             status = "error" if explicit else "not_configured"
@@ -112,7 +124,12 @@ async def health_check() -> HealthResponse:
 
             eng = await asyncio.wait_for(market_engine.status(), timeout=0.75)
             if isinstance(eng, dict):
-                if eng.get("websocket_connected") is False:
+                eng_status = str(eng.get("status") or "").upper()
+                # After-hours cooldown (15:30 IST) leaves the Fyers socket down on
+                # purpose — do not paint the badge as "Connecting" overnight.
+                if eng_status in {"STOPPED", "STOPPING"}:
+                    websocket_status = "idle"
+                elif eng.get("websocket_connected") is False:
                     websocket_status = "disconnected"
                 if eng.get("running") is False and eng.get("status") in ("stopped", "error"):
                     fyers_status = "idle"
@@ -154,6 +171,6 @@ async def heartbeat() -> dict[str, object]:
     from ..services.market_engine_service import market_engine
 
     await market_engine.heartbeat()
-    return sanitize_for_json({"status": "ok", "engine": market_engine.status()})
+    return sanitize_for_json({"status": "ok", "engine": await market_engine.status()})
 
 

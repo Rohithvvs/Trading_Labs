@@ -6,13 +6,16 @@ replays them to fill missed limit orders and trigger missed exits.
 """
 from __future__ import annotations
 
+import asyncio
+import time
 from datetime import datetime, timezone
 from math import ceil
-from typing import Dict
+from typing import Any, Callable, Dict
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
+from ..db.session import is_db_connection_error
 from .server_state import read_last_shutdown, write_startup_time
 from ..models.paper_trading import (
     ExecutionEvent,
@@ -27,11 +30,57 @@ from ..services.fyers_service import FyersService
 from ..schemas import AnalysisMode
 from .log_manager import trading_logger as logger
 
+SKIP_FIRST_RUN = "First run — no previous shutdown recorded."
+SKIP_GAP_TOO_SMALL = "Gap too small (< 2 minutes), skipping."
+SKIP_ALREADY_COMPLETED = "Replay window already completed."
+SKIP_NOTHING_TO_REPLAY = "No open positions or pending orders to replay."
+SKIP_TOKEN_NOT_READY = "fyers_token_not_ready"
+SKIP_NO_CANDLE_DATA = "candle_data_unavailable"
+SKIP_DB_CONNECTION_CLOSED = "db_connection_closed"
+
+# NSE cash session is ~375 one-minute bars. Extra day of lookback is already
+# included in lookback_days; 400 bars/day covers a full session plus margin.
+_BARS_PER_SESSION = 400
+_TOKEN_WAIT_TIMEOUT_SEC = 300.0
+_TOKEN_WAIT_POLL_SEC = 2.0
+_CANDLE_RETRIES = 3
+_CANDLE_RETRY_DELAY_SEC = 10.0
+
+
+def _fyers_ready(fyers_service: Any) -> bool:
+    """True when FYERS can serve live history, or the caller is a test fake."""
+    checker = getattr(fyers_service, "_is_fyers_configured", None)
+    if not callable(checker):
+        return True
+    try:
+        return bool(checker())
+    except Exception:
+        logger.exception("[GAP_REPLAY] FYERS configuration check failed")
+        return False
+
+
+def _intraday_points_for_gap(lookback_days: int) -> int:
+    return max(_BARS_PER_SESSION, int(lookback_days) * _BARS_PER_SESSION)
+
+
+def _task_is_cancelling() -> bool:
+    task = asyncio.current_task()
+    if task is None:
+        return False
+    cancelling = getattr(task, "cancelling", None)
+    if callable(cancelling):
+        return bool(cancelling())
+    return bool(task.cancelled())
+
+
 async def _safe_rollback(db: AsyncSession) -> None:
     """Clear a failed transaction so the same session can continue."""
     try:
         await db.rollback()
-    except Exception:
+    except Exception as exc:
+        if is_db_connection_error(exc):
+            logger.warning("[GAP_REPLAY] Session rollback skipped; connection already closed")
+            return
         logger.exception("[GAP_REPLAY] Session rollback failed")
 
 
@@ -49,14 +98,14 @@ async def run_gap_replay(db: AsyncSession, fyers_service: FyersService) -> Dict:
     now = datetime.now(timezone.utc)
 
     if last_shutdown is None:
-        summary["skipped_reason"] = "First run — no previous shutdown recorded."
+        summary["skipped_reason"] = SKIP_FIRST_RUN
         logger.info("[GAP_REPLAY] First run, skipping replay.")
         write_startup_time()
         return summary
 
     gap_minutes = (now - last_shutdown).total_seconds() / 60.0
     if gap_minutes < 2:
-        summary["skipped_reason"] = "Gap too small (< 2 minutes), skipping."
+        summary["skipped_reason"] = SKIP_GAP_TOO_SMALL
         write_startup_time()
         return summary
 
@@ -66,21 +115,6 @@ async def run_gap_replay(db: AsyncSession, fyers_service: FyersService) -> Dict:
     summary["gap_start"] = gap_start.isoformat()
     summary["gap_end"] = gap_end.isoformat()
 
-    existing_replay = (await db.scalars(select(ReplaySession).where(ReplaySession.replay_key == replay_key))).first()
-    if existing_replay and existing_replay.status == "COMPLETED":
-        summary["skipped_reason"] = "Replay window already completed."
-        write_startup_time()
-        return summary
-    if existing_replay is None:
-        existing_replay = ReplaySession(replay_key=replay_key, gap_start=gap_start, gap_end=gap_end, status="RUNNING")
-        db.add(existing_replay)
-        try:
-            await db.flush()
-        except Exception as e:
-            await db.rollback()
-            summary["warnings"].append(f"Failed to create replay session: {e}")
-            return summary
-
     logger.info("[GAP_REPLAY] Gap detected: %s → %s (%s minutes)", gap_start.isoformat(), gap_end.isoformat(), int(gap_minutes))
 
     try:
@@ -88,7 +122,6 @@ async def run_gap_replay(db: AsyncSession, fyers_service: FyersService) -> Dict:
     except Exception as e:
         logger.error("[GAP_REPLAY] Failed to load accounts: %s", e)
         summary["warnings"].append(f"Failed to load accounts: {e}")
-        write_startup_time()
         return summary
 
     all_symbols: set[str] = set()
@@ -133,16 +166,80 @@ async def run_gap_replay(db: AsyncSession, fyers_service: FyersService) -> Dict:
             summary["warnings"].append(f"Failed to collect symbols for account: {e}")
             logger.error("[GAP_REPLAY] Symbol collection failed: %s", e)
 
-    # Pre-fetch all candles
+    if not all_symbols:
+        summary["skipped_reason"] = SKIP_NOTHING_TO_REPLAY
+        logger.info("[GAP_REPLAY] %s", SKIP_NOTHING_TO_REPLAY)
+        write_startup_time()
+        return summary
+
+    if not _fyers_ready(fyers_service):
+        summary["skipped_reason"] = SKIP_TOKEN_NOT_READY
+        warning = (
+            f"FYERS token not ready — deferring replay for {len(all_symbols)} symbols"
+        )
+        summary["warnings"].append(warning)
+        logger.warning("[GAP_REPLAY] %s", warning)
+        return summary
+
+    existing_replay = (
+        await db.scalars(select(ReplaySession).where(ReplaySession.replay_key == replay_key))
+    ).first()
+    if existing_replay and existing_replay.status == "COMPLETED":
+        summary["skipped_reason"] = SKIP_ALREADY_COMPLETED
+        write_startup_time()
+        return summary
+    if existing_replay is None:
+        existing_replay = ReplaySession(
+            replay_key=replay_key, gap_start=gap_start, gap_end=gap_end, status="RUNNING"
+        )
+        db.add(existing_replay)
+        try:
+            await db.flush()
+        except Exception as e:
+            await db.rollback()
+            summary["warnings"].append(f"Failed to create replay session: {e}")
+            return summary
+
+    # Pre-fetch all candles — enough 1m bars to cover the whole offline window.
+    # fetch_ohlcv defaults to 40 intraday points (chart size), which would drop
+    # most of a multi-hour gap.
     lookback_days = max(1, ceil(gap_minutes / (60 * 24)) + 1)
+    max_points = _intraday_points_for_gap(lookback_days)
     pre_fetched_candles = {}
     for symbol in all_symbols:
         try:
             pre_fetched_candles[symbol] = await fyers_service.fetch_ohlcv(
-                symbol, AnalysisMode.intraday, "1m", lookback_days, allow_mock=False
+                symbol,
+                AnalysisMode.intraday,
+                "1m",
+                lookback_days,
+                allow_mock=False,
+                max_points=max_points,
             )
+        except TypeError:
+            # Test fakes may not accept max_points.
+            try:
+                pre_fetched_candles[symbol] = await fyers_service.fetch_ohlcv(
+                    symbol, AnalysisMode.intraday, "1m", lookback_days, allow_mock=False
+                )
+            except Exception as e:
+                logger.error("[GAP_REPLAY] Failed to fetch candles for %s: %s", symbol, e)
         except Exception as e:
             logger.error("[GAP_REPLAY] Failed to fetch candles for %s: %s", symbol, e)
+
+    fetched_any = any(pre_fetched_candles.get(symbol) for symbol in all_symbols)
+    if not fetched_any:
+        warning = "No candle data for any symbol in the gap period — not marking COMPLETED"
+        summary["skipped_reason"] = SKIP_NO_CANDLE_DATA
+        summary["warnings"].append(warning)
+        logger.error("[GAP_REPLAY] %s", warning)
+        try:
+            existing_replay.status = "FAILED"
+            existing_replay.error_message = warning[:2000]
+            await db.commit()
+        except Exception:
+            await _safe_rollback(db)
+        return summary
 
     for account in accounts:
         try:
@@ -500,7 +597,7 @@ async def run_gap_replay(db: AsyncSession, fyers_service: FyersService) -> Dict:
                                     dedupe_key=exit_dedupe,
                                 )
                             )
-                            db.delete(pos)
+                            await db.delete(pos)
                         except Exception:
                             logger.exception(
                                 "[GAP_REPLAY] Failed to delete position %s after offline exit",
@@ -603,3 +700,110 @@ async def run_gap_replay(db: AsyncSession, fyers_service: FyersService) -> Dict:
 
     write_startup_time()
     return summary
+
+
+async def wait_for_fyers_token(
+    fyers_service: Any,
+    *,
+    timeout_sec: float = _TOKEN_WAIT_TIMEOUT_SEC,
+    poll_sec: float = _TOKEN_WAIT_POLL_SEC,
+) -> bool:
+    """Poll until FYERS has a usable access token, or the timeout elapses."""
+    if _fyers_ready(fyers_service):
+        return True
+    logger.info(
+        "[GAP_REPLAY] Waiting for FYERS token before replay | timeout_sec=%s",
+        timeout_sec,
+    )
+    deadline = time.monotonic() + max(0.0, float(timeout_sec))
+    interval = max(0.05, float(poll_sec))
+    while time.monotonic() < deadline:
+        await asyncio.sleep(interval)
+        if _fyers_ready(fyers_service):
+            logger.info("[GAP_REPLAY] FYERS token ready — starting replay")
+            return True
+    logger.warning(
+        "[GAP_REPLAY] Timed out waiting for FYERS token | timeout_sec=%s",
+        timeout_sec,
+    )
+    return False
+
+
+async def run_startup_gap_replay(
+    session_factory: Callable[[], Any],
+    fyers_service: Any,
+    *,
+    token_timeout_sec: float = _TOKEN_WAIT_TIMEOUT_SEC,
+    token_poll_sec: float = _TOKEN_WAIT_POLL_SEC,
+    candle_retries: int = _CANDLE_RETRIES,
+    candle_retry_delay_sec: float = _CANDLE_RETRY_DELAY_SEC,
+) -> Dict:
+    """Startup entry: wait for FYERS auth, then replay, retrying empty fetches.
+
+    Gap replay must not run (or complete) before the daily access token exists.
+    Completing with empty candles permanently skips fills/exits for that process.
+    """
+    token_ok = await wait_for_fyers_token(
+        fyers_service,
+        timeout_sec=token_timeout_sec,
+        poll_sec=token_poll_sec,
+    )
+
+    last_summary: Dict = {
+        "gap_start": None,
+        "gap_end": None,
+        "orders_filled": [],
+        "positions_exited": [],
+        "warnings": [],
+        "skipped_reason": SKIP_TOKEN_NOT_READY,
+    }
+    attempts = max(1, int(candle_retries))
+    for attempt in range(1, attempts + 1):
+        try:
+            async with session_factory() as db:
+                last_summary = await run_gap_replay(db, fyers_service)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # Bind/port-in-use shutdown cancels this job while the session is
+            # still open; SQLAlchemy then raises InterfaceError on rollback.
+            if not is_db_connection_error(exc):
+                raise
+            logger.warning(
+                "[GAP_REPLAY] DB connection closed during replay | attempt=%s/%s | err=%s",
+                attempt,
+                attempts,
+                exc,
+            )
+            if _task_is_cancelling():
+                raise asyncio.CancelledError from exc
+            last_summary = {
+                **last_summary,
+                "skipped_reason": SKIP_DB_CONNECTION_CLOSED,
+                "warnings": list(last_summary.get("warnings") or []) + [str(exc)],
+            }
+            return last_summary
+
+        reason = last_summary.get("skipped_reason")
+        if reason == SKIP_TOKEN_NOT_READY:
+            if not token_ok:
+                return last_summary
+            token_ok = await wait_for_fyers_token(
+                fyers_service,
+                timeout_sec=token_timeout_sec,
+                poll_sec=token_poll_sec,
+            )
+            if not token_ok:
+                return last_summary
+            continue
+        if reason == SKIP_NO_CANDLE_DATA and attempt < attempts:
+            logger.warning(
+                "[GAP_REPLAY] Candle fetch empty — retry %s/%s after %.1fs",
+                attempt + 1,
+                attempts,
+                candle_retry_delay_sec,
+            )
+            await asyncio.sleep(max(0.0, float(candle_retry_delay_sec)))
+            continue
+        return last_summary
+    return last_summary

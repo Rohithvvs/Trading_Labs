@@ -12,6 +12,18 @@ from .paper_trading import (
 from .stock import WatchedStock, StockMaster
 from .strategy_market_data import DailyOhlcv, IndexOhlcv, DataLoadLog
 from .ltm_strategy import LtmBookState, StrategyScanLatest, StrategyScanRun
+from .w52_strategy import W52BookState, W52SymbolPerformance
+from .strategy_tester import (
+    StrategyDefinition,
+    StrategyFilterResult,
+    StrategyTestResult,
+    StrategyTestRun,
+)
+from .indicator_scanner import (
+    IndicatorDefinition,
+    IndicatorScanResult,
+    IndicatorScanRun,
+)
 from .fyers_token import FyersToken
 from .fyers_token_history import FyersTokenHistory
 from .broker_token import BrokerToken
@@ -55,6 +67,15 @@ __all__ = [
     "IndexOhlcv",
     "DataLoadLog",
     "LtmBookState",
+    "W52BookState",
+    "W52SymbolPerformance",
+    "StrategyDefinition",
+    "StrategyTestRun",
+    "StrategyTestResult",
+    "StrategyFilterResult",
+    "IndicatorDefinition",
+    "IndicatorScanRun",
+    "IndicatorScanResult",
     "StrategyScanLatest",
     "StrategyScanRun",
     "FyersToken",

@@ -134,15 +134,20 @@ def verify_api_key(authorization: str | None = None) -> bool:
 
     Injects the ``Authorization`` header when used as a FastAPI dependency.
     Raises HTTP 401 when ``API_KEY`` is configured and the bearer token is
-    missing or invalid. When ``API_KEY`` is empty, allows all requests
-    (Phase 0 local-dev convenience).
+    missing or invalid. When ``API_KEY`` is empty outside production, allows
+    all requests (local-dev convenience). Production/staging fail closed.
     """
-    from fastapi import Header, HTTPException
+    from fastapi import HTTPException
 
-    # Support both dependency-injected Header and direct calls.
-    # When FastAPI resolves this, callers should use the wrapped dependency below.
     api_key = os.getenv("API_KEY", "")
+    env = os.getenv("APP_ENV", "development").strip().lower()
     if not api_key:
+        if env in {"production", "prod", "staging"}:
+            raise HTTPException(
+                status_code=401,
+                detail="API_KEY must be configured in production/staging",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
         return True
     if authorization and authorization.startswith("Bearer "):
         token = authorization[7:].strip()

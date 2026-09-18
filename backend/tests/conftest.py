@@ -316,6 +316,33 @@ async def async_db_session():
     await engine.dispose()
 
 
+def auth_headers(role: str = "trader", user_id: str | None = None) -> dict[str, str]:
+    """JWT for endpoints that only need get_token_principal / get_current_user_id_sync."""
+    try:
+        from backend.app.core.security import create_access_token
+    except ModuleNotFoundError:
+        from app.core.security import create_access_token
+    token, _ = create_access_token({"sub": user_id or str(uuid.uuid4()), "role": role})
+    return {"Authorization": f"Bearer {token}"}
+
+
+def register_auth_headers(client: TestClient, *, role: str = "trader") -> dict[str, str]:
+    """Create a real user via /auth/register for get_current_active_user routes."""
+    email = f"audit_{uuid.uuid4().hex[:10]}@example.com"
+    res = client.post(
+        "/auth/register",
+        json={"email": email, "password": "SecurePassword123!", "full_name": "Audit User"},
+    )
+    assert res.status_code in (200, 201), res.text
+    body = res.json()
+    headers = {"Authorization": f"Bearer {body['access_token']}"}
+    if role == "admin":
+        # Role is assigned at register as trader; JWT claim is enough for require_admin tests.
+        token_headers = auth_headers(role="admin", user_id=str(body.get("user", {}).get("id") or uuid.uuid4()))
+        return token_headers
+    return headers
+
+
 @pytest.fixture()
 def client(test_engine) -> Generator[TestClient, None, None]:
     """HTTP client against the per-test DB using real async/sync session factories.

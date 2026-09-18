@@ -358,6 +358,28 @@ async def lifespan(app: FastAPI):
     except Exception:
         pass
     logger.info("APP_LIFESPAN_INITIALIZED | Lifespan initialization started")
+
+    # Windows + WSL: redis-py cannot use the localhost port relay. Resolve the
+    # WSL IP off the event loop during startup so the first /health probe is cheap.
+    redis_wsl_prewarm: asyncio.Task | None = None
+    if settings.app_env != "test":
+        try:
+            from .core.redis import discover_wsl_ipv4
+
+            redis_wsl_prewarm = asyncio.create_task(
+                asyncio.to_thread(discover_wsl_ipv4),
+                name="redis-wsl-ip-prewarm",
+            )
+        except Exception:
+            redis_wsl_prewarm = None
+
+    async def _await_redis_wsl_prewarm() -> None:
+        if redis_wsl_prewarm is None:
+            return
+        try:
+            await redis_wsl_prewarm
+        except Exception:
+            logger.debug("Redis WSL IP prewarm failed", exc_info=True)
     
     log_process_event("PROCESS_START")
     
@@ -487,6 +509,7 @@ async def lifespan(app: FastAPI):
                 logger.critical("API-only pod migration/admin bootstrap failed fatally: %s", e)
                 raise
             logger.warning("API-only pod migration/admin bootstrap check failed: %s", e)
+        await _await_redis_wsl_prewarm()
         yield
         return
     try:
@@ -758,10 +781,29 @@ async def lifespan(app: FastAPI):
         coalesce=True,
     )
 
+    scheduler.add_job(
+        nightly_candle_sync,
+        CronTrigger(day_of_week="mon-fri", hour=18, minute=30, timezone="Asia/Kolkata"),
+        id="nightly_candle_sync",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
     # Clear in-memory FYERS quarantine on every app start
     from .services.fyers_service import QUARANTINED_SYMBOLS
     QUARANTINED_SYMBOLS.clear()
     logger.info("FYERS in-memory symbol quarantine cleared on startup")
+
+    # Clean up any orphaned strategy scans left from previous process termination
+    try:
+        from .services.strategies.breakout52w.persistence import cleanup_orphan_runs as cleanup_w52_orphan_runs
+        cleaned_w52 = await cleanup_w52_orphan_runs()
+        if cleaned_w52:
+            logger.info("CLEANUP_ORPHAN_RUNS | strategy=09_52w_breakout | count=%d", cleaned_w52)
+    except Exception:
+        logger.exception("Failed to clean up orphaned 52W strategy scans on startup")
+
 
     # Scheduler + automatic daily Access Token → Market Scanner bootstrap.
     # Token generation uses existing fyers_token retry policy; scanner starts only
@@ -892,29 +934,45 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("QUARANTINE MODE: Legacy alert monitor bypassed.")
 
-    # ADD: Run offline gap replay on startup to handle fills/exits while server was down
+    # Offline gap replay: wait for today's FYERS token (generated in the
+    # background bootstrap task), then back-fill fills/exits. Must not run
+    # before auth is ready — empty 1m fetches would skip the offline window.
     if not settings.quarantine_mode:
-        try:
-            from .core.gap_replay import run_gap_replay
+        async def _gap_replay_job():
+            from .core.gap_replay import run_startup_gap_replay
+            from .db.session import is_db_connection_error
 
-            async with AsyncSessionLocal() as db:
-                fyers = FyersService()
-                summary = await run_gap_replay(db, fyers)
-
+            fyers = FyersService()
+            try:
+                summary = await run_startup_gap_replay(AsyncSessionLocal, fyers)
+            except asyncio.CancelledError:
+                logger.info("[GAP_REPLAY] Cancelled during shutdown")
+                raise
+            except Exception as exc:
+                if is_db_connection_error(exc):
+                    logger.warning("[GAP_REPLAY] Stopped; DB connection closed | err=%s", exc)
+                    return
+                raise
             app.state.last_gap_replay = summary
             if summary.get("skipped_reason"):
                 print(f"[GAP_REPLAY] Skipped: {summary['skipped_reason']}")
+                logger.info("[GAP_REPLAY] Skipped: %s", summary["skipped_reason"])
             else:
                 print("[GAP_REPLAY] Complete!")
                 print(f"  Orders filled:     {len(summary.get('orders_filled', []))}")
                 print(f"  Positions exited:  {len(summary.get('positions_exited', []))}")
                 for w in summary.get("warnings", []):
                     print(f"  [WARNING]  {w}")
-        except Exception as e:
-            logger.exception("GAP_REPLAY startup failed: %s", e)
-            print(f"[GAP_REPLAY] Startup replay failed: {e}")
+
+        try:
+            app.state.task_supervisor.start("gap-replay", _gap_replay_job)
+            logger.info("STARTUP: Gap replay scheduled (waits for FYERS token)")
+        except Exception:
+            logger.exception("Failed to schedule gap replay")
     else:
         logger.info("QUARANTINE MODE: Offline gap replay bypassed.")
+
+    await _await_redis_wsl_prewarm()
 
     logger.info("APP_LIFESPAN_COMPLETED | Lifespan startup fully completed")
     # yield control to the application
@@ -922,16 +980,17 @@ async def lifespan(app: FastAPI):
     # Shutdown
     logger.info("APP_SHUTDOWN | Application is shutting down")
     log_process_event("PROCESS_STOP", reason="lifespan_shutdown")
+    # Cancel jobs that hold DB sessions before tearing down the engine/pool.
+    try:
+        await app.state.task_supervisor.shutdown()
+    except Exception:
+        logger.exception("Failed to stop supervised tasks")
     if settings.app_env != "test" and scheduler.running:
         scheduler.shutdown()
     try:
         await market_engine.shutdown()
     except Exception:
         logger.exception("Failed to stop market engine loop")
-    try:
-        await app.state.task_supervisor.shutdown()
-    except Exception:
-        logger.exception("Failed to stop supervised tasks")
     try:
         from .core.server_state import write_shutdown_time
 
