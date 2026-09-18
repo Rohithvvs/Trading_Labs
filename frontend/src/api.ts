@@ -225,34 +225,48 @@ export async function runPresetScreener(
   const decoder = new TextDecoder();
   let buffer = "";
   let payload: ScreenerResponse | null = null;
-  // Server sends progress/heartbeat every ~5s. Stall if nothing for 90s.
+  // Server sends progress/heartbeat every ~5s. Stall means NO STREAM BYTES for 90s
+  // (not "scan running longer than 90s"). Heartbeats and progress both count as activity.
   const STREAM_STALL_TIMEOUT_MS = 90_000;
   let lastProgressAt = Date.now();
   let sawRealProgress = false;
 
   while (true) {
     let result: ReadableStreamReadResult<Uint8Array>;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    const onAbort = () => {
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
+    };
     try {
+      // Remaining budget based on last activity (not wall-clock of entire scan).
+      const remainingMs = Math.max(
+        1_000,
+        STREAM_STALL_TIMEOUT_MS - (Date.now() - lastProgressAt),
+      );
       const timeoutPromise = new Promise<never>((_, reject) => {
-        const id = setTimeout(() => {
+        timeoutId = setTimeout(() => {
           const waited = Math.round((Date.now() - lastProgressAt) / 1000);
           reject(
             new Error(
               sawRealProgress
                 ? `Scanner stream stalled — no progress for ${waited}s`
-                : "Scanner stuck at startup — no progress events received. Check broker token and backend logs for [SCAN].",
-            ),
+                : "Scanner stuck at startup — no progress events received. Check broker token and backend logs for [SCAN]."
+            )
           );
-        }, STREAM_STALL_TIMEOUT_MS);
-        if (signal) signal.addEventListener("abort", () => clearTimeout(id), { once: true });
+        }, remainingMs);
       });
+      if (signal) signal.addEventListener("abort", onAbort, { once: true });
       result = await Promise.race([reader.read(), timeoutPromise]);
-    } catch (err: any) {
+    } catch (err: unknown) {
       if (signal?.aborted) throw new Error("Scan cancelled");
       throw err;
+    } finally {
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
+      if (signal) signal.removeEventListener("abort", onAbort);
     }
     if (result.done) break;
 
+    // Any byte activity (progress event, heartbeat comment, padding) resets stall clock.
     lastProgressAt = Date.now();
     buffer += decoder.decode(result.value, { stream: true });
     const events = buffer.split("\n\n");
@@ -494,7 +508,6 @@ export async function placePaperOrder(ticket: PaperOrderTicketState, idempotency
   // Backend Field(gt=0) rejects 0; treat non-positive as omitted
   const posOrOmit = (n: number | null | undefined): number | null =>
     n != null && Number(n) > 0 ? Number(n) : null;
-  const engine = ticket.sourceEngineId?.trim() || null;
 
   const t0 = typeof performance !== "undefined" ? performance.now() : Date.now();
   const requestBody = {
@@ -511,18 +524,11 @@ export async function placePaperOrder(ticket: PaperOrderTicketState, idempotency
     source_signal: ticket.sourceSignal,
     source_score: ticket.sourceScore,
     source_confidence: ticket.sourceConfidence,
-    source_engine_id: engine,
-    source_engine_version: ticket.sourceEngineVersion ?? null,
-    source_recommendation_id: ticket.sourceRecommendationId ?? null,
-    experiment_id: ticket.experimentId ?? null,
-    recommendation_engine: engine,
   };
   if (typeof console !== "undefined" && console.info) {
     console.info("[paper-order] place_request", {
       symbol: requestBody.symbol,
       type: requestBody.type,
-      source_engine_id: requestBody.source_engine_id,
-      source_recommendation_id: requestBody.source_recommendation_id,
       limit_price: requestBody.limit_price,
       stop_loss: requestBody.stop_loss,
       target: requestBody.target,
@@ -659,7 +665,6 @@ export async function prefillPaperTrade(payload: RecommendationPrefillRequest): 
 
 /**
  * Client-side prefill from scanner nav state — zero network.
- * Server prefill only needed for lab engine trade_guidance enrichment.
  */
 export function prefillPaperTradeLocal(
   payload: RecommendationPrefillRequest,
@@ -671,22 +676,15 @@ export function prefillPaperTradeLocal(
     .map((t) => pos(t as number))
     .filter((t): t is number => t != null);
   const limit = pos(payload.suggested_entry ?? null);
-  const engine = payload.source_engine_id
-    ? `Imported from ${payload.source_engine_id} v${payload.source_engine_version || "n/a"} | rec_id=${payload.source_recommendation_id || "n/a"} | `
-    : "Imported from system recommendation | ";
   return {
     symbol,
     side: "BUY",
-    type: limit != null ? "LIMIT" : "MARKET",
+    type: limit != null ? "LIMIT" : "MARKET" as any,
     qty: 1,
     limit_price: limit,
     stop_loss: pos(payload.suggested_stop ?? null),
     target: targets[0] ?? null,
-    note: `${engine}signal=${payload.recommendation_meta?.signal ?? "BUY"} | score=${payload.recommendation_meta?.score ?? "n/a"} | confidence=${payload.recommendation_meta?.confidence ?? "n/a"}`,
-    source_engine_id: payload.source_engine_id ?? null,
-    source_engine_version: payload.source_engine_version ?? null,
-    source_recommendation_id: payload.source_recommendation_id ?? null,
-    experiment_id: payload.experiment_id ?? null,
+    note: `Imported from system recommendation | signal=${payload.recommendation_meta?.signal ?? "BUY"} | score=${payload.recommendation_meta?.score ?? "n/a"} | confidence=${payload.recommendation_meta?.confidence ?? "n/a"}`,
   };
 }
 
@@ -772,63 +770,13 @@ export async function deletePaperOrder(orderId: number): Promise<PaperOrderActio
   return response.json() as Promise<PaperOrderActionResponse>;
 }
 
-/** Canonical scanner engine labels used by the engine selector. */
-export type ScannerEngineId = "Production" | "RE-001" | "RE-002";
-
 /**
- * Load scanner results for one recommendation engine.
- * Production → latest production scan; RE-001/RE-002 → lab decision cohort.
- */
-export async function loadScannerResultsByEngine(
-  engine: ScannerEngineId = "Production",
-  opts?: { force?: boolean },
-): Promise<(ScreenerResponse & { available?: boolean; recommendation_engine?: string; message?: string }) | null> {
-  const force = Boolean(opts?.force);
-  const cacheKey = `${CACHE_KEYS.latestScan}:engine:${engine}`;
-  return cachedFetch(
-    cacheKey,
-    async () => {
-      const qs = new URLSearchParams({ engine });
-      if (force) qs.set("force", "true");
-      const response = await fetchWithDiagnostics(
-        `/scanner/results?${qs.toString()}`,
-        force
-          ? { headers: { "Cache-Control": "no-cache", Accept: "application/json" } }
-          : undefined,
-        `Load scanner results (${engine})`,
-      );
-      if (!response.ok) {
-        return null;
-      }
-      const data = await response.json() as ({ available?: boolean } & ScreenerResponse);
-      if (data.available === false) {
-        return data as ScreenerResponse & { available: boolean };
-      }
-      return data as ScreenerResponse & { available?: boolean };
-    },
-    { force, swr: !force, softTimeoutMs: force ? 15_000 : 3000, ttlMs: 2 * 60 * 1000 },
-  );
-}
-
-/**
- * Load the newest completed scan for the Scanner page (Production engine).
+ * Load the newest completed scan for the Scanner page.
  * On page reload/navigation, pass `{ force: true }` so sessionStorage SWR
  * cannot restore an older scan over the backend's latest.
  */
 export async function loadLatestScan(opts?: { force?: boolean }): Promise<ScreenerResponse | null> {
   const force = Boolean(opts?.force);
-  // Prefer engine-aware endpoint so Production path stays aligned with RE engines
-  try {
-    const byEngine = await loadScannerResultsByEngine("Production", { force });
-    if (byEngine && byEngine.available !== false) {
-      return byEngine as ScreenerResponse;
-    }
-    if (byEngine && byEngine.available === false) {
-      return null;
-    }
-  } catch {
-    // Fall through to legacy analysis path
-  }
   return cachedFetch(
     CACHE_KEYS.latestScan,
     async () => {
@@ -849,36 +797,6 @@ export async function loadLatestScan(opts?: { force?: boolean }): Promise<Screen
       }
       return data as ScreenerResponse;
     },
-    // Never serve a stale latest-scan on intentional refresh/force; soft timeout may
-    // still wait for network without substituting an older cached scan.
-    { force, swr: !force, softTimeoutMs: force ? 15_000 : 3000 },
-  );
-}
-
-/**
- * Dashboard-shaped latest scan (GET /scanner/latest).
- * Use `{ force: true }` on page load so refresh always shows the newest scan.
- */
-export async function getLatestScan(opts?: { force?: boolean }): Promise<any> {
-  const force = Boolean(opts?.force);
-  return cachedFetch(
-    `${CACHE_KEYS.latestScan}:scanner`,
-    async () => {
-      const qs = force ? "?force=true" : "";
-      const response = await fetchWithDiagnostics(`/scanner/latest${qs}`, {
-        method: "GET",
-        headers: {
-          Accept: "application/json",
-          ...(force ? { "Cache-Control": "no-cache" } : {}),
-        },
-      }, "Get latest scan");
-
-      if (!response.ok) {
-        throw new Error("Failed to fetch latest scan");
-      }
-
-      return await response.json();
-    },
     { force, swr: !force, softTimeoutMs: force ? 15_000 : 3000 },
   );
 }
@@ -887,10 +805,41 @@ export async function getLatestScan(opts?: { force?: boolean }): Promise<any> {
 export function invalidateLatestScanCaches(): void {
   invalidateCache(CACHE_KEYS.latestScan);
   invalidateCache(`${CACHE_KEYS.latestScan}:scanner`);
-  invalidateCache(`${CACHE_KEYS.latestScan}:engine:Production`);
-  invalidateCache(`${CACHE_KEYS.latestScan}:engine:RE-001`);
-  invalidateCache(`${CACHE_KEYS.latestScan}:engine:RE-002`);
 }
+
+/**
+ *
+ * One request per render cycle (30s SWR cache). Statistics come from the
+ * latest completed scan on the backend — never fabricated.
+ *
+ * Endpoint: GET {API_BASE_URL}/scanner/statistics
+ * (same origin/base as /scanner/latest and other scanner APIs)
+ */
+export async function fetchScannerStatistics(): Promise<{
+  production: Record<string, any>;
+}> {
+  return cachedFetch(
+    "scanner:statistics:v1",
+    async () => {
+      const response = await fetchWithDiagnostics(
+        "/scanner/statistics",
+        { method: "GET" },
+        "Fetch scanner statistics",
+      );
+      if (!response.ok) {
+        // Keep HTTP status for dev diagnostics; surface a stable user message.
+        apiWarn(
+          `[api] Fetch scanner statistics failed | status=${response.status} | url=${apiUrl("/scanner/statistics")}`,
+        );
+        throw new Error("Unable to load scanner statistics.");
+      }
+      return response.json();
+    },
+    { swr: true, softTimeoutMs: 8000 },
+  );
+}
+
+
 
 /**
  * After a successful Run Scan, persist the response into client caches so
@@ -960,18 +909,13 @@ export async function loadTodayCandidates(): Promise<any[]> {
 export async function fetchAnalytics(opts?: {
   force?: boolean;
   period?: string;
-  recommendation_engine?: string | null;
 }): Promise<any> {
   const period = opts?.period || "all";
-  const engine = (opts?.recommendation_engine || "All").trim() || "All";
-  const cacheKey = `${CACHE_KEYS.paperAnalytics}:${period}:${engine}`;
+  const cacheKey = `${CACHE_KEYS.paperAnalytics}:${period}`;
   return cachedFetch(
     cacheKey,
     async () => {
       const qs = new URLSearchParams({ period });
-      if (engine && engine.toLowerCase() !== "all") {
-        qs.set("recommendation_engine", engine);
-      }
       const response = await fetchWithDiagnostics(
         `/paper-trading/analytics?${qs.toString()}`,
         undefined,
@@ -1811,255 +1755,22 @@ export async function resetPassword(token: string, password: string, confirmPass
   }
 }
 
-/** RE-001 recent scan runs (stable scan_run_id list) */
-export async function fetchRe001RecentScans(
-  limit = 20,
-  opts?: { minDecisions?: number; preferCohorts?: boolean; force?: boolean },
-): Promise<{
-  items: Array<{
-    scan_run_id: string;
-    decision_count: number;
-    latest_created_at?: string | null;
-  }>;
-}> {
-  const minDecisions = opts?.minDecisions ?? 1;
-  const preferCohorts = opts?.preferCohorts ?? true;
-  const key = `re001_recent_scans:${limit}:${minDecisions}:${preferCohorts}`;
+export async function getLatestScan(opts?: { force?: boolean }): Promise<any> {
+  const force = Boolean(opts?.force);
   return cachedFetch(
-    key,
+    `${CACHE_KEYS.latestScan}:scanner`,
     async () => {
-      const qs = new URLSearchParams({
-        limit: String(limit),
-        min_decisions: String(minDecisions),
-        prefer_cohorts: preferCohorts ? "true" : "false",
-      });
+      const qs = force ? "?force=true" : "";
       const response = await fetchWithDiagnostics(
-        `/api/v1/recommendation-lab/scans/recent?${qs.toString()}`,
-        { method: "GET" },
-        "RE-001 recent scans",
+        `/analysis/scan/latest${qs}`,
+        force
+          ? { headers: { "Cache-Control": "no-cache", Accept: "application/json" } }
+          : undefined,
+        "Dashboard latest scan",
       );
-      if (!response.ok) throw mapHttpError(response.status, response.url);
+      if (!response.ok) return null;
       return response.json();
     },
-    { force: opts?.force, swr: !opts?.force, ttlMs: 2 * 60 * 1000, softTimeoutMs: 3000 },
+    { force, swr: !force, softTimeoutMs: force ? 15_000 : 3000 },
   );
 }
-
-/** RE-001 Recommendation Lab — comparison for a completed scan_run_id */
-export async function fetchRe001ScanComparison(scanRunId: string, force = false): Promise<{
-  scan_run_id: string;
-  items: Array<{
-    symbol: string;
-    recommendation_id: string;
-    production_action?: string | null;
-    production_score?: number | null;
-    re001_state: string;
-    confidence_score: number;
-    strategy_name?: string | null;
-    strategy_family?: string | null;
-    is_mismatch?: boolean | null;
-  }>;
-}> {
-  const key = `re001_scan_comparison:${scanRunId}`;
-  return cachedFetch(
-    key,
-    async () => {
-      const response = await fetchWithDiagnostics(
-        `/api/v1/recommendation-lab/scans/${encodeURIComponent(scanRunId)}/comparison`,
-        { method: "GET" },
-        "RE-001 lab scan comparison",
-      );
-      if (!response.ok) throw mapHttpError(response.status, response.url);
-      return response.json();
-    },
-    { force, swr: !force, ttlMs: 5 * 60 * 1000, softTimeoutMs: 3000 },
-  );
-}
-
-/** RE-001 latest decision for a symbol */
-export async function fetchRe001SymbolLatest(symbol: string): Promise<Record<string, unknown>> {
-  const response = await fetchWithDiagnostics(
-    `/api/v1/recommendation-lab/symbols/${encodeURIComponent(symbol)}/latest`,
-    { method: "GET" },
-    "RE-001 lab symbol latest",
-  );
-  if (!response.ok) {
-    throw mapHttpError(response.status, response.url);
-  }
-  return response.json();
-}
-
-/** RE-001 engine registration / stage */
-export async function fetchRe001Registration(force = false): Promise<{
-  engine_id: string;
-  name: string;
-  engine_version: string;
-  stage: string;
-  enabled: boolean;
-}> {
-  return cachedFetch(
-    "re001_registration",
-    async () => {
-      const response = await fetchWithDiagnostics(
-        "/api/v1/recommendation-lab/registration",
-        { method: "GET" },
-        "RE-001 registration",
-      );
-      if (!response.ok) throw mapHttpError(response.status, response.url);
-      return response.json();
-    },
-    { force, swr: !force, ttlMs: 10 * 60 * 1000, softTimeoutMs: 2500 },
-  );
-}
-
-/** RE-002 latest decision for a symbol */
-export async function fetchRe002SymbolLatest(symbol: string): Promise<Record<string, unknown>> {
-  const response = await fetchWithDiagnostics(
-    `/api/v1/recommendation-lab/re002/symbols/${encodeURIComponent(symbol)}/latest`,
-    { method: "GET" },
-    "RE-002 lab symbol latest",
-  );
-  if (!response.ok) {
-    throw mapHttpError(response.status, response.url);
-  }
-  return response.json();
-}
-
-/** RE-002 recent scan cohorts (independent of RE-001) */
-export async function fetchRe002RecentScans(
-  limit = 20,
-  opts?: { minDecisions?: number; preferCohorts?: boolean; force?: boolean },
-): Promise<{
-  items: Array<{
-    scan_run_id: string;
-    decision_count: number;
-    latest_created_at?: string | null;
-  }>;
-}> {
-  const key = `re002_recent_scans:${limit}:${opts?.minDecisions ?? 1}:${opts?.preferCohorts ?? true}`;
-  return cachedFetch(
-    key,
-    async () => {
-      const params = new URLSearchParams({
-        limit: String(limit),
-        min_decisions: String(opts?.minDecisions ?? 1),
-        prefer_cohorts: String(opts?.preferCohorts ?? true),
-      });
-      const response = await fetchWithDiagnostics(
-        `/api/v1/recommendation-lab/re002/scans/recent?${params}`,
-        { method: "GET" },
-        "RE-002 recent scans",
-      );
-      if (!response.ok) throw mapHttpError(response.status, response.url);
-      return response.json();
-    },
-    { force: opts?.force, swr: !opts?.force, ttlMs: 2 * 60 * 1000, softTimeoutMs: 3000 },
-  );
-}
-
-/** RE-002 paged decision history */
-export async function fetchRe002History(params?: {
-  experiment_id?: string;
-  symbol?: string;
-  state?: string;
-  limit?: number;
-  offset?: number;
-}): Promise<{
-  engine_id: string;
-  total: number;
-  limit: number;
-  offset: number;
-  items: Array<Record<string, unknown>>;
-}> {
-  const q = new URLSearchParams();
-  if (params?.experiment_id) q.set("experiment_id", params.experiment_id);
-  if (params?.symbol) q.set("symbol", params.symbol);
-  if (params?.state) q.set("state", params.state);
-  if (params?.limit != null) q.set("limit", String(params.limit));
-  if (params?.offset != null) q.set("offset", String(params.offset));
-  const response = await fetchWithDiagnostics(
-    `/api/v1/recommendation-lab/re002/history?${q}`,
-    { method: "GET" },
-    "RE-002 history",
-  );
-  if (!response.ok) {
-    throw mapHttpError(response.status, response.url);
-  }
-  return response.json();
-}
-
-/** RE-002 scan comparison */
-export async function fetchRe002ScanComparison(scanRunId: string, force = false): Promise<{
-  scan_run_id: string;
-  items: Array<{
-    symbol: string;
-    recommendation_id: string;
-    production_action?: string | null;
-    production_score?: number | null;
-    re002_state: string;
-    confidence_score: number;
-    strategy_name?: string | null;
-    strategy_family?: string | null;
-    is_mismatch?: boolean | null;
-    experiment_id?: string | null;
-  }>;
-}> {
-  const key = `re002_scan_comparison:${scanRunId}`;
-  return cachedFetch(
-    key,
-    async () => {
-      const response = await fetchWithDiagnostics(
-        `/api/v1/recommendation-lab/re002/scans/${encodeURIComponent(scanRunId)}/comparison`,
-        { method: "GET" },
-        "RE-002 lab scan comparison",
-      );
-      if (!response.ok) throw mapHttpError(response.status, response.url);
-      return response.json();
-    },
-    { force, swr: !force, ttlMs: 5 * 60 * 1000, softTimeoutMs: 3000 },
-  );
-}
-
-/** RE-002 engine registration / stage */
-export async function fetchRe002Registration(force = false): Promise<{
-  engine_id: string;
-  name: string;
-  engine_version: string;
-  stage: string;
-  enabled: boolean;
-  experiment_id?: string | null;
-  active?: boolean;
-}> {
-  return cachedFetch(
-    "re002_registration",
-    async () => {
-      const response = await fetchWithDiagnostics(
-        "/api/v1/recommendation-lab/re002/registration",
-        { method: "GET" },
-        "RE-002 registration",
-      );
-      if (!response.ok) throw mapHttpError(response.status, response.url);
-      return response.json();
-    },
-    { force, swr: !force, ttlMs: 10 * 60 * 1000, softTimeoutMs: 2500 },
-  );
-}
-
-/** RE-002 health segment */
-export async function fetchRe002Health(days = 7, force = false): Promise<Record<string, unknown>> {
-  const key = `re002_health:${days}`;
-  return cachedFetch(
-    key,
-    async () => {
-      const response = await fetchWithDiagnostics(
-        `/api/v1/recommendation-lab/re002/health?days=${days}`,
-        { method: "GET" },
-        "RE-002 health",
-      );
-      if (!response.ok) throw mapHttpError(response.status, response.url);
-      return response.json();
-    },
-    { force, swr: !force, ttlMs: 2 * 60 * 1000, softTimeoutMs: 3000 },
-  );
-}
-

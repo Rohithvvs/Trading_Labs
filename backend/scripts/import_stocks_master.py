@@ -22,6 +22,8 @@ else:
     # Fallback
     sys.path.append(str(_here.parents[1]))
 
+from datetime import datetime, timezone
+
 from app.db.session import AsyncSessionLocal
 from app.models.stock import StockMaster
 
@@ -31,6 +33,8 @@ async def import_csv(csv_path: str, universe: str):
         print(f"File not found: {csv_path}")
         return
 
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    is_nifty500 = universe.upper().replace(" ", "") in {"NIFTY500", "NIFTY_500"}
     records = []
     with open(csv_path, newline='', encoding='utf-8-sig') as f:
         reader = csv.DictReader(f)
@@ -51,16 +55,21 @@ async def import_csv(csv_path: str, universe: str):
 
             company_name = (row.get("Company Name") or row.get("company_name") or "").strip()
             sector = (row.get("Industry") or row.get("industry") or row.get("sector") or "").strip()
+            industry = (row.get("Industry") or row.get("industry") or "").strip() or None
             isin = (row.get("ISIN Code") or row.get("isin") or "").strip()
 
             records.append({
                 "symbol": symbol,
                 "company_name": company_name,
                 "sector": sector,
+                "industry": industry,
                 "series": series,
                 "isin": isin,
                 "universe": universe,
+                "is_nifty500": is_nifty500,
                 "is_active": True,
+                "first_seen": now,
+                "last_seen": now,
             })
 
     if not records:
@@ -74,10 +83,13 @@ async def import_csv(csv_path: str, universe: str):
             set_={
                 "company_name": stmt.excluded.company_name,
                 "sector": stmt.excluded.sector,
+                "industry": stmt.excluded.industry,
                 "series": stmt.excluded.series,
                 "isin": stmt.excluded.isin,
                 "universe": stmt.excluded.universe,
+                "is_nifty500": stmt.excluded.is_nifty500,
                 "is_active": True,
+                "last_seen": now,
             }
         )
         await db.execute(stmt)

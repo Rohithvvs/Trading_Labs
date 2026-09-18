@@ -206,7 +206,6 @@ def test_market_open_executes_pending_market_open_order():
             lifecycle_state="WAITING_FOR_MARKET",
             market_session="CLOSED",
             scheduled_execution=datetime(2026, 5, 26, 9, 15, tzinfo=IST),
-            source_engine_id="Production",
             idempotency_key=f"pending-exec-{uuid.uuid4()}",
         )
         db.add(order)

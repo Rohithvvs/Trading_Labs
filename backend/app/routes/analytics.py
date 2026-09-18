@@ -117,7 +117,7 @@ def _rule_match_predicate(rule: str, dialect: str) -> ColumnElement[bool]:
 async def get_engine_health(db: AsyncSession = Depends(get_db)) -> EngineHealthResponse:
     """GET /api/v1/analytics/engine-health
 
-    Returns rolling 7-day operational performance metrics for the Recommendation Engine.
+    Returns rolling 7-day operational performance metrics for the analysis pipeline.
     Uses SQL aggregation (no full-row hydrate) for scale.
     """
     now = datetime.now(timezone.utc)

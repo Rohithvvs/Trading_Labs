@@ -20,13 +20,7 @@ import pandas as pd
 import pytest
 
 from app.services.feat004_regime_overlay import apply_feat004_regime_overlay
-from app.agents.recommendation_agent import RecommendationAgent
-from app.schemas.analysis import (
-    AnalysisMode,
-    BacktestResult,
-    OHLCVPoint,
-    TechnicalAnalysisResult,
-)
+from app.schemas.analysis import FinalRecommendation, OHLCVPoint, RecommendationReasoning
 from backend.app.agents.orchestrator_agent import OrchestratorAgent
 from backend.app.config import settings
 
@@ -60,22 +54,6 @@ def _make_candles(n: int, last_ts: datetime, base: float = 100.0) -> list[OHLCVP
     return candles
 
 
-def _tech(score: float = 80.0) -> TechnicalAnalysisResult:
-    return TechnicalAnalysisResult(
-        mode=AnalysisMode.swing, signal="buy", score=score,
-        indicators={}, summary="test",
-    )
-
-
-def _backtest(ret: float = 15.0) -> BacktestResult:
-    return BacktestResult(
-        mode=AnalysisMode.swing, strategy_name="sma_rsi_macd",
-        total_return=ret, max_drawdown=5.0, win_rate=60.0,
-        profit_factor=2.0, trade_count=8, verdict="favorable",
-        equity_curve=[{"label": "Start", "equity": 100000.0}],
-    )
-
-
 def _enable_feat004(monkeypatch: pytest.MonkeyPatch, symbols: str = "NIFTY500") -> None:
     monkeypatch.setattr(settings, "feat004_enabled", True)
     monkeypatch.setattr(settings, "feat004_benchmark_symbols", symbols)
@@ -87,21 +65,35 @@ def _run_agent(
     benchmark_ohlcv: pd.DataFrame | None,
     benchmark_symbol: str | None,
     feat004_config: dict,
-) -> object:
-    agent = RecommendationAgent()
-    return agent.run(
+) -> FinalRecommendation:
+    """Build a FinalRecommendation with FEAT-004 metadata attached.
+
+    The recommendation engine that previously produced this payload was
+    removed; the FEAT-004 overlay log is now computed directly from the
+    surviving ``apply_feat004_regime_overlay`` service.
+    """
+    composite_score = 70.0
+    current_label = "WATCH"
+    adjusted_score, adjusted_label, feat004_log = apply_feat004_regime_overlay(
+        composite_score=composite_score,
+        current_label=current_label,
         symbol="TEST",
-        technical_results=[_tech()],
-        sentiment_label="positive",
-        sentiment_score=0.5,
-        fundamental_result=None,
-        backtests=[_backtest()],
-        candles_by_mode={AnalysisMode.swing: []},
-        feat004_config=feat004_config,
         benchmark_ohlcv=benchmark_ohlcv,
-        benchmark_symbol=benchmark_symbol,
         sector_mapping=None,
         sector_ohlcv_cache=None,
+        feat004_config=feat004_config,
+        benchmark_symbol=benchmark_symbol,
+    )
+    return FinalRecommendation(
+        action=adjusted_label,
+        confidence=0.6,
+        score=adjusted_score,
+        reasoning=RecommendationReasoning(
+            bullets=[], risk_factors=[], invalidation_signals=[]
+        ),
+        trade_plans=[],
+        summary="test",
+        feat004=feat004_log,
     )
 
 

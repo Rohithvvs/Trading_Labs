@@ -19,13 +19,13 @@ export type TokenStatusLike = {
 export function isFyersTokenUsable(token: TokenStatusLike | null | undefined): boolean {
   if (!token) return false;
   if (token.valid === true) return true;
-  if (token.access_token_active === true) return true;
+  if (Boolean(token.access_token_active)) return true;
   const conn = String(token.connection_status || "").toLowerCase();
   if (conn === "connected" || conn === "expiring soon") return true;
   const st = String(token.status || "").toLowerCase();
   if (st === "active" || st === "success") return true;
   // Failed automation may still leave a usable prior token
-  if (st === "failed" && token.access_token_active === true) return true;
+  if (st === "failed" && Boolean(token.access_token_active)) return true;
   return false;
 }
 

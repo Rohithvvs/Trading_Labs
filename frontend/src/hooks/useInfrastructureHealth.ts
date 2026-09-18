@@ -19,6 +19,8 @@ interface FullHealth {
 const POLL_INTERVAL_MS = 15_000;
 /** Must exceed backend health probe budgets (DB 8s + Redis 1s + overhead). */
 const REQUEST_TIMEOUT_MS = 15_000;
+/** Process liveness only — must stay tiny; no DB/Redis. */
+const LIVE_TIMEOUT_MS = 3_000;
 
 const DEFAULT_SERVICES: ServiceStatus[] = [
   { label: "Render Server", key: "render", status: "sleeping" },
@@ -64,6 +66,57 @@ function mapComponentStatus(
   return { status: "sleeping" };
 }
 
+async function fetchJsonWithTimeout(
+  path: string,
+  timeoutMs: number,
+  parentSignal?: AbortSignal,
+): Promise<{ ok: boolean; status: number; latencyMs: number; data: Record<string, unknown>; timedOut: boolean; aborted: boolean }> {
+  const controller = new AbortController();
+  const onParentAbort = () => controller.abort();
+  if (parentSignal) {
+    if (parentSignal.aborted) {
+      controller.abort();
+    } else {
+      parentSignal.addEventListener("abort", onParentAbort, { once: true });
+    }
+  }
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+  const startedAt = performance.now();
+  try {
+    const response = await fetch(apiUrl(path), {
+      method: "GET",
+      credentials: "include",
+      headers: { "Cache-Control": "no-cache", Accept: "application/json" },
+      signal: controller.signal,
+    });
+    const latencyMs = Math.round(performance.now() - startedAt);
+    let data: Record<string, unknown> = {};
+    try {
+      data = (await response.json()) as Record<string, unknown>;
+    } catch {
+      data = {};
+    }
+    return { ok: response.ok, status: response.status, latencyMs, data, timedOut: false, aborted: false };
+  } catch (error) {
+    const aborted = isAbortError(error);
+    // Abort from timeout vs parent unmount: if parent aborted, mark aborted; else timeout.
+    const timedOut = aborted && !(parentSignal?.aborted);
+    return {
+      ok: false,
+      status: 0,
+      latencyMs: Math.round(performance.now() - startedAt),
+      data: {},
+      timedOut,
+      aborted: Boolean(parentSignal?.aborted),
+    };
+  } finally {
+    window.clearTimeout(timeoutId);
+    if (parentSignal) {
+      parentSignal.removeEventListener("abort", onParentAbort);
+    }
+  }
+}
+
 export function useInfrastructureHealth() {
   const [health, setHealth] = useState<FullHealth>({
     services: DEFAULT_SERVICES.map((s) => ({ ...s })),
@@ -76,49 +129,96 @@ export function useInfrastructureHealth() {
     let activeController: AbortController | null = null;
 
     async function pingHealth() {
+      // Cancel any prior in-flight probe so we never stack polls.
+      activeController?.abort();
       const controller = new AbortController();
       activeController = controller;
-      // Capture controller locally to avoid stale reference in timeout callback
-      const timeoutId = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
       const startedAt = performance.now();
 
       try {
-        const endpoint = apiUrl("/health");
-        console.info("[infra-health] request →", endpoint);
-        const response = await fetch(endpoint, {
-          method: "GET",
-          credentials: "include",
-          headers: { "Cache-Control": "no-cache", Accept: "application/json" },
-          signal: controller.signal,
-        });
+        // 1) Pure process liveness — proves the server process/event loop can answer.
+        console.info("[infra-health] live →", apiUrl("/health/live"));
+        const live = await fetchJsonWithTimeout("/health/live", LIVE_TIMEOUT_MS, controller.signal);
+        if (!isMounted || controller.signal.aborted) return;
 
-        const latencyMs = Math.round(performance.now() - startedAt);
-        if (!isMounted) return;
+        // 2) Full dependency probe (DB/Redis/engine flags).
+        console.info("[infra-health] full →", apiUrl("/health"));
+        const full = await fetchJsonWithTimeout("/health", REQUEST_TIMEOUT_MS, controller.signal);
+        if (!isMounted || controller.signal.aborted) return;
 
-        let healthData: Record<string, any> = {};
-        try {
-          healthData = await response.json();
-        } catch {
-          healthData = {};
+        const totalMs = Math.round(performance.now() - startedAt);
+        const now = new Date();
+
+        // Case A: process is dead / unreachable (live failed hard or timed out).
+        if (!live.ok && !live.aborted) {
+          const failStatus: ServiceBadgeState = live.timedOut ? "waking" : "offline";
+          const message = live.timedOut
+            ? "Health check timed out — server may be waking up. Retrying…"
+            : "Health check failed — server unreachable";
+          console.warn("[infra-health] live failed", { timedOut: live.timedOut, message, liveMs: live.latencyMs });
+          setHealth({
+            services: DEFAULT_SERVICES.map((s) => ({
+              ...s,
+              status: failStatus,
+              meta: live.timedOut ? "timeout" : undefined,
+            })),
+            lastCheckedAt: now,
+            error: message,
+          });
+          return;
         }
 
-        const renderOk = response.ok;
-        // Trust explicit backend component fields — never invent "ok" from latency alone.
+        // Case B: process is alive. Never paint ALL services "Waking Up" just because
+        // the dependency probe was slow (e.g. scanner CPU previously blocked the loop,
+        // or Neon cold start). Show render/scanner as active; mark deps connecting.
+        if (!full.ok) {
+          const busyMeta = full.timedOut ? "busy" : "error";
+          const message = full.timedOut
+            ? "Dependency health slow — process is alive. Scanner may be busy. Retrying…"
+            : "Dependency health failed — process is alive";
+          console.warn("[infra-health] full failed while live ok", {
+            timedOut: full.timedOut,
+            liveMs: live.latencyMs,
+            fullMs: full.latencyMs,
+            totalMs,
+          });
+          setHealth({
+            services: [
+              {
+                label: "Render Server",
+                key: "render",
+                status: "active",
+                meta: `live ${live.latencyMs}ms`,
+              },
+              { label: "Neon Database", key: "db", status: "connecting", meta: busyMeta },
+              { label: "Redis Cache", key: "redis", status: "connecting", meta: busyMeta },
+              { label: "Market Feed", key: "feed", status: "connecting", meta: busyMeta },
+              { label: "FYERS API", key: "fyers", status: "connecting", meta: busyMeta },
+              { label: "Scanner Workers", key: "scanner", status: "active", meta: "process up" },
+              { label: "WebSocket", key: "ws", status: "connecting", meta: busyMeta },
+              { label: "Scheduler", key: "scheduler", status: "active", meta: "in-process" },
+            ],
+            lastCheckedAt: now,
+            error: message,
+          });
+          return;
+        }
+
+        const healthData = full.data;
+        const latencyMs = full.latencyMs;
         const db = mapComponentStatus(healthData?.database);
         const redis = mapComponentStatus(healthData?.redis, { treatNotConfiguredAsActive: true });
         const fyers = mapComponentStatus(healthData?.fyers);
         const ws = mapComponentStatus(healthData?.websocket);
-        // Scanner workers / scheduler share process with API when /health is reachable.
-        const scannerStatus: ServiceBadgeState = renderOk ? "active" : "offline";
-        const schedulerStatus: ServiceBadgeState = renderOk ? "active" : "offline";
+        const scannerStatus: ServiceBadgeState = "active";
+        const schedulerStatus: ServiceBadgeState = "active";
 
-        const now = new Date();
         const services: ServiceStatus[] = [
           {
             label: "Render Server",
             key: "render",
-            status: renderOk ? "active" : "offline",
-            meta: renderOk ? `${latencyMs}ms` : undefined,
+            status: "active",
+            meta: `${latencyMs}ms`,
           },
           {
             label: "Neon Database",
@@ -148,7 +248,7 @@ export function useInfrastructureHealth() {
             label: "Scanner Workers",
             key: "scanner",
             status: scannerStatus,
-            meta: scannerStatus === "active" ? "ready" : undefined,
+            meta: "ready",
           },
           {
             label: "WebSocket",
@@ -160,18 +260,22 @@ export function useInfrastructureHealth() {
             label: "Scheduler",
             key: "scheduler",
             status: schedulerStatus,
-            meta: schedulerStatus === "active" ? "in-process" : undefined,
+            meta: "in-process",
           },
         ];
 
-        console.info("[infra-health] ok", { latencyMs, database: healthData?.database, redis: healthData?.redis });
+        console.info("[infra-health] ok", {
+          liveMs: live.latencyMs,
+          fullMs: latencyMs,
+          totalMs,
+          database: healthData?.database,
+          redis: healthData?.redis,
+        });
         setHealth({ services, lastCheckedAt: now, error: null });
       } catch (error) {
-        // Unmount cleanup aborts in-flight probes — do not paint the stack OFFLINE.
         if (!isMounted) return;
         const timedOut = isAbortError(error);
         const now = new Date();
-        // Timeout → "waking" (cold start / slow network). Hard failure → offline.
         const failStatus: ServiceBadgeState = timedOut ? "waking" : "offline";
         const message = timedOut
           ? "Health check timed out — server may be waking up. Retrying…"
@@ -189,8 +293,9 @@ export function useInfrastructureHealth() {
           error: message,
         });
       } finally {
-        window.clearTimeout(timeoutId);
-        activeController = null;
+        if (activeController === controller) {
+          activeController = null;
+        }
       }
     }
 

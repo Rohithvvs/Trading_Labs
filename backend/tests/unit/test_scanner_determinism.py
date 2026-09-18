@@ -88,7 +88,8 @@ async def test_shortlist_breaks_equal_screener_scores_by_symbol():
         last_fetched_frames={},
     )
 
-    async def _run_full(request, progress_callback=None, prefetched_candles=None):
+    async def _run_full(request, progress_callback=None, prefetched_candles=None, **kwargs):
+        # Accept future kwargs from the shortlist path
         return FullAnalysisResponse(
             items=[],
             rankings=RankingsResponse(
@@ -117,16 +118,23 @@ async def test_shortlist_breaks_equal_screener_scores_by_symbol():
     orchestrator._data_source_label = lambda *args, **kwargs: "test"
     orchestrator._data_warning = lambda: None
     orchestrator._market_context = lambda: {}
+    orchestrator._canonical_symbol = lambda s: str(s).replace("-EQ", "").replace("NSE:", "")
 
     # Minimal request object with timeframe.lookback_window used by stage.
     request = ScreenerRequest(top_n=2)
 
-    response = await orchestrator._run_screener_stage(
-        request=request,
-        stage_name="test",
-        source_universe=["TCS-EQ", "INFY-EQ"],
-        duplicate_symbols_skipped=0,
-    )
+    from unittest.mock import MagicMock, patch
+
+    mock_settings = MagicMock()
+    mock_settings.is_authoritative_candle_store_enabled.return_value = False
+
+    with patch("app.agents.orchestrator_agent.settings", mock_settings):
+        response = await orchestrator._run_screener_stage(
+            request=request,
+            stage_name="test",
+            source_universe=["TCS-EQ", "INFY-EQ"],
+            duplicate_symbols_skipped=0,
+        )
 
     assert response.shortlisted_symbols == ["INFY-EQ", "TCS-EQ"]
 

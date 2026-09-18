@@ -772,18 +772,35 @@ class BacktestService:
 
         verdict = "favorable" if total_return > 0 and win_rate >= 45 and profit_factor >= 1 else "mixed" if trade_count else "insufficient"
 
-        # Compute monthly returns heatmap (sum of pnl_percent by month)
-        monthly_returns: dict[str, float] = {}
-        for t in net_trades:
-            m = t["exit_date"][:7]  # YYYY-MM
-            monthly_returns[m] = monthly_returns.get(m, 0.0) + t["pnl_percent"]
-        monthly_list = [{"month": k, "return": round(v, 2)} for k, v in sorted(monthly_returns.items())]
+        # Compute monthly returns from equity curve period-to-period
+        curve = net_equity_curve if net_equity_curve else [{"label": "Start", "equity": 100000.0}, {"label": "End", "equity": round(net_cash, 2)}]
+
+        monthly_returns_pct: dict[str, float] = {}
+        if curve:
+            month_to_equities = {}
+            for pt in curve:
+                m = str(pt["label"])[:7]
+                if m == "Start" or m == "End":
+                    continue
+                if m not in month_to_equities:
+                    month_to_equities[m] = []
+                month_to_equities[m].append(pt["equity"])
+            
+            sorted_months = sorted(month_to_equities.keys())
+            prev_end_equity = 100000.0
+            
+            for m in sorted_months:
+                end_equity = month_to_equities[m][-1]
+                month_return = ((end_equity / prev_end_equity) - 1) if prev_end_equity > 0 else 0.0
+                monthly_returns_pct[m] = month_return
+                prev_end_equity = end_equity
+
+        monthly_list = [{"month": k, "return": round(v, 4)} for k, v in sorted(monthly_returns_pct.items())]
 
         best_trade = max(net_trades, key=lambda t: t["pnl_percent"]) if net_trades else None
         worst_trade = min(net_trades, key=lambda t: t["pnl_percent"]) if net_trades else None
 
         # Remove hard-coded blind truncation from core engine to preserve full curve visibility
-        curve = net_equity_curve if net_equity_curve else [{"label": "Start", "equity": 100000.0}, {"label": "End", "equity": round(net_cash, 2)}]
 
         # ===================================================================
         # FEAT-008 — Execution model routing
@@ -825,11 +842,7 @@ class BacktestService:
             primary_trades = gross_trades
             primary_best_trade = max(gross_trades, key=lambda t: t["pnl_percent"]) if gross_trades else None
             primary_worst_trade = min(gross_trades, key=lambda t: t["pnl_percent"]) if gross_trades else None
-            gross_monthly: dict[str, float] = {}
-            for t in gross_trades:
-                m = t["exit_date"][:7]
-                gross_monthly[m] = gross_monthly.get(m, 0.0) + t["pnl_percent"]
-            primary_monthly_list = [{"month": k, "return": round(v, 2)} for k, v in sorted(gross_monthly.items())]
+            primary_monthly_list = monthly_list
             primary_equity_curve = curve
             feat008_score_used = "legacy"
         else:

@@ -24,17 +24,8 @@ from ..models.paper_trading import (
     PaperTransaction,
 )
 from ..services.fyers_service import FyersService
-from ..services.recommendation_engine_ids import normalize_recommendation_engine
 from ..schemas import AnalysisMode
 from .log_manager import trading_logger as logger
-
-
-def _engine_of(entity: object | None) -> str:
-    """Canonical engine tag for an order/position (never None for uniqueness)."""
-    return normalize_recommendation_engine(
-        getattr(entity, "source_engine_id", None) if entity is not None else None
-    )
-
 
 async def _safe_rollback(db: AsyncSession) -> None:
     """Clear a failed transaction so the same session can continue."""
@@ -241,7 +232,6 @@ async def run_gap_replay(db: AsyncSession, fyers_service: FyersService) -> Dict:
                         )
                     ).first():
                         continue
-                    order_engine = _engine_of(order)
                     for candle in market_candles:
                         candle_low = float(candle.low)
                         candle_time = candle.timestamp
@@ -256,14 +246,13 @@ async def run_gap_replay(db: AsyncSession, fyers_service: FyersService) -> Dict:
                                 order.filled_price = fill_price
                                 order.filled_at = candle_time
 
-                                # Unique open key: (account, symbol, source_engine_id)
+                                # Unique open key: (account, symbol)
                                 existing_pos = (
                                     await db.scalars(
                                         select(PaperPosition).where(
                                             PaperPosition.account_id == account_id,
                                             PaperPosition.symbol == symbol,
                                             PaperPosition.status == "OPEN",
-                                            PaperPosition.source_engine_id == order_engine,
                                         )
                                     )
                                 ).first()
@@ -294,14 +283,6 @@ async def run_gap_replay(db: AsyncSession, fyers_service: FyersService) -> Dict:
                                         source_signal=getattr(order, "source_signal", None),
                                         source_score=getattr(order, "source_score", None),
                                         source_confidence=getattr(order, "source_confidence", None),
-                                        source_engine_id=order_engine,
-                                        source_engine_version=getattr(
-                                            order, "source_engine_version", None
-                                        ),
-                                        source_recommendation_id=getattr(
-                                            order, "source_recommendation_id", None
-                                        ),
-                                        experiment_id=getattr(order, "experiment_id", None),
                                     )
                                     try:
                                         new_pos.created_at = candle_time
@@ -346,7 +327,7 @@ async def run_gap_replay(db: AsyncSession, fyers_service: FyersService) -> Dict:
                                 )
 
                                 msg = (
-                                    f"OFFLINE_FILL | symbol={symbol} | engine={order_engine} | "
+                                    f"OFFLINE_FILL | symbol={symbol} | "
                                     f"side=BUY | qty={order.qty} | fill_price={fill_price} | "
                                     f"candle_time={candle_time.isoformat()}"
                                 )
@@ -426,7 +407,6 @@ async def run_gap_replay(db: AsyncSession, fyers_service: FyersService) -> Dict:
                         entry_price = float(pos.avg_entry_price)
                         qty = float(pos.qty)
                         pnl = (float(exit_price) - entry_price) * qty
-                        pos_engine = _engine_of(pos)
                         exit_order = None
                         try:
                             exit_order = PaperOrder(
@@ -441,20 +421,13 @@ async def run_gap_replay(db: AsyncSession, fyers_service: FyersService) -> Dict:
                                 notes=f"Offline auto-exit: {exit_reason}",
                                 filled_price=exit_price,
                                 filled_at=exit_time,
-                                source_engine_id=pos_engine,
-                                source_engine_version=getattr(pos, "source_engine_version", None),
-                                source_recommendation_id=getattr(
-                                    pos, "source_recommendation_id", None
-                                ),
-                                experiment_id=getattr(pos, "experiment_id", None),
                             )
                             db.add(exit_order)
                             await db.flush()
                         except Exception:
                             logger.exception(
-                                "[GAP_REPLAY] Failed to add exit order for %s engine=%s",
+                                "[GAP_REPLAY] Failed to add exit order for %s",
                                 pos.symbol,
-                                pos_engine,
                             )
                             await _safe_rollback(db)
                             continue
@@ -476,12 +449,6 @@ async def run_gap_replay(db: AsyncSession, fyers_service: FyersService) -> Dict:
                                 source_signal=pos.source_signal,
                                 source_score=pos.source_score,
                                 source_confidence=pos.source_confidence,
-                                source_engine_id=pos_engine,
-                                source_engine_version=getattr(pos, "source_engine_version", None),
-                                source_recommendation_id=getattr(
-                                    pos, "source_recommendation_id", None
-                                ),
-                                experiment_id=getattr(pos, "experiment_id", None),
                                 opened_at=pos.created_at,
                                 closed_at=exit_time,
                                 exit_reason=exit_reason,
@@ -541,7 +508,7 @@ async def run_gap_replay(db: AsyncSession, fyers_service: FyersService) -> Dict:
                             )
 
                         msg = (
-                            f"OFFLINE_EXIT | symbol={pos.symbol} | engine={pos_engine} | "
+                            f"OFFLINE_EXIT | symbol={pos.symbol} | "
                             f"exit_price={exit_price} | reason={exit_reason} | "
                             f"pnl={round(pnl, 2)} | hit_at={exit_time.isoformat()}"
                         )

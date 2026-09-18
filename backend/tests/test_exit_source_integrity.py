@@ -47,25 +47,56 @@ def test_reconciliation_exit_source(paper_service):
     Verify RECONCILIATION exit source is assigned when an order is historically filled.
     Actually, RECONCILIATION exits are simulated by auto_exit passing source="RECONCILIATION".
     """
+    from backend.app.schemas.paper_trading import PaperAccountSummary
+
     # This is handled exactly the same way as LIVE, we just ensure the parameter propagates.
     account_mock = MagicMock()
     account_mock.id = 1
+    account_mock.name = "Paper"
+    account_mock.base_currency = "INR"
     account_mock.cash_balance = Decimal("100000.00")
     account_mock.starting_balance = Decimal("100000.00")
     account_mock.realized_pnl = Decimal("0.00")
     account_mock.unrealized_pnl = Decimal("0.00")
-    paper_service._get_or_create_account = MagicMock(return_value=account_mock)
-    paper_service.get_dashboard = MagicMock()
-    paper_service._serialize_order = MagicMock()
-    paper_service._serialize_trade = MagicMock()
+    account_mock.max_risk_per_trade = Decimal("0")
+    summary = PaperAccountSummary(
+        account_id=1,
+        account_name="Paper",
+        starting_balance=100000.0,
+        balance=101000.0,
+        equity=101000.0,
+        realized_pnl=100.0,
+        unrealized_pnl=0.0,
+        total_invested=0.0,
+        reserved_cash=0.0,
+        available_cash=101000.0,
+        open_positions_count=0,
+        open_orders_count=0,
+        max_risk_per_trade=0.0,
+        updated_at=datetime.now(timezone.utc),
+    )
+    paper_service.get_account_by_id = MagicMock(return_value=account_mock)
+    paper_service._account_capital_for_confirm = MagicMock(return_value=summary)
+    paper_service._serialize_order = MagicMock(return_value=None)
+    paper_service._serialize_trade = MagicMock(return_value=None)
     paper_service._record_execution_event = MagicMock()
-    pos_mock = MagicMock(id=5, qty=Decimal("10"), avg_entry_price=Decimal("100"))
+    paper_service.add_notification = MagicMock()
+    pos_mock = MagicMock(
+        id=5,
+        account_id=1,
+        qty=Decimal("10"),
+        avg_entry_price=Decimal("100"),
+        symbol="RELIANCE",
+        notes=None,
+        source_signal=None,
+        source_score=None,
+        source_confidence=None,
+        created_at=None,
+    )
     paper_service.db.scalar.side_effect = [pos_mock, None]
+    paper_service.db.bind = None
     
-    try:
-        paper_service.auto_exit(5, 110.00, reason="TARGET_HIT", source="RECONCILIATION")
-    except Exception:
-        pass
+    paper_service.auto_exit(5, 110.00, reason="TARGET_HIT", source="RECONCILIATION")
     
     add_calls = paper_service.db.add.call_args_list
     trade_history = None

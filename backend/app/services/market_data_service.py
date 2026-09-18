@@ -370,6 +370,57 @@ class MarketDataService:
                 df["volume"] = df["volume"].apply(lambda v: safe_int(v, symbol=symbol, field="volume"))
         return df
 
+    async def load_recent_history(
+        self,
+        symbol: str,
+        timeframe: str,
+        limit: int = 250,
+    ) -> pd.DataFrame:
+        """Load at most ``limit`` most-recent candles (bounded; scanner-critical path).
+
+        Returns chronological order (oldest→newest) for indicator compatibility.
+        Prefer this over ``load_full_history`` when only a lookback window is needed.
+        """
+        if limit is None or int(limit) <= 0:
+            return await self.load_full_history(symbol, timeframe)
+
+        lim = int(limit)
+        query = (
+            select(
+                HistoricalCandle.timestamp.label("date"),
+                HistoricalCandle.open,
+                HistoricalCandle.high,
+                HistoricalCandle.low,
+                HistoricalCandle.close,
+                HistoricalCandle.volume,
+            )
+            .where(
+                HistoricalCandle.symbol == symbol,
+                HistoricalCandle.resolution == timeframe,
+            )
+            .order_by(HistoricalCandle.timestamp.desc())
+            .limit(lim)
+        )
+
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(query)
+            rows = result.all()
+            keys = result.keys()
+
+        if not rows:
+            return pd.DataFrame()
+
+        df = pd.DataFrame(rows, columns=keys)
+        df.set_index("date", inplace=True)
+        # Query was DESC for LIMIT; restore chronological order for EMA/indicators.
+        df.sort_index(inplace=True)
+        for col in ("open", "high", "low", "close"):
+            if col in df.columns:
+                df[col] = df[col].astype(float)
+        if "volume" in df.columns:
+            df["volume"] = df["volume"].apply(lambda v: safe_int(v, symbol=symbol, field="volume"))
+        return df
+
     @staticmethod
     def symbol_lookup_variants(symbol: str) -> list[str]:
         """All plausible stored forms for a universe symbol (handles NSE: / -EQ drift)."""

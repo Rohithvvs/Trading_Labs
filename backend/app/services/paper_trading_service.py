@@ -58,7 +58,6 @@ from ..utils import get_logger, safe_int
 from ..core.log_manager import trading_logger
 from ..utils.money import as_float, dec, q_pnl, q_price, q_qty
 from ..observability.metrics import DUPLICATE_EXECUTIONS, ORDER_EXECUTIONS
-from .recommendation_engine_ids import PRODUCTION, normalize_recommendation_engine
 
 # In-memory PriceSnapshot cache with TTL (avoids redundant FYERS calls across requests within short window)
 _price_snapshot_cache: dict[str, tuple[PriceSnapshot, float]] = {}
@@ -241,12 +240,7 @@ class PaperTradingService:
         )
         _mark("idempotency_lookup", t)
         if existing:
-            existing_engine = normalize_recommendation_engine(
-                getattr(existing, "source_engine_id", None)
-            )
-            position = self._find_open_position(
-                account.id, existing.symbol, existing_engine
-            )
+            position = self._find_open_position(account.id, existing.symbol)
             return PaperOrderActionResponse(
                 account=self._account_capital_for_confirm(account),
                 order=self._serialize_order_lean(existing),
@@ -293,18 +287,9 @@ class PaperTradingService:
             _mark("price_ltp", t)
         trigger_price = self._requested_price(payload, price.current_price)
 
-        # Recommendation engine ownership (Production | RE-001 | RE-002) — never null
-        order_engine = normalize_recommendation_engine(
-            getattr(payload, "recommendation_engine", None)
-            or getattr(payload, "source_engine_id", None)
-            or PRODUCTION
-        )
         self.logger.info(
-            "ORDER_PLACE_ENGINE | symbol=%s | engine=%s | recommendation_id=%s | "
-            "type=%s | side=%s | limit=%s | stop_loss=%s | target=%s",
+            "ORDER_PLACE | symbol=%s | type=%s | side=%s | limit=%s | stop_loss=%s | target=%s",
             order_symbol,
-            order_engine,
-            getattr(payload, "source_recommendation_id", None),
             payload.type,
             payload.side,
             payload.limit_price,
@@ -327,10 +312,6 @@ class PaperTradingService:
             source_signal=payload.source_signal,
             source_score=payload.source_score,
             source_confidence=payload.source_confidence,
-            source_engine_id=order_engine,
-            source_engine_version=getattr(payload, "source_engine_version", None),
-            source_recommendation_id=getattr(payload, "source_recommendation_id", None),
-            experiment_id=getattr(payload, "experiment_id", None),
             status="PENDING",
             lifecycle_state="PENDING_ENTRY",
             market_session=str(market_status.get("status") or market_status.get("session") or "UNKNOWN"),
@@ -681,69 +662,11 @@ class PaperTradingService:
         entry = payload.suggested_entry
         stop = payload.suggested_stop
         targets = list(payload.suggested_targets or [])
-        source_engine_id = normalize_recommendation_engine(
-            getattr(payload, "recommendation_engine", None)
-            or payload.source_engine_id
-            or PRODUCTION
-        )
-        source_engine_version = payload.source_engine_version
-        source_recommendation_id = payload.source_recommendation_id
-        experiment_id = getattr(payload, "experiment_id", None)
-
-        # FR-015 (multi-engine): when a lab recommendation_id / engine is provided,
-        # prefer complete trade_guidance from multi-engine decisions store; else keep
-        # client levels (typically production plan). Shared table for RE-001 / RE-002.
-        engine_upper = (source_engine_id or "").strip().upper()
-        if source_recommendation_id or engine_upper in {"RE-001", "RE-002"}:
-            try:
-                from .re001.persistence import get_decision_by_id
-
-                row = None
-                if source_recommendation_id:
-                    row = get_decision_by_id(self.db, source_recommendation_id)
-                if row is not None:
-                    source_engine_id = normalize_recommendation_engine(
-                        row.engine_id or source_engine_id or "RE-001"
-                    )
-                    source_engine_version = row.engine_version or source_engine_version or "1.0"
-                    source_recommendation_id = row.recommendation_id
-                    if experiment_id is None and hasattr(row, "experiment_id"):
-                        experiment_id = getattr(row, "experiment_id", None)
-                    tg = row.trade_guidance if isinstance(row.trade_guidance, dict) else None
-                    if tg and tg.get("complete"):
-                        entry = float(tg.get("entry_high") or tg.get("entry_low") or entry or 0) or entry
-                        stop = float(tg.get("stop_loss") or stop or 0) or stop
-                        t1 = tg.get("target_1")
-                        if t1 is not None:
-                            targets = [float(t1)] + [t for t in targets if t != float(t1)]
-                    # else: keep client-supplied production levels (fallback)
-            except Exception as lab_prefill_exc:
-                # Fail-open: never block paper prefill on lab lookup errors.
-                import logging
-
-                logging.getLogger("app.paper_trading").warning(
-                    "Lab paper prefill guidance lookup failed | engine=%s | recommendation_id=%s | err=%s",
-                    source_engine_id,
-                    source_recommendation_id,
-                    lab_prefill_exc,
-                    exc_info=True,
-                )
-
         note = (
             f"Imported from system recommendation | signal={payload.recommendation_meta.get('signal', 'BUY')} | "
             f"score={payload.recommendation_meta.get('score', 'n/a')} | "
             f"confidence={payload.recommendation_meta.get('confidence', 'n/a')}"
         )
-        if source_engine_id:
-            note = (
-                f"Imported from {source_engine_id} "
-                f"v{source_engine_version or 'n/a'} | "
-                f"rec_id={source_recommendation_id or 'n/a'} | "
-                f"experiment_id={experiment_id or 'n/a'} | "
-                f"signal={payload.recommendation_meta.get('signal', 'BUY')} | "
-                f"score={payload.recommendation_meta.get('score', 'n/a')} | "
-                f"confidence={payload.recommendation_meta.get('confidence', 'n/a')}"
-            )
 
         def _pos(v):
             try:
@@ -765,10 +688,6 @@ class PaperTradingService:
             stop_loss=stop,
             target=targets[0] if targets else None,
             note=note,
-            source_engine_id=source_engine_id,
-            source_engine_version=source_engine_version,
-            source_recommendation_id=source_recommendation_id,
-            experiment_id=experiment_id,
         )
 
     def get_workspace(self, symbol: str) -> PaperWorkspaceSnapshot:
@@ -1340,30 +1259,21 @@ class PaperTradingService:
             updated_at=datetime.now(timezone.utc),
         )
 
-    def _engine_of(self, entity: object | None) -> str:
-        """Canonical recommendation engine for an order/position/trade row."""
-        return normalize_recommendation_engine(
-            getattr(entity, "source_engine_id", None) if entity is not None else None
-        )
-
     def _find_open_position(
-        self, account_id: int, symbol: str, engine: str | None
+        self, account_id: int, symbol: str
     ) -> PaperPosition | None:
-        """Open position unique by (account, symbol, recommendation_engine)."""
-        eng = normalize_recommendation_engine(engine)
+        """Open position unique by (account, symbol)."""
         return self.db.scalar(
             select(PaperPosition).where(
                 PaperPosition.account_id == account_id,
                 PaperPosition.symbol == symbol,
                 PaperPosition.status == "OPEN",
-                PaperPosition.source_engine_id == eng,
             )
         )
 
     def _serialize_order_lean(self, order: PaperOrder) -> PaperOrderResponse:
         """Confirm response: id/status/levels only — no price-source metadata bloat."""
         filled_price = as_float(q_price(order.filled_price)) if order.filled_price is not None else None
-        eng = self._engine_of(order)
         return PaperOrderResponse(
             id=order.id,
             symbol=order.symbol,
@@ -1382,8 +1292,6 @@ class PaperTradingService:
             created_at=order.created_at,
             product_type=getattr(order, "product_type", None),
             market_session=getattr(order, "market_session", None),
-            source_engine_id=eng,
-            recommendation_engine=eng,
         )
 
     def _serialize_position_lean(self, position: PaperPosition) -> PaperPositionResponse:
@@ -1393,7 +1301,6 @@ class PaperTradingService:
         qty = dec(position.qty)
         unrealized = q_pnl((current_price - avg_entry) * qty)
         unrealized_pct = q_pnl(((current_price - avg_entry) / avg_entry) * Decimal("100")) if avg_entry else Decimal("0.00")
-        eng = self._engine_of(position)
         return PaperPositionResponse(
             id=position.id,
             symbol=position.symbol,
@@ -1407,8 +1314,6 @@ class PaperTradingService:
             target=as_float(q_price(position.target)) if position.target else None,
             lifecycle_state=position.lifecycle_state,
             monitor_enabled=bool(position.monitor_enabled),
-            source_engine_id=eng,
-            recommendation_engine=eng,
             created_at=position.created_at,
             updated_at=position.updated_at,
         )
@@ -1681,9 +1586,7 @@ class PaperTradingService:
         require_market_open: bool = True,
     ) -> tuple[PaperOrder, PaperPosition | None, PaperTradeHistory | None, str]:
         if order.status in TERMINAL_ORDER_STATUSES:
-            position = self._find_open_position(
-                account.id, order.symbol, self._engine_of(order)
-            )
+            position = self._find_open_position(account.id, order.symbol)
             return order, position, None, "Order is already terminal."
 
         # Never execute outside market hours unless explicitly forced (tests only).
@@ -1790,8 +1693,7 @@ class PaperTradingService:
             # Deduct funds and create/update OPEN position for THIS engine only
             prior_cash = account.cash_balance
             account.cash_balance = q_pnl(dec(account.cash_balance) - estimated_cost)
-            order_engine = self._engine_of(order)
-            position = self._find_open_position(account.id, order.symbol, order_engine)
+            position = self._find_open_position(account.id, order.symbol)
             if position:
                 total_cost = (dec(position.avg_entry_price) * dec(position.qty)) + estimated_cost
                 position.qty = q_qty(dec(position.qty) + order_qty)
@@ -1815,10 +1717,6 @@ class PaperTradingService:
                     source_signal=order.source_signal,
                     source_score=order.source_score,
                     source_confidence=order.source_confidence,
-                    source_engine_id=order_engine,
-                    source_engine_version=getattr(order, "source_engine_version", None),
-                    source_recommendation_id=getattr(order, "source_recommendation_id", None),
-                    experiment_id=getattr(order, "experiment_id", None),
                 )
                 self.db.add(position)
                 self.db.flush()
@@ -1881,18 +1779,15 @@ class PaperTradingService:
                 pass
             return order, position, None, "Buy order filled."
 
-        # SELL targets the same recommendation engine as the order (or position engine)
-        sell_engine = self._engine_of(order)
-        position = self._find_open_position(account.id, order.symbol, sell_engine)
+        position = self._find_open_position(account.id, order.symbol)
         if not position or dec(position.qty) < order_qty:
             order.status = "REJECTED"
             try:
                 trading_logger.warning(
-                    "ORDER_REJECTED | order_id=%s | account=%s | symbol=%s | engine=%s | reason=NOT_ENOUGH_POSITION | requested_qty=%s | available_qty=%s",
+                    "ORDER_REJECTED | order_id=%s | account=%s | symbol=%s | reason=NOT_ENOUGH_POSITION | requested_qty=%s | available_qty=%s",
                     getattr(order, "id", None),
                     account.id,
                     order.symbol,
-                    sell_engine,
                     order.qty,
                     position.qty if position else 0,
                 )
@@ -1905,14 +1800,10 @@ class PaperTradingService:
         order.filled_at = datetime.now(timezone.utc)
         order.filled_price = fill_price
         order.scheduled_execution = None
-        # Propagate engine onto sell order if missing/default mismatched
-        if getattr(order, "source_engine_id", None) != self._engine_of(position):
-            order.source_engine_id = self._engine_of(position)
         prior_cash = account.cash_balance
         account.cash_balance = q_pnl(dec(account.cash_balance) + q_pnl(fill_price * order_qty))
         pnl = q_pnl((fill_price - dec(position.avg_entry_price)) * order_qty)
         pnl_percent = q_pnl(((fill_price - dec(position.avg_entry_price)) / dec(position.avg_entry_price)) * Decimal("100")) if position.avg_entry_price else Decimal("0.00")
-        pos_engine = self._engine_of(position)
         trade = PaperTradeHistory(
             account_id=account.id,
             symbol=position.symbol,
@@ -1925,10 +1816,6 @@ class PaperTradingService:
             source_signal=position.source_signal,
             source_score=position.source_score,
             source_confidence=position.source_confidence,
-            source_engine_id=pos_engine,
-            source_engine_version=getattr(position, "source_engine_version", None),
-            source_recommendation_id=getattr(position, "source_recommendation_id", None),
-            experiment_id=getattr(position, "experiment_id", None),
             opened_at=position.created_at,
             closed_at=datetime.now(timezone.utc),
             exit_reason="MANUAL",
@@ -2182,6 +2069,19 @@ class PaperTradingService:
             self.logger.exception("Failed to add notification for triggered alert")
 
     def auto_exit(self, position_id: int, fill_price: float, reason: str = "MANUAL", source: str = "MANUAL") -> PaperOrderActionResponse:
+        try:
+            return self._auto_exit_impl(position_id, fill_price, reason, source)
+        except Exception:
+            # Leave the session usable for callers that share a long-lived txn
+            # (market engine tick/reconcile). Without this, the next statement
+            # raises PendingRollbackError.
+            try:
+                self.db.rollback()
+            except Exception:
+                pass
+            raise
+
+    def _auto_exit_impl(self, position_id: int, fill_price: float, reason: str = "MANUAL", source: str = "MANUAL") -> PaperOrderActionResponse:
         # Load position first — never use a global/shared account for exits
         query = select(PaperPosition).where(
             PaperPosition.id == position_id,
@@ -2207,8 +2107,7 @@ class PaperTradingService:
             raise ValueError("Position exit has already been processed.")
         fill_price_dec = q_price(fill_price)
 
-        # Create a filled sell order representing the exit (same engine as position)
-        pos_engine = self._engine_of(position)
+        # Create a filled sell order representing the exit
         order = PaperOrder(
             account_id=account.id,
             symbol=position.symbol,
@@ -2228,10 +2127,6 @@ class PaperTradingService:
             source_signal=position.source_signal,
             source_score=position.source_score,
             source_confidence=position.source_confidence,
-            source_engine_id=pos_engine,
-            source_engine_version=getattr(position, "source_engine_version", None),
-            source_recommendation_id=getattr(position, "source_recommendation_id", None),
-            experiment_id=getattr(position, "experiment_id", None),
         )
         self.db.add(order)
         self.db.flush()
@@ -2250,10 +2145,6 @@ class PaperTradingService:
             source_signal=position.source_signal,
             source_score=position.source_score,
             source_confidence=position.source_confidence,
-            source_engine_id=pos_engine,
-            source_engine_version=getattr(position, "source_engine_version", None),
-            source_recommendation_id=getattr(position, "source_recommendation_id", None),
-            experiment_id=getattr(position, "experiment_id", None),
             opened_at=position.created_at,
             closed_at=datetime.now(timezone.utc),
             exit_reason=reason,
@@ -2304,7 +2195,7 @@ class PaperTradingService:
             print(f"ERROR adding notification for auto_exit: {e}")
             self.logger.exception("Failed to add notification for auto_exit")
 
-        # Log transaction for AUTO_EXIT to SQLite
+        # Log transaction for AUTO_EXIT
         try:
             tx = PaperTransaction(
                 account_id=int(account.id),
@@ -2335,8 +2226,43 @@ class PaperTradingService:
             print(f"ERROR writing AUTO_EXIT transaction to SQLite: {e}")
             self.logger.exception("Failed to write AUTO_EXIT transaction to SQLite")
 
+        # Exit already committed — never call get_dashboard() here.
+        # Full dashboard reloads portfolio + workspace price fetches; under Neon/proxy
+        # that can hit a dead SSL connection after idle and fail an already-successful exit.
+        try:
+            try:
+                self.db.refresh(account)
+            except Exception:
+                pass
+            summary = self._account_capital_for_confirm(account)
+        except Exception as summary_exc:
+            self.logger.warning(
+                "AUTO_EXIT_SUMMARY_FALLBACK | position_id=%s | symbol=%s | error=%s",
+                position_id,
+                position.symbol,
+                str(summary_exc)[:200],
+            )
+            balance = as_float(q_pnl(account.cash_balance))
+            summary = PaperAccountSummary(
+                account_id=int(account.id),
+                account_name=getattr(account, "name", None) or "Paper",
+                base_currency=getattr(account, "base_currency", None) or "INR",
+                starting_balance=as_float(q_pnl(account.starting_balance)),
+                balance=balance,
+                equity=balance,
+                realized_pnl=0.0,
+                unrealized_pnl=0.0,
+                total_invested=0.0,
+                reserved_cash=0.0,
+                available_cash=balance,
+                open_positions_count=0,
+                open_orders_count=0,
+                max_risk_per_trade=as_float(getattr(account, "max_risk_per_trade", 0) or 0),
+                updated_at=datetime.now(timezone.utc),
+            )
+
         return PaperOrderActionResponse(
-            account=self.get_dashboard(selected_symbol=position.symbol).account,
+            account=summary,
             order=self._serialize_order(order),
             position=None,
             trade=self._serialize_trade(trade),
@@ -2593,11 +2519,10 @@ class PaperTradingService:
                         try:
                             trading_logger.info(
                                 "MARKET_OPEN_TRIGGER | order_id=%s | account=%s | symbol=%s | "
-                                "engine=%s | status=%s | price=%s",
+                                "status=%s | price=%s",
                                 filled.id,
                                 account.id,
                                 filled.symbol,
-                                getattr(filled, "source_engine_id", None),
                                 filled.status,
                                 filled.filled_price,
                             )
@@ -2918,11 +2843,6 @@ class PaperTradingService:
             source_signal=position.source_signal,
             source_score=position.source_score,
             source_confidence=position.source_confidence,
-            source_engine_id=self._engine_of(position),
-            source_engine_version=getattr(position, "source_engine_version", None),
-            source_recommendation_id=getattr(position, "source_recommendation_id", None),
-            experiment_id=getattr(position, "experiment_id", None),
-            recommendation_engine=self._engine_of(position),
             price_source=snapshot.source if snapshot else None,
             price_fetched_at=snapshot.fetched_at if snapshot else None,
             is_price_stale=(snapshot.source != "FYERS_QUOTE") if snapshot else False,
@@ -2932,7 +2852,6 @@ class PaperTradingService:
 
     def _serialize_order(self, order: PaperOrder, snapshot: PriceSnapshot | None = None) -> PaperOrderResponse:
         filled_price = as_float(q_price(order.filled_price)) if order.filled_price is not None else None
-        eng = self._engine_of(order)
         return PaperOrderResponse(
             id=order.id,
             symbol=order.symbol,
@@ -2953,11 +2872,6 @@ class PaperTradingService:
             source_signal=order.source_signal,
             source_score=order.source_score,
             source_confidence=order.source_confidence,
-            source_engine_id=eng,
-            source_engine_version=getattr(order, "source_engine_version", None),
-            source_recommendation_id=getattr(order, "source_recommendation_id", None),
-            experiment_id=getattr(order, "experiment_id", None),
-            recommendation_engine=eng,
             last_evaluated_at=order.last_evaluated_at,
             last_seen_ltp=as_float(q_price(order.last_seen_ltp)) if order.last_seen_ltp is not None else None,
             price_source=snapshot.source if snapshot else None,
@@ -2974,7 +2888,6 @@ class PaperTradingService:
 
     def _serialize_trade(self, trade: PaperTradeHistory) -> PaperTradeHistoryItem:
         holding_period = (trade.closed_at - trade.opened_at).total_seconds() / 3600
-        eng = self._engine_of(trade)
         return PaperTradeHistoryItem(
             id=trade.id,
             symbol=trade.symbol,
@@ -2987,11 +2900,6 @@ class PaperTradingService:
             source_signal=trade.source_signal,
             source_score=trade.source_score,
             source_confidence=trade.source_confidence,
-            source_engine_id=eng,
-            source_engine_version=getattr(trade, "source_engine_version", None),
-            source_recommendation_id=getattr(trade, "source_recommendation_id", None),
-            experiment_id=getattr(trade, "experiment_id", None),
-            recommendation_engine=eng,
             opened_at=trade.opened_at,
             closed_at=trade.closed_at,
             exit_reason=getattr(trade, "exit_reason", None),
@@ -3077,15 +2985,11 @@ class PaperTradingService:
         # all time
         return None, end, "All Time"
 
-    def get_analytics(self, period: str = "all", recommendation_engine: str | None = None) -> dict:
+    def get_analytics(self, period: str = "all") -> dict:
         """Full paper-trading analytics dashboard payload.
 
         Always returns JSON-safe floats (never Decimal). Empty-history accounts
         get zeroed defaults so the UI can render charts without erroring.
-
-        When ``recommendation_engine`` is set (Production|RE-001|RE-002), metrics
-        are filtered to that engine's trades/positions only. The response always
-        includes ``by_engine`` comparison blocks for all three engines.
         """
         import math
         from collections import defaultdict
@@ -3104,36 +3008,10 @@ class PaperTradingService:
                 return False
             return True
 
-        trades_all_engines = [t for t in all_trades if in_range(t)]
+        trades = [t for t in all_trades if in_range(t)]
         positions = self._position_models(account.id)
-        open_positions_all = [p for p in positions if (p.status or "").upper() == "OPEN"]
-        orders_all = self._order_models(account.id)
-
-        engine_filter = None
-        if recommendation_engine and str(recommendation_engine).strip().lower() not in {
-            "",
-            "all",
-            "*",
-        }:
-            engine_filter = normalize_recommendation_engine(recommendation_engine)
-
-        def _trade_engine(t: PaperTradeHistory) -> str:
-            return normalize_recommendation_engine(getattr(t, "source_engine_id", None))
-
-        def _pos_engine(p: PaperPosition) -> str:
-            return normalize_recommendation_engine(getattr(p, "source_engine_id", None))
-
-        def _order_engine(o: PaperOrder) -> str:
-            return normalize_recommendation_engine(getattr(o, "source_engine_id", None))
-
-        if engine_filter:
-            trades = [t for t in trades_all_engines if _trade_engine(t) == engine_filter]
-            open_positions = [p for p in open_positions_all if _pos_engine(p) == engine_filter]
-            orders = [o for o in orders_all if _order_engine(o) == engine_filter]
-        else:
-            trades = list(trades_all_engines)
-            open_positions = list(open_positions_all)
-            orders = list(orders_all)
+        open_positions = [p for p in positions if (p.status or "").upper() == "OPEN"]
+        orders = self._order_models(account.id)
 
         def fnum(v) -> float:
             try:
@@ -3143,69 +3021,6 @@ class PaperTradingService:
                     return float(v or 0)
                 except Exception:
                     return 0.0
-
-        def _engine_metrics(engine_trades: list[PaperTradeHistory], engine_open: list[PaperPosition]) -> dict:
-            """Independent metrics block for one recommendation engine."""
-            e_wins = [t for t in engine_trades if fnum(t.pnl) > 0]
-            e_losses = [t for t in engine_trades if fnum(t.pnl) < 0]
-            e_total = len(engine_trades)
-            e_pnl = round(sum(fnum(t.pnl) for t in engine_trades), 2)
-            e_win_rate = round((len(e_wins) / e_total) * 100.0, 2) if e_total else 0.0
-            e_returns = [fnum(t.pnl_percent) for t in engine_trades]
-            e_avg_return = round(sum(e_returns) / len(e_returns), 2) if e_returns else 0.0
-            e_hold = []
-            for t in engine_trades:
-                o = self._aware_dt(t.opened_at)
-                c = self._aware_dt(t.closed_at)
-                if o and c and c >= o:
-                    e_hold.append((c - o).total_seconds() / 60.0)
-            e_avg_hold = round(sum(e_hold) / len(e_hold), 2) if e_hold else 0.0
-            # Sharpe (simple daily-return proxy from trade returns)
-            e_sharpe = None
-            if len(e_returns) >= 2:
-                mean_r = sum(e_returns) / len(e_returns)
-                var = sum((r - mean_r) ** 2 for r in e_returns) / (len(e_returns) - 1)
-                std = math.sqrt(var) if var > 0 else 0.0
-                e_sharpe = round(mean_r / std, 3) if std > 1e-9 else None
-            # Drawdown on cumulative PnL curve
-            e_dd = 0.0
-            e_dd_pct = 0.0
-            peak = 0.0
-            cum = 0.0
-            chron = sorted(
-                engine_trades,
-                key=lambda t: self._aware_dt(t.closed_at) or datetime.min.replace(tzinfo=timezone.utc),
-            )
-            for t in chron:
-                cum += fnum(t.pnl)
-                peak = max(peak, cum)
-                dd = peak - cum
-                if dd > e_dd:
-                    e_dd = dd
-                    e_dd_pct = round((dd / peak) * 100.0, 2) if peak > 1e-9 else 0.0
-            e_unreal = round(sum(fnum(p.unrealized_pnl) for p in engine_open), 2)
-            return {
-                "total_trades": e_total,
-                "wins": len(e_wins),
-                "losses": len(e_losses),
-                "win_rate_pct": e_win_rate,
-                "average_return_pct": e_avg_return,
-                "total_pnl": e_pnl,
-                "sharpe_ratio": e_sharpe,
-                "max_drawdown": round(e_dd, 2),
-                "max_drawdown_pct": e_dd_pct,
-                "average_holding_minutes": e_avg_hold,
-                "open_positions_count": len(engine_open),
-                "unrealized_pnl": e_unreal,
-            }
-
-        from .recommendation_engine_ids import ALL_ENGINES
-
-        by_engine: dict[str, dict] = {}
-        for eng in ALL_ENGINES:
-            eng_trades = [t for t in trades_all_engines if _trade_engine(t) == eng]
-            eng_open = [p for p in open_positions_all if _pos_engine(p) == eng]
-            by_engine[eng] = _engine_metrics(eng_trades, eng_open)
 
         total_trades = len(trades)
         wins = [t for t in trades if fnum(t.pnl) > 0]
@@ -3470,8 +3285,6 @@ class PaperTradingService:
         result = {
             "period": period or "all",
             "range_label": range_label,
-            "recommendation_engine": engine_filter or "All",
-            "by_engine": by_engine,
             # Overview cards
             "total_trades": total_trades,
             "winning_trades": wins_count,

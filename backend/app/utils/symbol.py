@@ -1,22 +1,39 @@
+# FYERS / NSE series suffixes (NOT hyphens inside the ticker name).
+# Hyphenated equity names like BAJAJ-AUTO / NAM-INDIA must still get -EQ.
+_EQUITY_SERIES_SUFFIXES = (
+    "-EQ",
+    "-BE",
+    "-BZ",
+    "-SM",
+    "-ST",
+    "-IV",
+    "-RR",
+    "-BL",
+    "-BT",
+    "-GC",
+)
+_INDEX_SUFFIX = "-INDEX"
+
+
 def canonical_symbol(raw_symbol: str) -> str:
     """
     Normalizes any symbol format to a canonical internal format.
     Strips 'NSE:' or 'BSE:' prefixes.
-    Strips '-EQ' suffix.
-    Maintains '-INDEX' or other suffixes.
-    
+    Strips equity series suffix (-EQ, -BE, …).
+    Maintains '-INDEX' and hyphens that are part of the ticker name.
+
     Examples:
         'NSE:DATAPATTNS-EQ' -> 'DATAPATTNS'
         'DATAPATTNS-EQ' -> 'DATAPATTNS'
-        'DATAPATTNS' -> 'DATAPATTNS'
+        'BAJAJ-AUTO-EQ' -> 'BAJAJ-AUTO'   # hyphen is part of name
         'nse:datapattns-eq' -> 'DATAPATTNS'
         'NSE:NIFTY50-INDEX' -> 'NIFTY50-INDEX'
     """
     if not raw_symbol:
         return ""
-    
+
     s = raw_symbol.strip().upper()
-    
+
     # Strip exchange prefixes
     if s.startswith("NSE:"):
         s = s[4:]
@@ -24,37 +41,54 @@ def canonical_symbol(raw_symbol: str) -> str:
         s = s[4:]
     elif ":" in s:
         s = s.split(":", 1)[1]
-        
-    # Strip -EQ suffix
-    if s.endswith("-EQ"):
-        s = s[:-3]
-        
+
+    # Strip equity series suffix only (not mid-name hyphens like BAJAJ-AUTO)
+    for suf in _EQUITY_SERIES_SUFFIXES:
+        if s.endswith(suf):
+            s = s[: -len(suf)]
+            break
+
     return s
+
 
 def fyers_symbol(canonical: str, is_index: bool = False, exchange: str = "NSE") -> str:
     """
     Converts a canonical symbol to FYERS API format.
-    Appends '-EQ' unless it's an index or already has a suffix.
-    
+
+    CRITICAL: Hyphenated equity tickers (BAJAJ-AUTO, NAM-INDIA, …) must become
+    ``NSE:BAJAJ-AUTO-EQ``. Using ``"-" in name`` as "already has a suffix" was
+    wrong — FYERS then got ``NSE:BAJAJ-AUTO`` (HTTP 422) and the scanner
+    quarantined valid Nifty names for 24h.
+
     Examples:
         'DATAPATTNS' -> 'NSE:DATAPATTNS-EQ'
+        'BAJAJ-AUTO' -> 'NSE:BAJAJ-AUTO-EQ'
         'NIFTY50-INDEX' -> 'NSE:NIFTY50-INDEX'
     """
     if not canonical:
         return ""
-        
+
     s = canonical.strip().upper()
-    
-    # If it's already a fully qualified FYERS symbol, return as is
+
+    # Already fully qualified (NSE:TCS-EQ / NSE:NIFTY50-INDEX)
     if ":" in s:
+        # Repair legacy bad form NSE:BAJAJ-AUTO (equity missing -EQ)
+        _ex, _rest = s.split(":", 1)
+        if (
+            not is_index
+            and not _rest.endswith(_INDEX_SUFFIX)
+            and not any(_rest.endswith(suf) for suf in _EQUITY_SERIES_SUFFIXES)
+        ):
+            return f"{_ex}:{_rest}-EQ"
         return s
-        
-    # Check for known suffixes
-    has_suffix = "-" in s
-    
-    if is_index and not has_suffix:
-        s = f"{s}-INDEX"
-    elif not has_suffix:
+
+    if is_index or s.endswith(_INDEX_SUFFIX):
+        if not s.endswith(_INDEX_SUFFIX):
+            s = f"{s}{_INDEX_SUFFIX}"
+        return f"{exchange}:{s}"
+
+    # Equity: always ensure a series suffix (-EQ default)
+    if not any(s.endswith(suf) for suf in _EQUITY_SERIES_SUFFIXES):
         s = f"{s}-EQ"
-        
+
     return f"{exchange}:{s}"

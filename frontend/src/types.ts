@@ -122,8 +122,6 @@ export type StockAnalysisResult = {
   market_cap?: number | null;
   corporate_events?: Record<string, string> | null;
   social_sentiment_score?: number | null;
-  /** Optional lab engines block (RE-001). Production recommendation remains authoritative. */
-  lab_engines?: Record<string, Record<string, unknown>> | null;
 };
 
 export type RankingItem = {
@@ -294,9 +292,6 @@ export type PaperAccountSummary = {
   updated_at: string;
 };
 
-/** Recommendation engine that owns a paper trade: Production | RE-001 | RE-002 */
-export type RecommendationEngineId = "Production" | "RE-001" | "RE-002";
-
 export type PaperPosition = {
   id: number;
   symbol: string;
@@ -317,12 +312,6 @@ export type PaperPosition = {
   source_signal?: string | null;
   source_score?: number | null;
   source_confidence?: number | null;
-  source_engine_id?: string | null;
-  source_engine_version?: string | null;
-  source_recommendation_id?: string | null;
-  experiment_id?: string | null;
-  /** Canonical UI field: Production | RE-001 | RE-002 */
-  recommendation_engine?: string | null;
   price_source?: "FYERS_QUOTE" | "CANDLE_FALLBACK" | "NO_DATA" | null;
   price_fetched_at?: string | null;
   is_price_stale?: boolean;
@@ -374,11 +363,6 @@ export type PaperOrder = {
   source_signal?: string | null;
   source_score?: number | null;
   source_confidence?: number | null;
-  source_engine_id?: string | null;
-  source_engine_version?: string | null;
-  source_recommendation_id?: string | null;
-  experiment_id?: string | null;
-  recommendation_engine?: string | null;
   last_evaluated_at?: string | null;
   last_seen_ltp?: number | null;
   price_source?: "FYERS_QUOTE" | "CANDLE_FALLBACK" | "NO_DATA" | null;
@@ -416,31 +400,11 @@ export type PaperTradeHistoryItem = {
   source_signal?: string | null;
   source_score?: number | null;
   source_confidence?: number | null;
-  source_engine_id?: string | null;
-  source_engine_version?: string | null;
-  source_recommendation_id?: string | null;
-  experiment_id?: string | null;
-  recommendation_engine?: string | null;
   opened_at: string;
   closed_at: string;
   holding_period_hours: number;
   exit_reason?: string | null;
   exit_source?: string | null;
-};
-
-export type EngineAnalyticsBlock = {
-  total_trades: number;
-  wins: number;
-  losses: number;
-  win_rate_pct: number;
-  average_return_pct: number;
-  total_pnl: number;
-  sharpe_ratio?: number | null;
-  max_drawdown?: number;
-  max_drawdown_pct?: number;
-  average_holding_minutes?: number;
-  open_positions_count?: number;
-  unrealized_pnl?: number;
 };
 
 export type MarketEngineHealth = {
@@ -647,11 +611,6 @@ export type PaperOrderTicketState = {
   sourceSignal?: string | null;
   sourceScore?: number | null;
   sourceConfidence?: number | null;
-  /** Recommendation engine for this order (Production | RE-001 | RE-002) */
-  sourceEngineId?: string | null;
-  sourceEngineVersion?: string | null;
-  sourceRecommendationId?: string | null;
-  experimentId?: string | null;
 };
 
 export type RecommendationPrefillRequest = {
@@ -660,11 +619,6 @@ export type RecommendationPrefillRequest = {
   suggested_stop?: number | null;
   suggested_targets: number[];
   recommendation_meta: Record<string, string | number>;
-  /** Lab engine provenance (RE-001 / RE-002) */
-  source_engine_id?: string | null;
-  source_engine_version?: string | null;
-  source_recommendation_id?: string | null;
-  experiment_id?: string | null;
 };
 
 export type RecommendationPrefillResponse = {
@@ -676,10 +630,6 @@ export type RecommendationPrefillResponse = {
   stop_loss?: number | null;
   target?: number | null;
   note: string;
-  source_engine_id?: string | null;
-  source_engine_version?: string | null;
-  source_recommendation_id?: string | null;
-  experiment_id?: string | null;
 };
 
 export type PaperOrderActionResponse = {

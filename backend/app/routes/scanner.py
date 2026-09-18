@@ -17,48 +17,77 @@ from ..observability.metrics import (
 )
 
 router = APIRouter(prefix="/scanner", tags=["scanner"])
+_stats_logger = get_logger("app.routes.scanner.statistics")
 logger = get_logger("app.routes.scanner")
+
 
 CACHE_KEY_SCANNER_LATEST = "scanner:latest:v1"
 ENDPOINT_SCANNER_LATEST = "/scanner/latest"
 
 
-@router.get("/results")
-async def get_scanner_results_by_engine(
-    engine: str = Query(
-        default="Production",
-        description="Recommendation engine: Production | RE-001 | RE-002 (also production/re001/re002)",
-    ),
-    force: bool = Query(default=False, description="Force refresh production cache path"),
+@router.get("/statistics")
+async def get_scanner_statistics(
     _: User = Depends(require_feature("advanced_scanner")),
 ):
-    """Scanner results filtered to a single recommendation engine.
+    """Scanner statistics from the latest completed scan.
 
-    - Production: latest completed production scan (analysis / ScreenerResponse shape)
-    - RE-001 / RE-002: latest multi-symbol lab decision cohort mapped to the same shape
-
-    Does not duplicate stored data — projects existing scans / decisions.
+    Never returns fake/hardcoded values.
     """
-    from ..db.session import SessionLocal
-    from ..services.scanner_engine_results import (
-        get_scanner_results_for_engine,
-        normalize_scanner_engine,
-    )
+    from ..db.scan_store import load_latest_scan
 
-    eng = normalize_scanner_engine(engine)
+    production: dict = {}
     try:
-        if eng == "Production":
-            payload = await get_scanner_results_for_engine(None, eng, force=force)
+        latest = await load_latest_scan()
+        if latest:
+            shortlisted = latest.get("shortlisted_symbols") or []
+            buy_c = latest.get("buy_candidate_symbols") or []
+            watch_c = latest.get("watch_candidate_symbols") or []
+            data_valid = latest.get("data_valid_symbols") or []
+            eligible = latest.get("eligible_symbols") or []
+            production = {
+                "available": True,
+                "total_scanned": latest.get("scanned_symbols", 0),
+                "data_valid": len(data_valid) if isinstance(data_valid, list) else data_valid,
+                "trend_matched": len(eligible) if isinstance(eligible, list) else eligible,
+                "favorites": len(shortlisted),
+                "buy_ideas": len(buy_c),
+                "watch_ideas": len(watch_c),
+                "rejected": max(len(shortlisted) - len(buy_c) - len(watch_c), 0),
+                "scanned_at": (
+                    latest.get("last_scan_completed_at")
+                    or latest.get("scanned_at")
+                    or None
+                ),
+            }
         else:
-            with SessionLocal() as db:
-                payload = await get_scanner_results_for_engine(db, eng, force=force)
-        return payload
+            production = {"available": False, "message": "No completed scan found"}
     except Exception as exc:
-        logger.exception("GET /scanner/results failed | engine=%s | err=%s", eng, exc)
+        _stats_logger.warning("Scanner statistics failed | err=%s", exc, exc_info=True)
+        production = {"available": False, "message": str(exc)}
+
+    return {"production": production}
+
+
+
+
+@router.get("/results")
+async def get_scanner_results(
+    force: bool = Query(default=False, description="Force refresh cache"),
+    _: User = Depends(require_feature("advanced_scanner")),
+):
+    """Latest completed scanner results (analysis / ScreenerResponse shape)."""
+    from ..db.scan_store import load_latest_scan
+
+    try:
+        data = await load_latest_scan()
+        if not data:
+            return {"available": False, "message": "No completed scan found"}
+        return {"available": True, **data}
+    except Exception as exc:
+        logger.exception("GET /scanner/results failed | err=%s", exc)
         return {
             "available": False,
-            "recommendation_engine": eng,
-            "message": f"Failed to load scanner results for {eng}",
+            "message": "Failed to load scanner results",
             "shortlisted_symbols": [],
             "buy_candidate_symbols": [],
             "watch_candidate_symbols": [],
@@ -204,3 +233,4 @@ async def get_latest_completed_scan(
         media_type="application/json",
         headers={"X-Cache-Status": cache_status},
     )
+

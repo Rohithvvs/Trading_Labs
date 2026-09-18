@@ -1,5 +1,7 @@
 import { Component, useEffect, useMemo, useState, useRef, type ErrorInfo, type ReactNode } from "react";
 import {
+  Area,
+  AreaChart,
   Bar,
   CartesianGrid,
   Cell,
@@ -24,35 +26,12 @@ import { fetchSymbolDetail } from "../api";
 import { getCached } from "../utils/appCache";
 import { isPrefetched } from "../utils/researchPrefetcher";
 import { ResearchDashboard } from "./ResearchDashboard";
-import { Re001DetailSection } from "./Re001DetailSection";
-import { Re002DetailSection } from "./Re002DetailSection";
 
 type StockDetailPanelProps = {
   row: CandidateRow | null;
   onBack?: () => void;
   onSendToPaperTrading?: (row: CandidateRow, suggestedEntry?: number | null, side?: "BUY" | "SELL") => void;
-  /**
-   * Originating scanner recommendation engine (Production | RE-001 | RE-002).
-   * Shown as a chip beside "Back to scan results" so multi-engine context is visible.
-   */
-  originEngine?: string | null;
 };
-
-/** Reuse Paper Desk engine-badge classes (no new design). */
-function originEngineBadgeClass(engine: string): string {
-  const upper = engine.trim().toUpperCase();
-  if (upper === "RE-001" || upper === "RE001") return "engine-badge engine-badge--re001";
-  if (upper === "RE-002" || upper === "RE002") return "engine-badge engine-badge--re002";
-  return "engine-badge engine-badge--production";
-}
-
-function formatOriginEngineLabel(engine: string): string {
-  const upper = engine.trim().toUpperCase();
-  if (upper === "PRODUCTION" || upper === "PROD" || upper === "BASELINE") return "Production";
-  if (upper === "RE-001" || upper === "RE001") return "RE-001";
-  if (upper === "RE-002" || upper === "RE002") return "RE-002";
-  return engine.trim() || "Production";
-}
 
 const TABS: { id: DetailTab; label: string }[] = [
   { id: "research", label: "Research" },
@@ -64,14 +43,13 @@ const TABS: { id: DetailTab; label: string }[] = [
   { id: "chart", label: "Chart" },
 ];
 
-export function StockDetailPanel({ row, onBack, onSendToPaperTrading, originEngine }: StockDetailPanelProps) {
+export function StockDetailPanel({ row, onBack, onSendToPaperTrading }: StockDetailPanelProps) {
   const [tab, setTab] = useState<DetailTab>("research");
   const [riskAmount, setRiskAmount] = useState(5000);
   const [symbolDetail, setSymbolDetail] = useState<SymbolDetail | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
   const fetchAttempted = useRef(false);
-  const engineLabel = originEngine ? formatOriginEngineLabel(originEngine) : null;
 
   // Hooks must run unconditionally (before any early return).
   const analysis = row?.analysisItem;
@@ -161,17 +139,6 @@ export function StockDetailPanel({ row, onBack, onSendToPaperTrading, originEngi
           >
             ← Back to scan results
           </button>
-          {engineLabel ? (
-            <span
-              className={originEngineBadgeClass(engineLabel)}
-              data-testid="detail-origin-engine-badge"
-              title={`Recommendation Engine: ${engineLabel}`}
-              aria-label={`From recommendation engine ${engineLabel}`}
-              style={{ marginLeft: "auto" }}
-            >
-              {engineLabel}
-            </span>
-          ) : null}
         </div>
       ) : null}
       <div className="detail-header">
@@ -283,7 +250,11 @@ export function StockDetailPanel({ row, onBack, onSendToPaperTrading, originEngi
             <NewsTab analysis={analysis} row={row} symbolDetail={symbolDetail} />
           ) : null}
           {tab === "backtest" ? (
-            <BacktestTab backtest={backtest} backtestDetail={symbolDetail?.backtest_extras ?? null} />
+            <BacktestTab
+              backtest={backtest}
+              backtestDetail={symbolDetail?.backtest_extras ?? null}
+              row={row}
+            />
           ) : null}
           {tab === "chart" ? <ChartTab analysis={analysis} plan={plan} /> : null}
         </DetailTabErrorBoundary>
@@ -360,22 +331,6 @@ function OverviewTab({
       <section className="subpanel">
         <h3>Recommendation overview</h3>
         <p className="muted-copy">{reco?.summary ?? row.recommendationSummary}</p>
-        <Re001DetailSection
-          decision={
-            (analysis as { lab_engines?: { "RE-001"?: Record<string, unknown> } } | undefined)?.lab_engines?.[
-              "RE-001"
-            ] as import("./Re001DetailSection").Re001DecisionSummary | undefined
-          }
-          symbol={row.symbol}
-        />
-        <Re002DetailSection
-          decision={
-            (analysis as { lab_engines?: { "RE-002"?: Record<string, unknown> } } | undefined)?.lab_engines?.[
-              "RE-002"
-            ] as import("./Re002DetailSection").Re002DecisionSummary | undefined
-          }
-          symbol={row.symbol}
-        />
         <div className="reason-columns">
           <ReasonList
             title="Top reasons"
@@ -424,7 +379,7 @@ function OverviewTab({
           <MetricTile
             label="Technical"
             value={typeof techScore === "number" ? techScore.toFixed(1) : "--"}
-            help="Technical engine strength before recommendation."
+            help="Technical strength before recommendation weighting."
           />
           <MetricTile
             label="Scanner"
@@ -773,7 +728,7 @@ function ConfidenceBreakdown({ analysis }: { analysis?: StockAnalysisResult }) {
     <div className="confidence-box">
       <h4>Confidence breakdown</h4>
       <div className="score-breakdown">
-        <MetricTile label="Technical score" value={formatValue(breakdown.technical_score)} help="Raw technical engine score before weighting." />
+        <MetricTile label="Technical score" value={formatValue(breakdown.technical_score)} help="Raw technical score before weighting." />
         <MetricTile label="Technical part" value={formatValue(breakdown.technical_component)} help="Technical score contribution to final recommendation." />
         <MetricTile label="Sentiment part" value={formatValue(breakdown.sentiment_component)} help="News sentiment contribution to final score." />
         <MetricTile label="Backtest part" value={formatValue(breakdown.backtest_component)} help="Backtest contribution to final score." />
@@ -861,7 +816,7 @@ function TradePlanTab({
     );
   }
 
-  // Lab engines may omit levels (null) — never call .toFixed on null/undefined.
+  // Trade plans may omit levels (null) — never call .toFixed on null/undefined.
   const entryLow = numOrNull(plan.entry_low);
   const entryHigh = numOrNull(plan.entry_high);
   const stopLoss = numOrNull(plan.stop_loss);
@@ -892,7 +847,7 @@ function TradePlanTab({
         <div>
           <p className="section-label">Execution plan</p>
           <h3>{plan.setup_type || "Swing plan"}</h3>
-          <p className="muted-copy">{plan.notes || "Levels from recommendation engine (partial levels shown as —)."}</p>
+          <p className="muted-copy">{plan.notes || "Execution levels (partial levels shown as —)."}</p>
         </div>
         <div className="tradeplan-grid">
           <MetricTile
@@ -1071,20 +1026,105 @@ function NewsTab({ analysis, row, symbolDetail }: { analysis?: StockAnalysisResu
   );
 }
 
-function BacktestTab({ backtest, backtestDetail }: { backtest?: BacktestResult; backtestDetail?: any | null }) {
+function BacktestTab({
+  backtest,
+  backtestDetail,
+  row,
+}: {
+  backtest?: BacktestResult;
+  backtestDetail?: any | null;
+  row?: CandidateRow;
+}) {
+  // Prefer precomputed analysis backtest (generated during recommendation) — never auto-rerun.
   const dataSource = backtestDetail ?? backtest ?? null;
+  const [range, setRange] = useState<"1Y" | "3Y" | "5Y" | "ALL">("3Y");
+  const [niftyData, setNiftyData] = useState<{label: string, close: number}[]>([]);
+
+  useEffect(() => {
+    import('../api').then(api => {
+      // Fetch NIFTY 500 data for benchmark display only (not a backtest rerun)
+      api.fetchSymbolDetail('NIFTY 500').then((res: any) => {
+        if (res && res.ohlcv) {
+          setNiftyData(res.ohlcv.map((c: any) => ({
+            label: new Date(c.timestamp).toISOString().split('T')[0],
+            close: c.close
+          })));
+        }
+      }).catch(() => {});
+    });
+  }, []);
+
   if (!dataSource) {
     return (
       <section className="subpanel">
         <h3>No backtest support</h3>
-        <p>This stock did not return a swing backtest result, so the recommendation is relying more heavily on scanner and technical evidence.</p>
+        <p>
+          This stock did not return a swing backtest result generated during recommendation,
+          so the recommendation is relying more heavily on scanner and technical evidence.
+          Opening this tab does not start a new backtest.
+        </p>
       </section>
     );
   }
 
-  // normalize equity series (support {label,equity} or {date,equity})
+  // normalize equity series
   const rawEquity = dataSource.equity_curve ?? backtest?.equity_curve ?? [];
-  const equityData = (rawEquity as any[]).map((p: any) => ({ label: p.label ?? p.date ?? String(p[0] ?? ""), equity: Number(p.equity ?? p.value ?? p[1] ?? 0) }));
+  const initialCapital = rawEquity.length > 0 ? Number(rawEquity[0].equity ?? rawEquity[0].value ?? rawEquity[0][1] ?? 1) : 1;
+  
+  const trades = dataSource.trades ?? backtest?.trades ?? [];
+  const entrySet = new Set(trades.map((t: any) => t.entry_date));
+  const exitSet = new Set(trades.map((t: any) => t.exit_date));
+
+  const fullEquityData = (rawEquity as any[]).map((p: any) => {
+    const rawVal = Number(p.equity ?? p.value ?? p[1] ?? 0);
+    const returnPct = ((rawVal / (initialCapital || 1)) - 1) * 100;
+    const label = p.label ?? p.date ?? String(p[0] ?? "");
+    
+    let signal = null;
+    if (entrySet.has(label)) signal = "BUY";
+    if (exitSet.has(label)) signal = signal ? "BUY_SELL" : "SELL";
+
+    return { 
+      label, 
+      equity: Number(returnPct.toFixed(2)), 
+      rawVal,
+      signal
+    };
+  });
+
+  // Filter based on range
+  const filterDate = new Date();
+  if (range === "1Y") filterDate.setFullYear(filterDate.getFullYear() - 1);
+  else if (range === "3Y") filterDate.setFullYear(filterDate.getFullYear() - 3);
+  else if (range === "5Y") filterDate.setFullYear(filterDate.getFullYear() - 5);
+  else filterDate.setFullYear(1900);
+
+  const equityData = fullEquityData.filter(d => new Date(d.label) >= filterDate);
+  
+  // Align NIFTY benchmark
+  const firstEquityDate = equityData.length > 0 ? equityData[0].label : null;
+  let niftyInitial = 1;
+  const niftyMap = new Map(niftyData.map(n => [n.label, n.close]));
+  if (firstEquityDate && niftyMap.has(firstEquityDate)) {
+    niftyInitial = niftyMap.get(firstEquityDate)!;
+  } else if (niftyData.length > 0) {
+    niftyInitial = niftyData[0].close; // fallback
+  }
+
+  // Compute Drawdown and Benchmark Series for the filtered range
+  let peak = -Infinity;
+  const drawdownData = equityData.map(d => {
+    if (d.rawVal > peak) peak = d.rawVal;
+    const dd = peak === 0 ? 0 : ((d.rawVal - peak) / Math.abs(peak)) * 100;
+    
+    // Calculate benchmark % return if available
+    let benchmarkReturn = null;
+    if (niftyMap.has(d.label)) {
+      benchmarkReturn = ((niftyMap.get(d.label)! / niftyInitial) - 1) * 100;
+    }
+
+    return { ...d, drawdown: Number(dd.toFixed(2)), benchmark: benchmarkReturn !== null ? Number(benchmarkReturn.toFixed(2)) : undefined };
+  });
 
   const monthly = dataSource.monthly_returns ?? [];
   const bestTrade = dataSource.best_trade ?? null;
@@ -1092,30 +1132,60 @@ function BacktestTab({ backtest, backtestDetail }: { backtest?: BacktestResult; 
   const sharpe = dataSource.sharpe_ratio ?? backtest?.sharpe_ratio ?? 0;
   const profitFactor = dataSource.profit_factor ?? backtest?.profit_factor ?? 0;
 
-  // explicit colors to avoid SVG/CSS var issues
+  // Heatmap for monthly
+  // Group by Year: { "2023": { "Jan": 0.05, ... } }
+  const heatmapData: Record<string, Record<string, number>> = {};
+  monthly.forEach((m: any) => {
+    const parts = String(m.month).split('-');
+    if (parts.length >= 2) {
+      const yr = parts[0];
+      const mo = parseInt(parts[1], 10);
+      const moNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+      const moName = moNames[mo - 1] || parts[1];
+      if (!heatmapData[yr]) heatmapData[yr] = {};
+      heatmapData[yr][moName] = m.return;
+    }
+  });
+  const years = Object.keys(heatmapData).sort().reverse();
+  const allMonths = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
   const upColor = "#38b26d"; // green
   const downColor = "#c05c54"; // red
-  const neutralColor = "#ffffff";
+  const benchmarkColor = "#3b82f6"; // blue
 
-  const barColors = equityData.map((point: any, idx: number) => {
-    if (idx === 0) return upColor;
-    const prev = equityData[idx - 1];
-    const cur = Number(point.equity ?? 0);
-    const p = Number(prev.equity ?? 0);
-    if (Number.isNaN(cur) || Number.isNaN(p)) return neutralColor;
-    return cur >= p ? upColor : downColor;
-  });
-
-  const monthlyColor = (r: number | null | undefined) => {
-    if (r == null || Number.isNaN(Number(r))) return "transparent";
-    if (r > 0.03) return "var(--positive)"; // dark green
-    if (r >= 0) return "var(--positive-soft)"; // light green
-    if (r >= -0.03) return "var(--negative-soft)"; // light red
-    return "var(--negative)"; // dark red
+  const heatmapColor = (r: number | undefined) => {
+    if (r === undefined || Number.isNaN(Number(r))) return "var(--bg-card)";
+    if (r >= 0.1) return "var(--positive)";
+    if (r >= 0.02) return "var(--positive-soft)";
+    if (r > 0) return "rgba(56, 178, 109, 0.3)";
+    if (r <= -0.1) return "var(--negative)";
+    if (r <= -0.02) return "var(--negative-soft)";
+    return "rgba(192, 92, 84, 0.3)";
   };
 
   return (
     <div className="detail-stack">
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.5rem", marginBottom: "-1rem" }}>
+        {["1Y", "3Y", "5Y", "ALL"].map(r => (
+          <button 
+            key={r}
+            onClick={() => setRange(r as any)}
+            className={`btn-tag ${range === r ? "active" : ""}`}
+            style={{ 
+              background: range === r ? "var(--accent)" : "var(--bg-card)",
+              color: range === r ? "#fff" : "var(--text-muted)",
+              border: "1px solid var(--border-color)",
+              padding: "0.25rem 0.5rem",
+              borderRadius: "4px",
+              cursor: "pointer",
+              fontSize: "0.8rem"
+            }}
+          >
+            {r}
+          </button>
+        ))}
+      </div>
+
       <section className="bt-metrics-grid">
         <MetricTile label="Win rate" value={`${(dataSource.win_rate ?? backtest?.win_rate ?? 0).toFixed(1)}%`} help="Share of historical winning trades." />
         <MetricTile label="Average return" value={`${(dataSource.total_return ?? backtest?.total_return ?? 0).toFixed(1)}%`} help="Total return in the backtest window." />
@@ -1129,37 +1199,115 @@ function BacktestTab({ backtest, backtestDetail }: { backtest?: BacktestResult; 
         <abbr title="Backtest strength summarizes how healthy the historical strategy profile looks.">Backtest strength</abbr>: {dataSource.verdict ?? backtest?.verdict ?? "--"}.
       </p>
 
-      <div className="bt-chart-panel">
-        <div className="bt-chart-panel__header">
-          <h3>Equity curve</h3>
+      <div className="bt-chart-panel" style={{ display: "flex", flexDirection: "column", gap: "1.5rem" }}>
+          <div className="bt-chart-panel__header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <h3>Cumulative Return (%)</h3>
+            <div style={{ display: 'flex', gap: '1rem', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+              <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                <span style={{ width: 12, height: 2, background: upColor, display: 'inline-block' }}></span> Strategy
+              </span>
+              {niftyData.length > 0 && (
+                <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                  <span style={{ width: 12, height: 2, background: benchmarkColor, display: 'inline-block' }}></span> NIFTY 500
+                </span>
+              )}
+            </div>
+          </div>
+          <ResponsiveContainer width="100%" height={240}>
+            <ComposedChart data={drawdownData}>
+              <CartesianGrid strokeDasharray="2 2" vertical={false} stroke="var(--border-color)" />
+              <XAxis dataKey="label" tickLine={false} axisLine={false} stroke="var(--text-muted)" tickFormatter={(val) => {
+                if (!val) return "";
+                const d = new Date(val);
+                return `${d.getMonth()+1}/${d.getFullYear().toString().slice(2)}`;
+              }} />
+              <YAxis tickLine={false} axisLine={false} stroke="var(--text-muted)" domain={['auto', 'auto']} tickFormatter={(val) => `${val}%`} />
+              <Tooltip contentStyle={{ background: "var(--bg-card)", border: "1px solid var(--border-color)", borderRadius: "6px" }} formatter={(value: number, name: string) => [`${value}%`, name === 'equity' ? 'Strategy' : 'Benchmark']} />
+              <Line type="monotone" dataKey="equity" stroke={upColor} dot={(props: any) => {
+                const { cx, cy, payload } = props;
+                if (payload.signal === "BUY") {
+                  return <path key={`buy-${payload.label}`} d={`M${cx},${cy+6} l-4,8 l8,0 Z`} fill="#38b26d" />;
+                } else if (payload.signal === "SELL") {
+                  return <path key={`sell-${payload.label}`} d={`M${cx},${cy-6} l-4,-8 l8,0 Z`} fill="#c05c54" />;
+                } else if (payload.signal === "BUY_SELL") {
+                  return <circle key={`bs-${payload.label}`} cx={cx} cy={cy} r={4} fill="#eab308" />;
+                }
+                return <span key={`none-${payload.label}`}></span>;
+              }} strokeWidth={2} />
+              {niftyData.length > 0 && (
+                <Line type="monotone" dataKey="benchmark" stroke={benchmarkColor} dot={false} strokeWidth={2} />
+              )}
+            </ComposedChart>
+          </ResponsiveContainer>
+
+        <div>
+          <div className="bt-chart-panel__header">
+            <h3>Drawdown (%)</h3>
+          </div>
+          <ResponsiveContainer width="100%" height={160}>
+            <AreaChart data={drawdownData}>
+              <CartesianGrid strokeDasharray="2 2" vertical={false} stroke="var(--border-color)" />
+              <XAxis dataKey="label" hide />
+              <YAxis tickLine={false} axisLine={false} stroke="var(--text-muted)" />
+              <Tooltip contentStyle={{ background: "var(--bg-card)", border: "1px solid var(--border-color)", borderRadius: "6px" }} />
+              <Area type="monotone" dataKey="drawdown" stroke={downColor} fill={downColor} fillOpacity={0.3} />
+            </AreaChart>
+          </ResponsiveContainer>
         </div>
-        <ResponsiveContainer width="100%" height={240}>
-          <ComposedChart data={equityData}>
-            <CartesianGrid strokeDasharray="2 2" vertical={false} />
-            <XAxis dataKey="label" tickLine={false} axisLine={false} />
-            <YAxis tickLine={false} axisLine={false} />
-            <Tooltip />
-            <Bar dataKey="equity" radius={[4, 4, 0, 0]}>
-              {equityData.map((entry: any, idx: number) => (
-                <Cell key={`cell-${idx}`} fill={barColors[idx]} />
-              ))}
-            </Bar>
-          </ComposedChart>
-        </ResponsiveContainer>
       </div>
 
       <section className="bt-chart-panel">
         <div className="bt-chart-panel__header">
-          <h3>Monthly returns</h3>
+          <h3>Monthly Returns (%)</h3>
         </div>
-        {monthly.length ? (
-          <div className="bt-metrics-grid bt-metrics-grid--monthly">
-            {monthly.map((m: any) => (
-              <div key={m.month} className="bt-metric-card" style={{ background: monthlyColor(m.return), border: "none", textAlign: "center" }}>
-                <strong>{m.month}</strong>
-                <div className="bt-metric-card__value">{(m.return * 100).toFixed(1)}%</div>
-              </div>
-            ))}
+        {years.length > 0 ? (
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: "4px", fontSize: "0.85rem", textAlign: "center" }}>
+              <thead>
+                <tr>
+                  <th style={{ padding: "8px", color: "var(--text-muted)" }}>Year</th>
+                  {allMonths.map(mo => (
+                    <th key={mo} style={{ padding: "8px", color: "var(--text-muted)", fontWeight: "normal" }}>{mo}</th>
+                  ))}
+                  <th style={{ padding: "8px", color: "var(--text-muted)" }}>YTD</th>
+                </tr>
+              </thead>
+              <tbody>
+                {years.map(yr => {
+                  let ytdProduct = 1.0;
+                  return (
+                    <tr key={yr}>
+                      <td style={{ padding: "8px", fontWeight: "bold", background: "var(--bg-card-alt)", borderRadius: "4px" }}>{yr}</td>
+                      {allMonths.map(mo => {
+                        const r = heatmapData[yr][mo];
+                        if (r !== undefined && !Number.isNaN(Number(r))) ytdProduct *= (1 + Number(r));
+                        return (
+                          <td 
+                            key={mo} 
+                            style={{ 
+                              padding: "8px", 
+                              background: heatmapColor(r),
+                              color: r !== undefined ? "#fff" : "var(--text-muted)",
+                              borderRadius: "4px"
+                            }}
+                          >
+                            {r !== undefined ? `${(r * 100).toFixed(2)}%` : "-"}
+                          </td>
+                        );
+                      })}
+                      {(() => {
+                        const ytdFinal = ytdProduct - 1;
+                        return (
+                          <td style={{ padding: "8px", fontWeight: "bold", background: heatmapColor(ytdFinal), color: "#fff", borderRadius: "4px" }}>
+                            {`${(ytdFinal * 100).toFixed(2)}%`}
+                          </td>
+                        );
+                      })()}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
         ) : (
           <p className="muted-copy">Monthly returns not available.</p>

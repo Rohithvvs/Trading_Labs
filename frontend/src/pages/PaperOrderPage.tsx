@@ -5,7 +5,6 @@ import {
   fetchPaperOrderById,
   fetchPaperQuote,
   placePaperOrder,
-  prefillPaperTrade,
   prefillPaperTradeLocal,
   updatePaperOrder,
   invalidatePaperCaches,
@@ -31,7 +30,6 @@ import {
   recordCacheMiss,
   recordSample,
   startPaperOrderPerf,
-  timeLane,
 } from "../utils/paperOrderPerf";
 
 const DEFAULT_TICKET: PaperOrderTicketState = {
@@ -217,11 +215,6 @@ export function PaperOrderPage() {
     sourceConfidence:
       navState.confidence ??
       (Number(navState.prefill?.recommendation_meta?.confidence ?? 0) || null),
-    // Engine provenance — required so RE-001/RE-002 BUY tags survive Confirm
-    sourceEngineId: navState.prefill?.source_engine_id ?? null,
-    sourceEngineVersion: navState.prefill?.source_engine_version ?? null,
-    sourceRecommendationId: navState.prefill?.source_recommendation_id ?? null,
-    experimentId: navState.prefill?.experiment_id ?? null,
   });
 
   // Hydrate capital from cache immediately so shell is interactive without waiting on network.
@@ -711,13 +704,6 @@ export function PaperOrderPage() {
             sourceSignal: String(prefill.recommendation_meta?.signal ?? "BUY"),
             sourceScore: Number(prefill.recommendation_meta?.score ?? 0) || null,
             sourceConfidence: Number(prefill.recommendation_meta?.confidence ?? 0) || null,
-            sourceEngineId:
-              local.source_engine_id ?? prefill.source_engine_id ?? null,
-            sourceEngineVersion:
-              local.source_engine_version ?? prefill.source_engine_version ?? null,
-            sourceRecommendationId:
-              local.source_recommendation_id ?? prefill.source_recommendation_id ?? null,
-            experimentId: local.experiment_id ?? prefill.experiment_id ?? null,
           });
           setMeta({
             signal: String(prefill.recommendation_meta?.signal ?? "BUY"),
@@ -731,100 +717,12 @@ export function PaperOrderPage() {
             setQuoteLane((s) => (s === "ready" ? s : "ready"));
           }
 
-          const needsLabRefine = Boolean(
-            prefill.source_recommendation_id ||
-              (prefill.source_engine_id &&
-                ["RE-001", "RE-002"].includes(String(prefill.source_engine_id).toUpperCase())),
-          );
-
           const lanes: Promise<unknown>[] = [
             loadQuoteAndAccount(local.symbol || symbolForLoad, gen, {
               forceAccount: opts?.forceRefresh,
               forceQuote: opts?.forceRefresh,
             }),
           ];
-          if (needsLabRefine) {
-            setRecoLane("loading");
-            logPaperOrder("api_request", { kind: "prefill", symbol: prefill.symbol });
-            lanes.push(
-              timeLane(
-                gen,
-                "prefill_lab",
-                "api",
-                () => prefillPaperTrade(prefill),
-                { timeoutMs: FAST_TIMEOUT_MS, label: "Prefill" },
-              ).then((result) => {
-                if (!isActive() || gen !== loadGenRef.current) return;
-                if (result.value) {
-                  const r = result.value;
-                  setRecoLane("ready");
-                  const lim =
-                    r.limit_price != null && Number(r.limit_price) > 0
-                      ? Number(r.limit_price)
-                      : null;
-                  setTicket((t) => ({
-                    ...t,
-                    symbol: toCanonicalSymbol(r.symbol) || t.symbol,
-                    side: r.side,
-                    type: lim != null ? r.type || t.type : t.type === "LIMIT" && t.limitPrice ? t.type : "MARKET",
-                    qty: r.qty,
-                    limitPrice: lim ?? t.limitPrice,
-                    stopLoss:
-                      r.stop_loss != null && Number(r.stop_loss) > 0
-                        ? Number(r.stop_loss)
-                        : t.stopLoss,
-                    target:
-                      r.target != null && Number(r.target) > 0 ? Number(r.target) : t.target,
-                    notes: r.note,
-                    sourceEngineId: r.source_engine_id ?? t.sourceEngineId,
-                    sourceEngineVersion: r.source_engine_version ?? t.sourceEngineVersion,
-                    sourceRecommendationId:
-                      r.source_recommendation_id ?? t.sourceRecommendationId,
-                    experimentId: r.experiment_id ?? t.experimentId,
-                  }));
-                } else {
-                  // Keep local prefill — form already usable
-                  setRecoLane("ready");
-                  logPaperOrder("loading_failure", {
-                    reason: "prefill_failed_or_timeout",
-                    message: result.error,
-                  });
-                  // Background refine if fast timed out
-                  if (result.timedOut) {
-                    void prefillPaperTrade(prefill)
-                      .then((r) => {
-                        if (!isActive() || gen !== loadGenRef.current) return;
-                        setTicket((t) => ({
-                          ...t,
-                          symbol: toCanonicalSymbol(r.symbol) || t.symbol,
-                          qty: r.qty,
-                          limitPrice:
-                            r.limit_price != null && Number(r.limit_price) > 0
-                              ? Number(r.limit_price)
-                              : t.limitPrice,
-                          stopLoss:
-                            r.stop_loss != null && Number(r.stop_loss) > 0
-                              ? Number(r.stop_loss)
-                              : t.stopLoss,
-                          target:
-                            r.target != null && Number(r.target) > 0
-                              ? Number(r.target)
-                              : t.target,
-                          notes: r.note,
-                          sourceEngineId: r.source_engine_id ?? t.sourceEngineId,
-                          sourceEngineVersion:
-                            r.source_engine_version ?? t.sourceEngineVersion,
-                          sourceRecommendationId:
-                            r.source_recommendation_id ?? t.sourceRecommendationId,
-                          experimentId: r.experiment_id ?? t.experimentId,
-                        }));
-                      })
-                      .catch(() => undefined);
-                  }
-                }
-              }),
-            );
-          }
           await Promise.all(lanes);
           return;
         }
@@ -1226,13 +1124,6 @@ export function PaperOrderPage() {
       stopPrice: pos(ticket.stopPrice),
       stopLoss: pos(ticket.stopLoss),
       target: pos(ticket.target),
-      // Preserve engine tag — default Production only when truly unknown
-      sourceEngineId: ticket.sourceEngineId || navState.prefill?.source_engine_id || "Production",
-      sourceEngineVersion:
-        ticket.sourceEngineVersion ?? navState.prefill?.source_engine_version ?? null,
-      sourceRecommendationId:
-        ticket.sourceRecommendationId ?? navState.prefill?.source_recommendation_id ?? null,
-      experimentId: ticket.experimentId ?? navState.prefill?.experiment_id ?? null,
     };
     // Freeze idempotency key for this attempt (double-click reuses same key)
     const attemptKey = idempotencyKey;
@@ -1248,8 +1139,6 @@ export function PaperOrderPage() {
         limitPrice: normalized.limitPrice,
         stopLoss: normalized.stopLoss,
         target: normalized.target,
-        sourceEngineId: normalized.sourceEngineId,
-        sourceRecommendationId: normalized.sourceRecommendationId,
       });
 
       if (editingOrderId) {

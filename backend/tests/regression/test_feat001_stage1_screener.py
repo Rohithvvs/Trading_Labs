@@ -311,23 +311,26 @@ def test_stock_failing_volume_not_eligible_even_with_high_score():
 
 
 # ---------------------------------------------------------------------------
-# 6. Strict Buy Gate and RecommendationService not modified
+# 6. Recommendation outputs remain REJECT (engine removed)
 # ---------------------------------------------------------------------------
 
-def test_strict_buy_gate_score_based_policy():
-    """Score-based signal policy: classify by score thresholds, not tech>=75 gate."""
-    import inspect
+def test_valid_stage1_candidate_recommendation_is_reject_stub():
+    """The removed recommendation engine leaves production at the REJECT stub.
+
+    Regression: after engine removal, the orchestrator's fallback result must
+    build a valid FinalRecommendation (required ``summary`` present) that stays
+    REJECT — no BUY/WATCH is produced without an engine.
+    """
     from backend.app.agents.orchestrator_agent import OrchestratorAgent
-    source = inspect.getsource(OrchestratorAgent._enforce_strict_buy_gate)
-    assert "classify_signal_from_score" in source
-    assert "SCORE SIGNAL" in source
+    from backend.app.schemas.analysis import AnalysisMode, AnalysisRequest
 
-
-def test_recommendation_service_not_modified():
-    """RecommendationService.build signature unchanged."""
-    import inspect
-    from backend.app.services.recommendation_service import RecommendationService
-    sig = inspect.signature(RecommendationService.build)
-    params = list(sig.parameters.keys())
-    assert "technical_results" in params
-    assert "backtests" in params
+    orchestrator = OrchestratorAgent(db=MagicMock())
+    result = orchestrator._unavailable_analysis_result(
+        symbol="TEST",
+        request=AnalysisRequest(symbols=["TEST"], mode=AnalysisMode.swing),
+        candles_by_mode={},
+    )
+    assert result.recommendation.action == "REJECT"
+    assert result.recommendation.score == 0.0
+    assert result.recommendation.summary  # required field; no ValidationError
+    assert result.challenger_recommendation.action == "REJECT"

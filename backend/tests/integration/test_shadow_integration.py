@@ -19,10 +19,8 @@ from app.schemas.analysis import (
     AnalysisMode,
     AnalysisRequest,
     BacktestResult,
-    FinalRecommendation,
     MarketRegimeResult,
     OHLCVPoint,
-    RecommendationReasoning,
     ShadowExecutionContext,
     ShadowExecutionResult,
     TechnicalAnalysisResult,
@@ -68,7 +66,7 @@ def _market_regime() -> MarketRegimeResult:
     )
 
 
-def _wire_agent_mocks(orchestrator: OrchestratorAgent) -> FinalRecommendation:
+def _wire_agent_mocks(orchestrator: OrchestratorAgent) -> None:
     orchestrator.news_agent = MagicMock()
     orchestrator.news_agent.run.return_value = ([], 0.5, "NEUTRAL", "No recent news found")
 
@@ -88,23 +86,10 @@ def _wire_agent_mocks(orchestrator: OrchestratorAgent) -> FinalRecommendation:
     orchestrator.fundamental_agent = MagicMock()
     orchestrator.fundamental_agent.run.return_value = None
 
-    reasoning = RecommendationReasoning(
-        bullets=["Test bullet"],
-        risk_factors=["Test risk"],
-        invalidation_signals=["Test invalidation"],
-    )
-    recommendation = FinalRecommendation(
-        action="BUY",
-        confidence=0.8,
-        score=75.0,
-        reasoning=reasoning,
-        trade_plans=[],
-        summary="Test summary",
-    )
-    orchestrator.recommendation_agent = MagicMock()
-    orchestrator.recommendation_agent.run.return_value = recommendation
+    # Production recommendation is now built inline by the orchestrator
+    # (the standalone recommendation engine was removed), so no agent mock
+    # is required here.
     orchestrator._persist_analysis = AsyncMock()
-    return recommendation
 
 
 async def _run_post_bulk(
@@ -331,8 +316,8 @@ async def test_shadow_return_value_does_not_replace_production_action(
             assert context.production_recommendation is not None
             return ShadowExecutionResult(
                 ruleset_name="experimental_v1",
-                score=0.0,
-                action="REJECT",
+                score=99.0,
+                action="BUY",
             )
 
     orchestrator.shadow_executor = NonMutatingExecutor()
@@ -340,9 +325,10 @@ async def test_shadow_return_value_does_not_replace_production_action(
 
     result = await _run_post_bulk(orchestrator)
 
-    # Production pipeline mock returns BUY; overlays may downgrade to WATCH only.
-    assert result.recommendation.action != "REJECT"
-    assert result.recommendation.score != 0.0
+    # The recommendation engine was removed, so production always emits the
+    # REJECT stub. The shadow's BUY result must NOT replace it.
+    assert result.recommendation.action == "REJECT"
+    assert result.recommendation.score == 0.0
 
 
 @pytest.mark.asyncio
@@ -357,11 +343,11 @@ async def test_shadow_mutating_recommendation_does_not_leak_to_production(
 
     class MutatingExecutor(IShadowExecutor):
         async def execute_shadow(self, context: ShadowExecutionContext) -> ShadowExecutionResult:
-            context.production_recommendation.action = "REJECT"
-            context.production_recommendation.score = 0.0
+            context.production_recommendation.action = "BUY"
+            context.production_recommendation.score = 99.0
             if context.production_challenger_recommendation is not None:
-                context.production_challenger_recommendation.action = "REJECT"
-                context.production_challenger_recommendation.score = 0.0
+                context.production_challenger_recommendation.action = "BUY"
+                context.production_challenger_recommendation.score = 99.0
             return ShadowExecutionResult(
                 ruleset_name="experimental_v1",
                 score=0.0,
@@ -374,11 +360,10 @@ async def test_shadow_mutating_recommendation_does_not_leak_to_production(
     result = await _run_post_bulk(orchestrator)
 
     # Mutations inside the shadow executor must not alter the returned production result.
-    assert result.recommendation.action != "REJECT"
-    assert result.recommendation.score != 0.0
+    assert result.recommendation.action == "REJECT"
+    assert result.recommendation.score == 0.0
     if result.challenger_recommendation is not None:
-        # Score must not be forced to 0 by shadow mutation of the context copy.
-        assert result.challenger_recommendation.score != 0.0
+        assert result.challenger_recommendation.score == 0.0
 
 
 @pytest.mark.asyncio

@@ -21,65 +21,112 @@ _DB_PROBE_TIMEOUT_SEC = 8.0
 _REDIS_PROBE_TIMEOUT_SEC = 1.0
 
 
+@router.get("/market-data/freshness")
+async def market_data_freshness():
+    """Operator-facing strategy market-data freshness + recent load summary."""
+    try:
+        from ..services.market_data_ingestion.freshness import status_snapshot
+
+        snap = await asyncio.wait_for(status_snapshot(), timeout=5.0)
+        return sanitize_for_json(snap)
+    except Exception as exc:
+        logger.warning("market_data_freshness failed: %s", exc)
+        return {
+            "market_data_freshness": {
+                "ok": False,
+                "code": "MARKET_DATA_STALE",
+                "reason": "db_unavailable",
+                "message": str(exc)[:200],
+            }
+        }
+
+
+@router.get("/health/live")
+async def health_live() -> dict[str, object]:
+    """Process liveness only — no DB, Redis, FYERS, or scanner dependencies.
+
+    Used to distinguish:
+      - process dead / network down  → this endpoint never answers
+      - process alive but deps slow / event-loop previously blocked → this answers, /health may lag
+    """
+    return {
+        "status": "ok",
+        "live": True,
+        "environment": settings.app_env,
+        "ts": time.time(),
+    }
+
+
 @router.get("/health", response_model=HealthResponse)
 async def health_check() -> HealthResponse:
-    """Liveness + dependency probe. Always returns quickly (bounded timeouts)."""
+    """Liveness + dependency probe. Always returns quickly (bounded timeouts).
+
+    Probes run concurrently so a slow Redis cannot stack on a slow DB past the
+    frontend budget. Individual probes never call external broker HTTP APIs.
+    """
     started = time.perf_counter()
 
-    # --- Database (async engine — must use async connect, not sync `with engine.connect()`) ---
-    db_status = "ok"
-    try:
-        from ..db.session import engine
+    async def _probe_db() -> str:
+        try:
+            from ..db.session import engine
 
-        async def _db_ping() -> None:
-            async with engine.connect() as conn:
-                await conn.execute(text("SELECT 1"))
+            async def _db_ping() -> None:
+                async with engine.connect() as conn:
+                    await conn.execute(text("SELECT 1"))
 
-        await asyncio.wait_for(_db_ping(), timeout=_DB_PROBE_TIMEOUT_SEC)
-    except Exception as exc:
-        db_status = "error"
-        logger.warning(
-            "[health] database probe failed (%s): %s",
-            type(exc).__name__,
-            str(exc)[:200],
-        )
+            await asyncio.wait_for(_db_ping(), timeout=_DB_PROBE_TIMEOUT_SEC)
+            return "ok"
+        except Exception as exc:
+            logger.warning(
+                "[health] database probe failed (%s): %s",
+                type(exc).__name__,
+                str(exc)[:200],
+            )
+            return "error"
 
-    # --- Redis (graceful if not configured / local redis not running) ---
-    redis_status = "ok"
-    try:
-        from ..core.redis import get_redis
+    async def _probe_redis() -> str:
+        try:
+            from ..core.redis import get_redis
 
-        r = get_redis()
-        if r is None:
-            redis_status = "not_configured"
-        else:
+            r = get_redis()
+            if r is None:
+                return "not_configured"
             await asyncio.wait_for(r.ping(), timeout=_REDIS_PROBE_TIMEOUT_SEC)
-    except Exception as exc:
-        # No explicit REDIS_URL → treat missing local Redis as optional, not hard error.
-        explicit = (os.getenv("REDIS_URL") or "").strip()
-        redis_status = "error" if explicit else "not_configured"
-        logger.warning(
-            "[health] redis probe failed (%s): %s → %s",
-            type(exc).__name__,
-            str(exc)[:160],
-            redis_status,
-        )
+            return "ok"
+        except Exception as exc:
+            explicit = (os.getenv("REDIS_URL") or "").strip()
+            status = "error" if explicit else "not_configured"
+            logger.warning(
+                "[health] redis probe failed (%s): %s → %s",
+                type(exc).__name__,
+                str(exc)[:160],
+                status,
+            )
+            return status
 
-    # Lightweight derived signals (do not call external broker APIs here).
-    fyers_status = "ok"
-    websocket_status = "ok"
-    try:
-        from ..services.market_engine_service import market_engine
+    async def _probe_engine() -> tuple[str, str]:
+        fyers_status = "ok"
+        websocket_status = "ok"
+        try:
+            from ..services.market_engine_service import market_engine
 
-        eng = await asyncio.wait_for(market_engine.status(), timeout=0.75)
-        if isinstance(eng, dict):
-            # Reflect engine/ws connectivity when the market engine is running.
-            if eng.get("websocket_connected") is False:
-                websocket_status = "disconnected"
-            if eng.get("running") is False and eng.get("status") in ("stopped", "error"):
-                fyers_status = "idle"
-    except Exception:
-        pass
+            eng = await asyncio.wait_for(market_engine.status(), timeout=0.75)
+            if isinstance(eng, dict):
+                if eng.get("websocket_connected") is False:
+                    websocket_status = "disconnected"
+                if eng.get("running") is False and eng.get("status") in ("stopped", "error"):
+                    fyers_status = "idle"
+        except Exception:
+            pass
+        return fyers_status, websocket_status
+
+    # Parallel probes — worst case ≈ max(db, redis, engine), not sum.
+    db_status, redis_status, engine_pair = await asyncio.gather(
+        _probe_db(),
+        _probe_redis(),
+        _probe_engine(),
+    )
+    fyers_status, websocket_status = engine_pair
 
     elapsed_ms = int((time.perf_counter() - started) * 1000)
     logger.info(

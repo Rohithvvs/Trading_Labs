@@ -159,13 +159,27 @@ def _check_fyers_response(response: dict | object, symbol: str = "") -> None:
         diagnostics.increment_fyers_metric("rate_limit_count")
         raise FyersRateLimitError("Fyers API rate limit hit. Please wait and try again.")
 
-    if code_int == -300 or "invalid symbol" in lower_msg:
+    if (
+        code_int == -300
+        or code_int == 422
+        or "invalid symbol" in lower_msg
+        or "please provide a valid symbol" in lower_msg
+    ):
         diagnostics.increment_fyers_metric("failed_request_count")
         raise FyersInvalidSymbolError(f"FYERS invalid symbol '{symbol}': code={code} message={message}")
 
     # Any other non-ok response
     if response.get("s") == "error" or (code_int is not None and code_int < 0):
         diagnostics.increment_fyers_metric("failed_request_count")
+        # HTTP-layer "error" bodies for bad tickers often lack code=-300; still treat
+        # common invalid-symbol phrasing as non-retryable.
+        if any(
+            needle in lower_msg
+            for needle in ("invalid", "not found", "delisted", "unknown symbol", "no data")
+        ):
+            raise FyersInvalidSymbolError(
+                f"FYERS invalid symbol '{symbol}': code={code} message={message}"
+            )
         raise FyersAPIError(f"Fyers API error for symbol '{symbol}': code={code} message={message}")
 
 
@@ -918,7 +932,11 @@ class FyersService:
                 range_to,
                 payload["resolution"],
             )
-            response = await asyncio.to_thread(self._request_history_with_retries, client, payload, symbol)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(
+                FyersService._network_pool,
+                self._request_history_with_retries, client, payload, symbol
+            )
             candle_rows = response.get("candles", []) if isinstance(response, dict) else []
             if not candle_rows:
                 self.logger.warning(
@@ -1386,6 +1404,10 @@ class FyersService:
         today_dt = date.today()
         max_retries = max(1, int(getattr(settings, "scanner_max_retries", 3) or 3))
 
+        if self._is_blacklisted(symbol):
+            self.logger.info("Skipping blacklisted symbol (incremental): %s", symbol)
+            return []
+
         if not cached_candles:
             # Cold symbol: one full-history window is required to bootstrap indicators.
             last_cached_dt = today_dt - timedelta(days=365)
@@ -1413,6 +1435,11 @@ class FyersService:
             try:
                 client = self._client()
                 normalized_sym = self._normalize_symbol(symbol)
+                self.logger.debug(
+                    "INCREMENTAL FETCH NORMALIZED | symbol=%s | fyers_symbol=%s",
+                    symbol,
+                    normalized_sym,
+                )
 
                 payload = {
                     "symbol": normalized_sym,
@@ -1445,8 +1472,9 @@ class FyersService:
                         )
                     )
                 self.logger.info(
-                    "INCREMENTAL FETCH DONE | symbol=%s | mode=%s | candles=%s | latency_ms=%s",
+                    "INCREMENTAL FETCH DONE | symbol=%s | fyers_symbol=%s | mode=%s | candles=%s | latency_ms=%s",
                     symbol,
+                    normalized_sym,
                     mode,
                     len(fetched),
                     incr_ms,
@@ -1455,13 +1483,14 @@ class FyersService:
             except (FyersAuthExpiredError, FyersAuthInvalidError):
                 raise
             except FyersInvalidSymbolError:
+                # Non-retryable (dummy/delisted/bad ticker) — do not sleep the network pool.
                 self._blacklist_symbol(symbol)
                 return []
             except (ModuleNotFoundError, ImportError):
                 self.logger.exception("Import failure during incremental fetch")
                 raise
             except Exception as exc:
-                wait_time = 2 ** retry_count  # 1s, 2s, 4s...
+                wait_time = min(4, 2 ** retry_count)  # 1s, 2s, 4s capped
                 self.logger.warning(
                     "Network drop fetching incremental candle | symbol=%s | attempt=%s | wait=%ss | error=%s",
                     symbol,
@@ -1471,8 +1500,14 @@ class FyersService:
                 )
                 time.sleep(wait_time)
         
-        self.logger.error("All %s attempts failed for incremental candle | symbol=%s", max_retries, symbol)
-        raise FyersNetworkException(f"Incremental fetch compromised after {max_retries} retries for symbol: {symbol}")
+        # Scanner resilience: never raise out of the worker pool — empty candles
+        # let the symbol fail soft while the rest of the universe continues.
+        self.logger.error(
+            "All %s attempts failed for incremental candle | symbol=%s | returning empty",
+            max_retries,
+            symbol,
+        )
+        return []
 
     def combine_candles(self, cached: list[OHLCVPoint], new_candles: list[OHLCVPoint]) -> list[OHLCVPoint]:
         """Combine and deduplicate cached and new candles by timestamp date."""

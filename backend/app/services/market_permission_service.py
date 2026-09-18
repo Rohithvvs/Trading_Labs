@@ -1,7 +1,8 @@
 import pandas as pd
 import pytz
 import asyncio
-from datetime import datetime, date, timedelta
+import time
+from datetime import datetime, date
 from ta.trend import EMAIndicator
 from ..utils.symbol import canonical_symbol, fyers_symbol
 from ..schemas import MarketRegimeResult
@@ -10,6 +11,16 @@ from ..config import settings
 from ..utils import get_logger
 
 logger = get_logger("app.market_permission")
+
+# Bounded lookbacks — match existing Fyers live fallback (250 bars) for EMA50 semantics.
+# VIX only needs latest close + staleness; keep a small window for holidays/gaps.
+_NIFTY_BREADTH_LOOKBACK_BARS = 250
+_VIX_LOOKBACK_BARS = 60
+# Per-symbol DB load budget so pool checkout / pre_ping cannot consume the scan timeout.
+_CANDLE_LOAD_TIMEOUT_SEC = 8.0
+# Cap concurrent breadth history loads (pool_size=20; leave headroom for the scan).
+_BREADTH_LOAD_CONCURRENCY = 4
+
 
 class MarketPermissionService:
     def __init__(self) -> None:
@@ -50,38 +61,108 @@ class MarketPermissionService:
         return normalized_date
 
     async def _load_candles(self, symbol: str, is_index: bool = False) -> pd.DataFrame:
+        """Load a **bounded** daily history for market-regime inputs.
+
+        Prefer ``load_recent_history`` (LIMIT N) over unbounded ``load_full_history``.
+        Each DB attempt is timeout-bounded so a stuck pool checkout cannot hang the scan.
+
+        Signature stays ``(symbol, is_index=False)`` for compatibility with existing tests
+        and callers; lookback is selected from the symbol (VIX vs NIFTY/breadth).
+        """
+        sym_u = str(symbol or "").upper()
+        if "VIX" in sym_u:
+            lookback_bars = _VIX_LOOKBACK_BARS
+        else:
+            lookback_bars = _NIFTY_BREADTH_LOOKBACK_BARS
+
         canon = canonical_symbol(symbol)
-        df = await self.md_service.load_full_history(canon, "1D")
-        if df.empty:
+        candidates = [canon, fyers_symbol(canon, is_index=is_index)]
+        # Deduplicate while preserving order
+        seen: set[str] = set()
+        variants: list[str] = []
+        for c in candidates:
+            if c and c not in seen:
+                seen.add(c)
+                variants.append(c)
+
+        last_exc: Exception | None = None
+        for variant in variants:
+            try:
+                df = await asyncio.wait_for(
+                    self.md_service.load_recent_history(variant, "1D", lookback_bars),
+                    timeout=_CANDLE_LOAD_TIMEOUT_SEC,
+                )
+                if df is not None and not df.empty:
+                    return df.sort_index()
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "SCAN_VIX_LOAD_TIMEOUT | symbol=%s | variant=%s | lookback=%s | timeout_s=%.1f",
+                    symbol,
+                    variant,
+                    lookback_bars,
+                    _CANDLE_LOAD_TIMEOUT_SEC,
+                )
+                last_exc = TimeoutError(
+                    f"candle load timed out for {variant} after {_CANDLE_LOAD_TIMEOUT_SEC:.0f}s"
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                last_exc = exc
+                logger.debug(
+                    "bounded candle load failed | symbol=%s | variant=%s | err=%s",
+                    symbol,
+                    variant,
+                    exc,
+                )
+
+        # Live Fyers fallback (also bounded to lookback_bars) — only if DB empty/timeout.
+        try:
+            from .fyers_service import FyersService
+            from ..schemas import AnalysisMode
+
+            fs = FyersService()
             fyers = fyers_symbol(canon, is_index=is_index)
-            df = await self.md_service.load_full_history(fyers, "1D")
-            if df.empty:
-                try:
-                    from .fyers_service import FyersService
-                    from ..schemas import AnalysisMode
-                    fs = FyersService()
-                    points = await fs.fetch_ohlcv(fyers, AnalysisMode.swing, "1D", 250)
-                    if points:
-                        data = [
-                            {
-                                "timestamp": p.timestamp,
-                                "open": p.open,
-                                "high": p.high,
-                                "low": p.low,
-                                "close": p.close,
-                                "volume": p.volume,
-                            }
-                            for p in points
-                        ]
-                        df = pd.DataFrame(data).set_index("timestamp")
-                except Exception as exc:
-                    logger.warning("Live fallback fetch for index %s failed: %s", symbol, exc)
-        return df.sort_index() if not df.empty else df
+            points = await asyncio.wait_for(
+                fs.fetch_ohlcv(fyers, AnalysisMode.swing, "1D", lookback_bars),
+                timeout=_CANDLE_LOAD_TIMEOUT_SEC,
+            )
+            if points:
+                data = [
+                    {
+                        "timestamp": p.timestamp,
+                        "open": p.open,
+                        "high": p.high,
+                        "low": p.low,
+                        "close": p.close,
+                        "volume": p.volume,
+                    }
+                    for p in points
+                ]
+                df = pd.DataFrame(data).set_index("timestamp")
+                return df.sort_index()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("Live fallback fetch for index %s failed: %s", symbol, exc)
+            last_exc = exc
+
+        if last_exc and "INDIAVIX" in str(symbol).upper():
+            logger.warning(
+                "SCAN_VIX_LOAD_FAILURE | symbol=%s | error=%s",
+                symbol,
+                last_exc,
+            )
+        return pd.DataFrame()
 
     async def evaluate_market_permission(self, scan_date: datetime) -> MarketRegimeResult:
         """
         Evaluate the broad market permission state (regime) as of a given scan_date cutoff.
         Uses NIFTY 50 trend, VIX volatility regime, and top liquid stock breadth.
+
+        Candle loads are **bounded** (no full-history scans) and timeout-guarded.
+        Prefer ``scan_market_context.get_or_build_market_regime`` from scanner code so
+        this runs at most once per scan.
         """
         scan_trading_date = self._to_ist_trading_date(scan_date)
         reasons = []
@@ -166,18 +247,32 @@ class MarketPermissionService:
             else:
                 trend_state = "BEARISH"
 
-            # 2. Evaluate Volatility Regime via India VIX
+            # 2. Evaluate Volatility Regime via India VIX (bounded load — latest close only)
+            vix_t0 = time.perf_counter()
+            logger.info(
+                "SCAN_VIX_LOAD_START | symbol=INDIAVIX-INDEX | lookback_bars=%s | scan_date=%s",
+                _VIX_LOOKBACK_BARS,
+                scan_trading_date,
+            )
             vix_df = await self._load_candles("INDIAVIX-INDEX", is_index=True)
             vix_close = None
             if vix_df.empty:
                 data_quality_flags["vix_data_present"] = False
                 reasons.append("India VIX candles missing from database")
+                logger.warning(
+                    "SCAN_VIX_LOAD_FAILURE | symbol=INDIAVIX-INDEX | duration_ms=%.0f | reason=empty",
+                    (time.perf_counter() - vix_t0) * 1000,
+                )
             else:
                 vix_df["trading_date"] = [self._to_ist_trading_date(ts) for ts in vix_df.index]
                 vix_filtered = vix_df[vix_df["trading_date"] <= scan_trading_date]
                 if vix_filtered.empty:
                     data_quality_flags["vix_data_present"] = False
                     reasons.append(f"No India VIX data available up to trading date {scan_trading_date}")
+                    logger.warning(
+                        "SCAN_VIX_LOAD_FAILURE | symbol=INDIAVIX-INDEX | duration_ms=%.0f | reason=no_rows_upto_scan_date",
+                        (time.perf_counter() - vix_t0) * 1000,
+                    )
                 else:
                     vix_latest_row = vix_filtered.iloc[-1]
                     vix_latest_date = vix_latest_row["trading_date"]
@@ -188,6 +283,13 @@ class MarketPermissionService:
                         reasons.append(f"India VIX data is stale. Last available candle was {vix_staleness} days ago ({vix_latest_date})")
                     else:
                         vix_close = float(vix_latest_row["close"])
+                    logger.info(
+                        "SCAN_VIX_LOAD_SUCCESS | symbol=INDIAVIX-INDEX | duration_ms=%.0f | "
+                        "bars=%s | vix_close=%s | data_source=bounded_db_or_fyers | cache_hit=false",
+                        (time.perf_counter() - vix_t0) * 1000,
+                        len(vix_df),
+                        vix_close,
+                    )
 
             if vix_close is None:
                 volatility_state = "UNKNOWN"
@@ -201,21 +303,26 @@ class MarketPermissionService:
                 volatility_state = "EXTREME"
 
             # 3. Evaluate Breadth Proxy via top liquid screener benchmark stocks (TEMPORARY_ASSUMPTION)
-            # Fetch candles for each benchmark stock concurrently to avoid network-like delays
-            async def get_bench_status(symbol: str) -> tuple[date, bool]:
-                try:
-                    df = await self._load_candles(symbol)
-                    if df.empty or len(df) < 5:
+            # Bounded concurrency — never stampede the asyncpg pool with 25 full-history loads.
+            breadth_sem = asyncio.Semaphore(_BREADTH_LOAD_CONCURRENCY)
+
+            async def get_bench_status(symbol: str) -> tuple[date, bool] | None:
+                async with breadth_sem:
+                    try:
+                        df = await self._load_candles(symbol)
+                        if df.empty or len(df) < 5:
+                            return None
+                        df["ema50"] = EMAIndicator(close=df["close"], window=50).ema_indicator()
+                        df["trading_date"] = [self._to_ist_trading_date(ts) for ts in df.index]
+                        df_filtered = df[df["trading_date"] <= scan_trading_date]
+                        if df_filtered.empty:
+                            return None
+                        row = df_filtered.iloc[-1]
+                        return row["trading_date"], float(row["close"]) > float(row["ema50"])
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
                         return None
-                    df["ema50"] = EMAIndicator(close=df["close"], window=50).ema_indicator()
-                    df["trading_date"] = [self._to_ist_trading_date(ts) for ts in df.index]
-                    df_filtered = df[df["trading_date"] <= scan_trading_date]
-                    if df_filtered.empty:
-                        return None
-                    row = df_filtered.iloc[-1]
-                    return row["trading_date"], float(row["close"]) > float(row["ema50"])
-                except Exception:
-                    return None
 
             bench_tasks = [get_bench_status(sym) for sym in self.benchmark_symbols]
             bench_results = await asyncio.gather(*bench_tasks)
@@ -281,6 +388,8 @@ class MarketPermissionService:
                 risk_multiplier = 1.0
                 reasons.append("Market FAVORABLE: Trend strong, breadth healthy, and low volatility")
 
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             logger.critical("Error during market permission evaluation: %s", e, exc_info=True)
             market_state = "HIGHRISK"

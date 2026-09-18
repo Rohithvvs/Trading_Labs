@@ -131,6 +131,8 @@ export const SwingDecisionDashboard = memo(function SwingDecisionDashboard({
 
       <ScannerStatistics metrics={summaryMetrics} />
 
+      {/* Engine-specific statistics — independent async load, never affects production stats */}
+
       <DataFeedNotice warning={screenerResult?.data_warning} />
 
       <QuickScannerActions

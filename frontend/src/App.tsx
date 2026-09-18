@@ -5,10 +5,9 @@ import {
   cacheLatestScanFromScreenerResponse,
   fetchUniverses,
   invalidateLatestScanCaches,
-  loadScannerResultsByEngine,
+  loadLatestScan,
   runPresetScreener,
   saveScannerPreset,
-  type ScannerEngineId,
 } from "./api";
 
 const AllAnalyzedStocksTable = lazy(() =>
@@ -70,7 +69,7 @@ const MarketsPage = lazy(() =>
 const PerformancePage = lazy(() =>
   import("./pages/PerformancePage").then((m) => ({ default: m.PerformancePage })),
 );
-const RecommendationLabPage = lazy(() => import("./pages/RecommendationLabPage"));
+
 const DiagnosticsPage = lazy(() =>
   import("./pages/Diagnostics").then((m) => ({ default: m.DiagnosticsPage })),
 );
@@ -96,50 +95,12 @@ const DEFAULT_FILTERS: DashboardFilters = {
   onlyHighConfidence: false,
 };
 
-const SCANNER_ENGINES: ScannerEngineId[] = ["Production", "RE-001", "RE-002"];
-
-/** Parse `?engine=` query into a canonical ScannerEngineId (case-insensitive). */
-function parseScannerEngineParam(raw: string | null | undefined): ScannerEngineId | null {
-  if (!raw) return null;
-  const upper = raw.trim().toUpperCase();
-  if (upper === "PRODUCTION" || upper === "PROD" || upper === "BASELINE") return "Production";
-  if (upper === "RE-001" || upper === "RE001") return "RE-001";
-  if (upper === "RE-002" || upper === "RE002") return "RE-002";
-  return null;
-}
-
-/** Build /scanner path preserving recommendation-engine context (and optional symbol). */
-function buildScannerPath(opts: {
-  engine?: ScannerEngineId | null;
-  symbol?: string | null;
-}): string {
+/** Build /scanner path preserving optional symbol context. */
+function buildScannerPath(opts: { symbol?: string | null }): string {
   const qs = new URLSearchParams();
-  if (opts.engine) qs.set("engine", opts.engine);
   if (opts.symbol) qs.set("symbol", opts.symbol);
   const s = qs.toString();
   return s ? `/scanner?${s}` : "/scanner";
-}
-
-type ScannerEngineSlice = {
-  filters: DashboardFilters;
-  screenerResult: ScreenerResponse | null;
-  showAllAnalyzedStocks: boolean;
-  selectedSymbol: string | null;
-  error: string | null;
-  lastScanDuration: number | null;
-  loaded: boolean;
-};
-
-function emptyEngineSlice(): ScannerEngineSlice {
-  return {
-    filters: { ...DEFAULT_FILTERS },
-    screenerResult: null,
-    showAllAnalyzedStocks: false,
-    selectedSymbol: null,
-    error: null,
-    lastScanDuration: null,
-    loaded: false,
-  };
 }
 
 export default function App() {
@@ -149,9 +110,6 @@ export default function App() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const symbolParam = searchParams.get("symbol");
-  const engineParam = searchParams.get("engine");
-  /** Deep-link / refresh: restore engine from URL so context survives navigation. */
-  const urlEngine = parseScannerEngineParam(engineParam) ?? "Production";
 
   const [timeframe, setTimeframe] = useState("1d");
   const [lookback, setLookback] = useState(180);
@@ -159,21 +117,10 @@ export default function App() {
   const [selectedUniverse, setSelectedUniverse] = useState("NIFTY500");
   const [universes, setUniverses] = useState<{ name: string; symbols: string[]; count: number }[]>([]);
   const [savedScanName, setSavedScanName] = useState("");
-  /** Active recommendation engine for Scanner view (independent result sets). */
-  const [scannerEngine, setScannerEngine] = useState<ScannerEngineId>(urlEngine);
-  const scannerEngineRef = useRef<ScannerEngineId>(urlEngine);
   /** One-shot: keep detail open when landing via ?symbol= after results restore. */
   const deepLinkSymbolRef = useRef<string | null>(
     symbolParam ? symbolParam.toUpperCase() : null,
   );
-  useEffect(() => {
-    scannerEngineRef.current = scannerEngine;
-  }, [scannerEngine]);
-  const [engineSlices, setEngineSlices] = useState<Record<ScannerEngineId, ScannerEngineSlice>>(() => ({
-    Production: emptyEngineSlice(),
-    "RE-001": emptyEngineSlice(),
-    "RE-002": emptyEngineSlice(),
-  }));
   const [filters, setFilters] = useState<DashboardFilters>(DEFAULT_FILTERS);
   const [screenerResult, setScreenerResult] = useState<ScreenerResponse | null>(null);
   const [scanHistory, setScanHistory] = useState<ScanHistoryItem[]>(() => loadScanHistory());
@@ -196,15 +143,6 @@ export default function App() {
   const [scanStartTime, setScanStartTime] = useState<number | null>(null);
   const [lastScanDuration, setLastScanDuration] = useState<number | null>(null);
 
-  const applyEngineSlice = useCallback((slice: ScannerEngineSlice) => {
-    setFilters(slice.filters);
-    setScreenerResult(slice.screenerResult);
-    setShowAllAnalyzedStocks(slice.showAllAnalyzedStocks);
-    setSelectedSymbol(slice.selectedSymbol);
-    setError(slice.error);
-    setLastScanDuration(slice.lastScanDuration);
-  }, []);
-
   const universesMapped = useMemo(
     () => universes.map(({ name, count }) => ({ name, count })),
     [universes],
@@ -215,131 +153,11 @@ export default function App() {
     [],
   );
 
-  const loadEngineResults = useCallback(
-    async (engine: ScannerEngineId, force = true) => {
-      try {
-        const data = await loadScannerResultsByEngine(engine, { force });
-        if (!data || data.available === false) {
-          setEngineSlices((prev) => ({
-            ...prev,
-            [engine]: {
-              ...prev[engine],
-              screenerResult: null,
-              loaded: true,
-              error: null,
-            },
-          }));
-          if (scannerEngineRef.current === engine) {
-            setScreenerResult(null);
-            setError(null);
-          }
-          return;
-        }
-        const response = data as ScreenerResponse;
-        response.shortlisted_symbols = response.shortlisted_symbols || [];
-        response.buy_candidate_symbols = response.buy_candidate_symbols || [];
-        response.watch_candidate_symbols = response.watch_candidate_symbols || [];
-        const completedAt =
-          response.last_scan_completed_at ??
-          response.scanned_at ??
-          response.analysis?.generated_at ??
-          null;
-        if (completedAt) {
-          response.last_scan_completed_at = completedAt;
-          response.scanned_at = response.scanned_at ?? completedAt;
-        }
-        const nextSymbol =
-          response.shortlisted_symbols[0] ??
-          response.buy_candidate_symbols[0] ??
-          response.watch_candidate_symbols[0] ??
-          null;
-        setEngineSlices((prev) => ({
-          ...prev,
-          [engine]: {
-            ...prev[engine],
-            screenerResult: response,
-            selectedSymbol: nextSymbol,
-            loaded: true,
-            error: null,
-          },
-        }));
-        if (scannerEngineRef.current === engine) {
-          setScreenerResult(response);
-          setError(null);
-          setSelectedSymbol(nextSymbol);
-        }
-        if (engine === "Production") {
-          setScanHistory((current) => saveScanHistory(response, current));
-        }
-      } catch (err) {
-        console.warn(`[scanner] failed to load ${engine} results`, err);
-        setEngineSlices((prev) => ({
-          ...prev,
-          [engine]: { ...prev[engine], loaded: true },
-        }));
-      }
-    },
-    [],
-  );
-
-  const handleScannerEngineChange = useCallback(
-    (next: ScannerEngineId) => {
-      if (next === scannerEngine) return;
-
-      const savedCurrent: ScannerEngineSlice = {
-        ...engineSlices[scannerEngine],
-        filters: { ...filters },
-        screenerResult,
-        showAllAnalyzedStocks,
-        selectedSymbol,
-        error,
-        lastScanDuration,
-        loaded: engineSlices[scannerEngine].loaded || screenerResult != null,
-      };
-      const target = engineSlices[next] ?? emptyEngineSlice();
-
-      setEngineSlices((prev) => ({ ...prev, [scannerEngine]: savedCurrent }));
-      setScannerEngine(next);
-      setDetailViewOpen(false);
-      // Preserve engine in URL so refresh / direct navigation keep the active tab.
-      navigate(buildScannerPath({ engine: next }), { replace: true });
-
-      if (target.loaded || target.screenerResult) {
-        applyEngineSlice(target);
-      } else {
-        applyEngineSlice(emptyEngineSlice());
-        void loadEngineResults(next, true);
-      }
-      // Lab engines: land on Scan Results so BUY+WATCH+REJECT (full Lab cohort) is visible by default.
-      // Production keeps Favorites as the default shortlist view.
-      if (next !== "Production") {
-        setShowAllAnalyzedStocks(true);
-      }
-    },
-    [
-      scannerEngine,
-      engineSlices,
-      filters,
-      screenerResult,
-      showAllAnalyzedStocks,
-      selectedSymbol,
-      error,
-      lastScanDuration,
-      applyEngineSlice,
-      loadEngineResults,
-      navigate,
-    ],
-  );
-
   const handleSelectSymbol = useCallback(
     (symbol: string) => {
       setSelectedSymbol(symbol);
       setDetailViewOpen(true);
-      // Carry active recommendation engine so Stock Detail / refresh keep origin context.
-      navigate(
-        buildScannerPath({ engine: scannerEngineRef.current, symbol }),
-        { replace: true },
-      );
+      navigate(buildScannerPath({ symbol }), { replace: true });
       import("./utils/researchPrefetcher").then(({ markPrefetched }) => markPrefetched(symbol));
     },
     [navigate],
@@ -347,8 +165,7 @@ export default function App() {
 
   const handleDetailBack = useCallback(() => {
     setDetailViewOpen(false);
-    // Return to the same engine tab that opened Stock Detail.
-    navigate(buildScannerPath({ engine: scannerEngineRef.current }), { replace: true });
+    navigate("/scanner", { replace: true });
   }, [navigate]);
 
   // Warm app cache after login
@@ -358,11 +175,8 @@ export default function App() {
 
   useEffect(() => {
     function loadAndApply(force = true) {
-      // Restore the engine from URL (default Production) so refresh keeps context.
-      const eng = scannerEngineRef.current;
-      void loadScannerResultsByEngine(eng, { force }).then((saved) => {
-        if (!saved || saved.available === false) return;
-        const response = saved as ScreenerResponse;
+      void loadLatestScan({ force }).then((response) => {
+        if (!response) return;
         response.shortlisted_symbols = response.shortlisted_symbols || [];
         response.buy_candidate_symbols = response.buy_candidate_symbols || [];
         response.watch_candidate_symbols = response.watch_candidate_symbols || [];
@@ -381,68 +195,41 @@ export default function App() {
           response.watch_candidate_symbols[0] ??
           null;
         const deepSymbol = deepLinkSymbolRef.current;
-        setEngineSlices((prev) => ({
-          ...prev,
-          [eng]: {
-            ...prev[eng],
-            screenerResult: response,
-            selectedSymbol: deepSymbol ?? nextSymbol,
-            loaded: true,
-            error: null,
-          },
-        }));
-        if (scannerEngineRef.current === eng) {
-          setScreenerResult(response);
-          setError(null);
-          if (deepSymbol) {
-            // Preserve deep-link / refresh into Stock Detail for this symbol.
-            setSelectedSymbol(deepSymbol);
-            setDetailViewOpen(true);
-            deepLinkSymbolRef.current = null;
-          } else {
-            setSelectedSymbol(nextSymbol);
-            setDetailViewOpen(false);
-          }
+        setScreenerResult(response);
+        setError(null);
+        if (deepSymbol) {
+          // Preserve deep-link / refresh into Stock Detail for this symbol.
+          setSelectedSymbol(deepSymbol);
+          setDetailViewOpen(true);
+          deepLinkSymbolRef.current = null;
+        } else {
+          setSelectedSymbol(nextSymbol);
+          setDetailViewOpen(false);
         }
-        if (eng === "Production") {
-          setScanHistory((current) => saveScanHistory(response, current));
-        }
+        setScanHistory((current) => saveScanHistory(response, current));
       });
-      // Warm Production slice for Markets widgets when URL engine is a lab engine.
-      if (eng !== "Production") {
-        void loadScannerResultsByEngine("Production", { force }).then((saved) => {
-          if (!saved || saved.available === false) return;
-          setEngineSlices((prev) => ({
-            ...prev,
-            Production: {
-              ...prev.Production,
-              screenerResult: saved as ScreenerResponse,
-              loaded: true,
-            },
-          }));
-        });
-      }
     }
 
     loadAndApply(true);
 
     const intervalId = setInterval(() => {
       console.info("[scanner] 30-min auto-polling new cached scan...");
-      // Refresh the active engine only so other engines keep their cached slices
-      void loadEngineResults(scannerEngineRef.current, true);
+      void loadLatestScan({ force: true }).then((response) => {
+        if (!response) return;
+        setScreenerResult(response);
+        setError(null);
+      });
     }, 30 * 60 * 1000);
 
     return () => clearInterval(intervalId);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- mount once; interval uses latest via ref
   }, []);
 
-  // When engine changes, keep interval-safe: nothing extra — load handled in switcher.
-
   useEffect(() => {
     void fetchUniverses().then(setUniverses).catch((err) => console.warn("Failed to load universes", err));
   }, []);
 
-  // Deep-link: /scanner?symbol=RELIANCE&engine=RE-001 opens stock detail (only on initial load)
+  // Deep-link: /scanner?symbol=RELIANCE opens stock detail
   const initialLoad = useRef(true);
   useEffect(() => {
     if (initialLoad.current && symbolParam) {
@@ -454,30 +241,9 @@ export default function App() {
     }
   }, [symbolParam]);
 
-  // Lab engines default to Scan Results view (same rule as handleScannerEngineChange).
-  useEffect(() => {
-    if (urlEngine !== "Production") {
-      setShowAllAnalyzedStocks(true);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- only on initial URL engine
-  }, []);
-
-  /** Markets / portfolio widgets always reflect Production, not the Scanner engine tab. */
-  const productionScreenerResult = useMemo(
-    () =>
-      scannerEngine === "Production"
-        ? screenerResult
-        : engineSlices.Production.screenerResult,
-    [scannerEngine, screenerResult, engineSlices.Production.screenerResult],
-  );
-
+  /** Markets / portfolio widgets always reflect the latest completed scan. */
   const analysisItems = screenerResult?.analysis?.items ?? [];
   const shortlistRows = useMemo(() => buildCandidateRows(screenerResult), [screenerResult]);
-  /** Paper desk candidates stay Production-based (existing behavior). */
-  const productionShortlistRows = useMemo(
-    () => buildCandidateRows(productionScreenerResult),
-    [productionScreenerResult],
-  );
 
   const filteredRows = useMemo(() => {
     const searchTerm = filters.search.trim().toUpperCase();
@@ -508,7 +274,7 @@ export default function App() {
   }, [filteredRows, selectedSymbol]);
 
   const summaryMetrics = useMemo(() => {
-    const src = productionScreenerResult;
+    const src = screenerResult;
     const favoritesCount = src?.shortlisted_symbols.length ?? 0;
     const buyCount = src?.buy_candidate_symbols.length ?? 0;
     const watchCount = src?.watch_candidate_symbols.length ?? 0;
@@ -523,10 +289,10 @@ export default function App() {
       { label: "WATCH ideas", value: watchCount || "--", helper: "Promising names needing confirmation.", tone: "warning" as const },
       { label: "Rejected", value: rejectedCount || "--", helper: "Names that failed final recommendation.", tone: "negative" as const },
     ];
-  }, [productionScreenerResult]);
+  }, [screenerResult]);
 
   const applyScanResult = useCallback(
-    (response: ScreenerResponse, _source: "fresh" | "restored", engine: ScannerEngineId = "Production") => {
+    (response: ScreenerResponse, _source: "fresh" | "restored") => {
       response.shortlisted_symbols = response.shortlisted_symbols || [];
       response.buy_candidate_symbols = response.buy_candidate_symbols || [];
       response.watch_candidate_symbols = response.watch_candidate_symbols || [];
@@ -547,42 +313,20 @@ export default function App() {
         response.watch_candidate_symbols[0] ??
         null;
 
-      // Always stash into the target engine slice
-      setEngineSlices((prev) => ({
-        ...prev,
-        [engine]: {
-          ...prev[engine],
-          screenerResult: response,
-          selectedSymbol: nextSymbol,
-          loaded: true,
-          error: null,
-        },
-      }));
-
-      // Only paint the table when this engine is currently selected
-      if (scannerEngineRef.current === engine) {
-        setScreenerResult(response);
-        setSelectedSymbol(nextSymbol);
-        setError(null);
-      }
-
-      if (engine === "Production") {
-        setScanHistory((current) => saveScanHistory(response, current));
-      }
+      setScreenerResult(response);
+      setSelectedSymbol(nextSymbol);
+      setError(null);
+      setScanHistory((current) => saveScanHistory(response, current));
       setDetailViewOpen(false);
     },
     [],
   );
 
   const handleRunScanner = useCallback(async () => {
-    const activeEngine = scannerEngine;
     setIsLoading(true);
     setError(null);
     setProgressData({
-      stage:
-        activeEngine === "Production"
-          ? "Connecting data feed..."
-          : `Running ${activeEngine} via swing scanner...`,
+      stage: "Connecting data feed...",
       progress: 0,
       current_symbol: "",
       worker_id: undefined,
@@ -594,8 +338,6 @@ export default function App() {
     setScanStartTime(startedAt);
 
     try {
-      // Universe scan is shared infrastructure. Lab engines (RE-001/RE-002) evaluate
-      // fail-open during the same production analysis path; we then reload that engine's view.
       const response = await runPresetScreener(
         "swing",
         {
@@ -627,23 +369,11 @@ export default function App() {
       setLastScanDuration(durationSec);
       invalidateLatestScanCaches();
       cacheLatestScanFromScreenerResponse(response);
-      // Always refresh Production slice with the raw screener payload
-      applyScanResult(response, "fresh", "Production");
-
-      if (activeEngine === "Production") {
-        toast.success(
-          "Production scan complete",
-          `${response.buy_candidate_symbols?.length ?? 0} BUY · ${response.watch_candidate_symbols?.length ?? 0} WATCH`,
-        );
-      } else {
-        // Reload RE engine projection after the shared scan produced new lab decisions
-        await loadEngineResults(activeEngine, true);
-        setLastScanDuration(durationSec);
-        toast.success(
-          `${activeEngine} scan complete`,
-          "Showing lab decisions for this engine only.",
-        );
-      }
+      applyScanResult(response, "fresh");
+      toast.success(
+        "Scan complete",
+        `${response.buy_candidate_symbols?.length ?? 0} BUY · ${response.watch_candidate_symbols?.length ?? 0} WATCH`,
+      );
     } catch (requestError: any) {
       if (requestError?.scanInProgress) {
         toast.info("Scanner is already running. Please wait for it to complete.");
@@ -675,7 +405,7 @@ export default function App() {
       setIsLoading(false);
       setScanStartTime(null);
     }
-  }, [timeframe, lookback, selectedUniverse, universes, topN, toast, applyScanResult, scannerEngine, loadEngineResults]);
+  }, [timeframe, lookback, selectedUniverse, universes, topN, toast, applyScanResult]);
 
   async function handleSaveCurrentScan() {
     const name = savedScanName.trim() || `${selectedUniverse} ${timeframe} scan`;
@@ -707,19 +437,6 @@ export default function App() {
 
   const sendRowToPaperTrading = useCallback((row: CandidateRow, suggestedEntry?: number | null) => {
     const prefill = buildPaperTradingPrefill(row, "BUY");
-    const rec = row.analysisItem?.recommendation as
-      | {
-          recommendation_id?: string | null;
-          source_engine_id?: string | null;
-          source_engine_version?: string | null;
-          experiment_id?: string | null;
-        }
-      | undefined;
-    // Prefer explicit lab provenance from decision payload; never hardcode Production for lab engines
-    const engineId =
-      (rec?.source_engine_id && String(rec.source_engine_id)) ||
-      scannerEngine ||
-      "Production";
     const entry =
       (suggestedEntry != null && suggestedEntry > 0 ? suggestedEntry : null) ??
       (prefill.suggested_entry != null && prefill.suggested_entry > 0
@@ -735,13 +452,6 @@ export default function App() {
       suggested_entry: entry,
       suggested_stop: stop,
       suggested_targets: targets,
-      source_engine_id: engineId,
-      source_engine_version:
-        rec?.source_engine_version ||
-        (engineId === "Production" ? "production" : rec?.source_engine_version) ||
-        undefined,
-      source_recommendation_id: rec?.recommendation_id ?? prefill.source_recommendation_id ?? null,
-      experiment_id: rec?.experiment_id ?? prefill.experiment_id ?? null,
     };
 
     // Dedicated full-page order ticket — never open a drawer on Scanner
@@ -756,7 +466,7 @@ export default function App() {
       riskReward: row.riskReward ?? null,
       returnTo: `${window.location.pathname}${window.location.search || ""}`,
     });
-  }, [navigate, scannerEngine]);
+  }, [navigate]);
 
   const scannerListView = useMemo(() => (
     <div className="scanner-center">
@@ -765,9 +475,7 @@ export default function App() {
         <div className="scanner-page-header__left">
           <p className="ds-label">Scanner</p>
           <h1 className="ds-display">Scanner</h1>
-          <p className="ds-muted">
-            Favorites and scan results · engine: <strong>{scannerEngine}</strong>
-          </p>
+          <p className="ds-muted">Favorites and scan results</p>
         </div>
 
         <div className="scanner-page-header__right">
@@ -798,8 +506,8 @@ export default function App() {
       </header>
 
       {/* Row 2: Result view tabs
-          Favorites count = existing business rule (BUY+WATCH for lab engines; shortlist size for Production).
-          Scan Results count = full analyzed cohort (must include REJECT for RE-001/RE-002).
+          Favorites count = shortlist size.
+          Scan Results count = full analyzed cohort.
       */}
       <div className="scanner-result-tabs" role="tablist" aria-label="Result views">
         <button
@@ -810,10 +518,7 @@ export default function App() {
           onClick={() => setShowAllAnalyzedStocks(false)}
         >
           Favorites (
-          {scannerEngine === "Production"
-            ? (screenerResult?.shortlisted_symbols.length ?? 0)
-            : (screenerResult?.buy_candidate_symbols?.length ?? 0) +
-              (screenerResult?.watch_candidate_symbols?.length ?? 0)}
+          {screenerResult?.shortlisted_symbols.length ?? 0}
           )
         </button>
         <button
@@ -828,33 +533,8 @@ export default function App() {
           {screenerResult?.all_analyzed_stocks?.length ??
             screenerResult?.shortlisted_symbols?.length ??
             0}
-          {screenerResult && scannerEngine !== "Production"
-            ? ` · ${(screenerResult as { buy_count?: number }).buy_count ?? screenerResult.buy_candidate_symbols?.length ?? 0}B / ${(screenerResult as { watch_count?: number }).watch_count ?? screenerResult.watch_candidate_symbols?.length ?? 0}W / ${(screenerResult as { reject_count?: number }).reject_count ?? Math.max((screenerResult.shortlisted_symbols?.length ?? 0) - (screenerResult.buy_candidate_symbols?.length ?? 0) - (screenerResult.watch_candidate_symbols?.length ?? 0), 0)}R`
-            : ""}
           )
         </button>
-      </div>
-
-      {/* Row 3: Recommendation engine selector — independent result sets */}
-      <div
-        className="scanner-engine-tabs"
-        role="tablist"
-        aria-label="Recommendation engine"
-        data-testid="scanner-engine-tabs"
-      >
-        {SCANNER_ENGINES.map((eng) => (
-          <button
-            key={eng}
-            type="button"
-            role="tab"
-            aria-selected={scannerEngine === eng}
-            data-testid={`scanner-engine-${eng}`}
-            className={`button ${scannerEngine === eng ? "primary-button" : "ghost-button"}`}
-            onClick={() => handleScannerEngineChange(eng)}
-          >
-            {eng}
-          </button>
-        ))}
       </div>
 
       {isLoading ? (
@@ -877,43 +557,30 @@ export default function App() {
       ) : null}
 
       {!isLoading && !error ? (
-        showAllAnalyzedStocks && scannerEngine === "Production" ? (
-          // Production: full-universe screener breakdown
+        showAllAnalyzedStocks ? (
+          // Full-universe screener breakdown
           <AllAnalyzedStocksTable stocks={screenerResult?.all_analyzed_stocks ?? []} />
-        ) : (() => {
-          // Lab engines: shortlisted_symbols is the full Recommendation Lab cohort (BUY+WATCH+REJECT).
-          // Scan Results → full filtered cohort (row count must match Lab).
-          // Favorites → BUY+WATCH only (existing favorites business rule).
-          const tableRows =
-            scannerEngine !== "Production" && !showAllAnalyzedStocks
-              ? filteredRows.filter((r) => r.signal === "BUY" || r.signal === "WATCH")
-              : filteredRows;
-          return tableRows.length ? (
-            <CandidateTable
-              rows={tableRows}
-              selectedSymbol={selectedRow?.symbol ?? null}
-              onSelect={handleSelectSymbol}
-              onBuy={sendRowToPaperTrading}
-              exportFilePrefix={`scan_${scannerEngine.replace(/-/g, "").toLowerCase()}`}
-            />
-          ) : screenerResult ? (
-            <EmptyState
-              title="No matches for these filters"
-              description="Adjust signal, score range, or search from Markets to refine results."
-              primaryAction={{ label: "Open Markets", onClick: () => navigate("/markets"), variant: "secondary" }}
-            />
-          ) : null;
-        })()
+        ) : filteredRows.length ? (
+          <CandidateTable
+            rows={filteredRows}
+            selectedSymbol={selectedRow?.symbol ?? null}
+            onSelect={handleSelectSymbol}
+            onBuy={sendRowToPaperTrading}
+            exportFilePrefix="scan"
+          />
+        ) : screenerResult ? (
+          <EmptyState
+            title="No matches for these filters"
+            description="Adjust signal, score range, or search from Markets to refine results."
+            primaryAction={{ label: "Open Markets", onClick: () => navigate("/markets"), variant: "secondary" }}
+          />
+        ) : null
       ) : null}
 
       {!screenerResult && !isLoading && !error ? (
         <EmptyState
-          title={`No ${scannerEngine} scan results yet`}
-          description={
-            scannerEngine === "Production"
-              ? "Configure and run the swing scanner from Markets. Results will appear here automatically."
-              : `Run a scan with ${scannerEngine} selected (or complete a full swing scan so lab decisions are stored), then open this tab.`
-          }
+          title="No scan results yet"
+          description="Configure and run the swing scanner from Markets. Results will appear here automatically."
           primaryAction={{ label: "Go to Markets", onClick: () => navigate("/markets"), variant: "trade" }}
         />
       ) : null}
@@ -934,7 +601,7 @@ export default function App() {
     screenerResult, isLoading, error, showAllAnalyzedStocks,
     analysisItems, filteredRows, shortlistRows, selectedRow?.symbol,
     progressData, scanStartTime, lastScanDuration,
-    scannerEngine, handleScannerEngineChange, sendRowToPaperTrading,
+    sendRowToPaperTrading,
   ]);
 
   const scannerView = (
@@ -946,7 +613,6 @@ export default function App() {
               row={selectedRow}
               onBack={handleDetailBack}
               onSendToPaperTrading={sendRowToPaperTrading}
-              originEngine={scannerEngine}
             />
           )}
         </Suspense>
@@ -963,13 +629,13 @@ export default function App() {
         <PaperTradingPage
           recommendationPrefill={paperTradingPrefill}
           onPrefillConsumed={() => setPaperTradingPrefill(null)}
-          scannerCandidates={productionShortlistRows}
-          lastScanAt={productionScreenerResult?.analysis?.generated_at ?? null}
+          scannerCandidates={shortlistRows}
+          lastScanAt={screenerResult?.analysis?.generated_at ?? null}
           retailMode
         />
       </Suspense>
     </div>
-  ), [paperTradingPrefill, productionShortlistRows, productionScreenerResult?.analysis?.generated_at]);
+  ), [paperTradingPrefill, shortlistRows, screenerResult?.analysis?.generated_at]);
 
   const profileView = useMemo(() => (
     <Suspense fallback={<ViewFallback />} key="profile">
@@ -999,9 +665,9 @@ export default function App() {
                   <Suspense fallback={<ViewFallback />}>
                     <MarketsPage
                       onLoadSavedScan={loadSavedScan}
-                      screenerResult={productionScreenerResult}
-                      isLoading={isLoading && scannerEngine === "Production"}
-                      scanError={scannerEngine === "Production" ? error : null}
+                      screenerResult={screenerResult}
+                      isLoading={isLoading}
+                      scanError={error}
                       selectedUniverse={selectedUniverse}
                       timeframe={timeframe}
                       summaryMetrics={summaryMetrics}
@@ -1053,16 +719,7 @@ export default function App() {
                   </FeatureGuard>
                 }
               />
-              <Route
-                path="/recommendation-lab"
-                element={
-                  <FeatureGuard feature="recommendation_lab" fallback={<AccessDenied />}>
-                    <Suspense fallback={<ViewFallback />}>
-                      <RecommendationLabPage />
-                    </Suspense>
-                  </FeatureGuard>
-                }
-              />
+              
               <Route
                 path="/diagnostics"
                 element={
@@ -1176,10 +833,6 @@ function buildPaperTradingPrefill(row: CandidateRow, side?: "BUY" | "SELL"): Rec
   } else {
     suggested_entry = pos(row.entryLow);
   }
-  const recAny = row.analysisItem?.recommendation as
-    | { recommendation_id?: string; source_engine_id?: string; source_engine_version?: string; experiment_id?: string }
-    | undefined;
-
   return {
     symbol: row.symbol,
     suggested_entry,
@@ -1190,10 +843,6 @@ function buildPaperTradingPrefill(row: CandidateRow, side?: "BUY" | "SELL"): Rec
       score: row.score ?? 0,
       confidence: Math.round((row.confidence ?? 0) * 100) / 100,
     },
-    source_recommendation_id: recAny?.recommendation_id ?? null,
-    source_engine_id: recAny?.source_engine_id ?? null,
-    source_engine_version: recAny?.source_engine_version ?? null,
-    experiment_id: recAny?.experiment_id ?? null,
   };
 }
 

@@ -46,19 +46,27 @@ def test_pure_functions_have_no_db_side_effects_in_signature():
 
 
 def test_soft_score_contribution_not_used_in_production_scoring_modules():
-    """FR-010: soft_score_contribution must not appear in live scoring services."""
+    """FR-010: soft_score_contribution must not appear in live scoring services.
+
+    The old production recommendation agent/service were removed; the surviving
+    scoring services must not leak soft breadth/sentiment contributions.
+    """
     # Guard against accidental production wiring of soft breadth contribution.
-    from app.services import recommendation_service
-    from app.agents import recommendation_agent
+    from app.services import backtest_service
+    from app.services import ranking_service
+    from app.services import scoring_matrix_service
+    from app.services import technical_analysis_service
 
-    rec_src = inspect.getsource(recommendation_service)
-    agent_src = inspect.getsource(recommendation_agent)
-
-    assert "soft_score_contribution" not in rec_src
-    assert "calculate_market_breadth" not in rec_src
-    assert "calculate_sentiment_time_decay" not in rec_src
-    assert "soft_score_contribution" not in agent_src
-    assert "calculate_market_breadth" not in agent_src
+    for mod in (
+        backtest_service,
+        ranking_service,
+        scoring_matrix_service,
+        technical_analysis_service,
+    ):
+        src = inspect.getsource(mod)
+        assert "soft_score_contribution" not in src, mod.__name__
+        assert "calculate_market_breadth" not in src, mod.__name__
+        assert "calculate_sentiment_time_decay" not in src, mod.__name__
 
 
 def test_news_dedup_key_preserved_when_new_features_write(

@@ -35,7 +35,7 @@ from ..utils import advisory_payload, get_logger, safe_int
 from .backtest_agent import BacktestAgent
 from .news_analysis_agent import NewsAnalysisAgent
 from .ranking_agent import RankingAgent
-from .recommendation_agent import RecommendationAgent
+
 from .technical_analysis_agent import TechnicalAnalysisAgent
 from .fundamental_analysis_agent import FundamentalAnalysisAgent
 
@@ -57,11 +57,16 @@ class OrchestratorAgent:
         self.technical_agent = TechnicalAnalysisAgent()
         self.news_agent = NewsAnalysisAgent()
         self.backtest_agent = BacktestAgent()
-        self.recommendation_agent = RecommendationAgent()
+
         self.ranking_agent = RankingAgent()
         self.fundamental_agent = FundamentalAnalysisAgent()
 
-    async def run_full(self, request: AnalysisRequest, progress_callback=None, prefetched_candles: dict[str, dict[AnalysisMode, list[OHLCVPoint]]] | None = None) -> FullAnalysisResponse:
+    async def run_full(
+        self,
+        request: AnalysisRequest,
+        progress_callback=None,
+        prefetched_candles: dict[str, dict[AnalysisMode, list[OHLCVPoint]]] | None = None,
+    ) -> FullAnalysisResponse:
         self.logger.info(
             "Starting full analysis | symbols=%s | mode=%s | intraday=%s | swing=%s | lookback=%s",
             ",".join(request.symbols),
@@ -70,27 +75,11 @@ class OrchestratorAgent:
             request.timeframe.swing,
             request.timeframe.lookback_window,
         )
-        import asyncio
-        from ..services.re001.scan_context import (
-            get_scan_run_id,
-            new_scan_run_id,
-            reset_scan_run_id,
-            set_scan_run_id,
+        return await self._run_full_impl(
+            request,
+            progress_callback=progress_callback,
+            prefetched_candles=prefetched_candles,
         )
-
-        # Stable scan cohort id for RE-001 lab decisions (FR-027)
-        _scan_tok = None
-        if not get_scan_run_id():
-            _scan_tok = set_scan_run_id(new_scan_run_id("full"))
-        try:
-            return await self._run_full_impl(
-                request,
-                progress_callback=progress_callback,
-                prefetched_candles=prefetched_candles,
-            )
-        finally:
-            if _scan_tok is not None:
-                reset_scan_run_id(_scan_tok)
 
     async def _run_full_impl(
         self,
@@ -292,15 +281,12 @@ class OrchestratorAgent:
             
         if progress_callback:
             progress_callback({"stage": "Running AI Pattern Recognition...", "progress": 70, "heartbeat": True})
-        # Pre-resolve FEAT-004 benchmark ONCE (was called per-symbol before — HUGE bottleneck)
-        feat004_config = self._build_feat004_config()
-        feat007_config = self._build_feat007_config()
-        benchmark_ohlcv, sector_ohlcv_cache, benchmark_failure_reason, benchmark_symbol = await self._resolve_feat004_benchmark()
-        # Pre-resolve market regime once (was called per-symbol before with same scan_date)
-        from ..services.market_permission_service import MarketPermissionService
+        # Pre-resolve market regime once (scan-scoped)
+        from ..services.scan_market_context import get_or_build_market_regime
+
         _primary_candles = next(iter(candles_by_symbol_and_mode.values()), {}).get(modes[0], [])
         _scan_date = _primary_candles[-1].timestamp if _primary_candles else datetime.now(timezone.utc)
-        _market_regime = await MarketPermissionService().evaluate_market_permission(scan_date=_scan_date)
+        _market_regime = await get_or_build_market_regime(_scan_date)
         # Batch-resolve stock IDs (avoids per-symbol DB session in _analyze_symbol_post_bulk)
         stock_ids: dict[str, int] = {}
         if request.symbols:
@@ -324,30 +310,9 @@ class OrchestratorAgent:
                         stock_ids[sym] = (await _db.scalars(
                             _select(WatchedStock).where(WatchedStock.symbol == sym)
                         )).first().id
-        # Shared lab portfolio snapshot once for the whole shortlist (was per-symbol,
-        # each timing out at 2s → up to 40s waste on a 20-name shortlist).
-        shared_lab_portfolio = None
-        try:
-            if settings.is_re001_active() or settings.is_re002_active():
-                from ..services.re001.portfolio_loader import load_user_portfolio_dict
-                from ..services.re001.scan_context import get_user_id as _get_scan_uid
-
-                _uid = _get_scan_uid()
-                shared_lab_portfolio = await asyncio.wait_for(
-                    asyncio.to_thread(load_user_portfolio_dict, _uid, timeout_s=0),
-                    timeout=2.0,
-                )
-        except Exception as port_exc:
-            self.logger.warning(
-                "Shared lab portfolio snapshot skipped | err=%s",
-                port_exc,
-            )
-            shared_lab_portfolio = None
-
         # Dispatch Backtest / News / Fundamental agents with bounded concurrency.
         async def run_remaining_agents():
-            # Shortlist is typically top_n=20; higher concurrency cuts wall-clock
-            # while RE-001/RE-002 still run in parallel inside each symbol.
+            # Shortlist is typically top_n=20; higher concurrency cuts wall-clock.
             agent_sem = asyncio.Semaphore(12)
             completed_count = {"n": 0}
             total_symbols = len(request.symbols)
@@ -370,14 +335,8 @@ class OrchestratorAgent:
                                 request,
                                 candles_by_mode,
                                 bulk_technical_results,
-                                feat004_config=feat004_config,
-                                benchmark_ohlcv=benchmark_ohlcv,
-                                benchmark_failure_reason=benchmark_failure_reason,
-                                benchmark_symbol=benchmark_symbol,
-                                feat007_config=feat007_config,
                                 stock_id=stock_ids.get(symbol),
                                 market_regime=_market_regime,
-                                shared_lab_portfolio=shared_lab_portfolio,
                             )
                     except Exception as exc:
                         self.logger.error(
@@ -438,22 +397,7 @@ class OrchestratorAgent:
         return AnalysisResponse(items=items, rankings=rankings, disclaimer=advisory_payload())
 
     async def run_screener(self, request: ScreenerRequest, progress_callback=None) -> ScreenerResponse:
-        from ..services.re001.scan_context import (
-            get_scan_run_id,
-            new_scan_run_id,
-            reset_scan_run_id,
-            set_scan_run_id,
-        )
-
-        # FR-027: prefer platform scan_id when scan execution already set context.
-        _scan_tok = None
-        if not get_scan_run_id():
-            _scan_tok = set_scan_run_id(new_scan_run_id("screener"))
-        try:
-            return await self._run_screener_impl(request, progress_callback=progress_callback)
-        finally:
-            if _scan_tok is not None:
-                reset_scan_run_id(_scan_tok)
+        return await self._run_screener_impl(request, progress_callback=progress_callback)
 
     async def _run_screener_impl(self, request: ScreenerRequest, progress_callback=None) -> ScreenerResponse:
         if progress_callback:
@@ -471,13 +415,13 @@ class OrchestratorAgent:
                 len(request.symbols),
                 ",".join(request.symbols),
             )
-            return await self._run_screener_stage(
+            return (await self._run_screener_stage(
                 request=request,
                 stage_name="Custom symbols",
                 source_universe=request.symbols,
                 duplicate_symbols_skipped=0,
                 progress_callback=progress_callback,
-            )
+            ))[0]
 
         seen_symbols: set[str] = set()
         duplicate_symbols_skipped = 0
@@ -494,6 +438,18 @@ class OrchestratorAgent:
             len(universes),
             ",".join(name for name, _ in universes),
         )
+
+        all_screener_results = []
+        all_prefetched_frames = {}
+        master_universe = []
+        master_seen = set()
+        for stage_name, syms in universes:
+            for s in syms:
+                c = self._canonical_symbol(s)
+                if c not in master_seen:
+                    master_seen.add(c)
+                    master_universe.append(s)
+
 
         for stage_name, source_universe in universes:
             self.logger.info(
@@ -522,13 +478,15 @@ class OrchestratorAgent:
                 )
                 continue
 
-            stage_response = await self._run_screener_stage(
+            stage_response, s_res, s_frames = await self._run_screener_stage(
                 request=request,
                 stage_name=stage_name,
                 source_universe=unique_symbols,
                 duplicate_symbols_skipped=skipped,
                 progress_callback=progress_callback,
             )
+            all_screener_results.extend(s_res)
+            all_prefetched_frames.update(s_frames)
             scan_stages.extend(stage_response.scan_stages)
             final_response = stage_response
             if stage_response.buy_candidate_symbols:
@@ -565,6 +523,7 @@ class OrchestratorAgent:
             duplicate_symbols_skipped,
             stopped_at_stage,
         )
+
         return final_response
 
     async def _run_screener_stage(
@@ -574,7 +533,7 @@ class OrchestratorAgent:
         source_universe: list[str],
         duplicate_symbols_skipped: int,
         progress_callback=None,
-    ) -> ScreenerResponse:
+    ) -> tuple[ScreenerResponse, list, dict]:
         if progress_callback:
             progress_callback({"stage": "Downloading candles...", "progress": 35, "heartbeat": True})
         self.logger.info(
@@ -643,19 +602,30 @@ class OrchestratorAgent:
         buy_candidate_symbols: list[str] = []
         watch_candidate_symbols: list[str] = []
 
+        # Capture screener frames BEFORE production shortlist path may clear them.
+        screener_frames = dict(getattr(self.screener_service, "last_fetched_frames", {}) or {})
+
         if shortlisted_symbols:
-            self.logger.info("STEP 5/8 | Shortlist ready | stage=%s | shortlisted=%s", stage_name, ",".join(shortlisted_symbols))
+            self.logger.info(
+                "STEP 5/8 | Production shortlist ready | stage=%s | shortlisted=%s",
+                stage_name,
+                ",".join(shortlisted_symbols),
+            )
             analysis_request = AnalysisRequest(
                 symbols=shortlisted_symbols,
                 mode=AnalysisMode.swing,
                 timeframe=request.timeframe,
             )
-            self.logger.info("STEP 6/8 | Run full analysis only on top set | stage=%s | count=%s", stage_name, len(shortlisted_symbols))
+            self.logger.info(
+                "STEP 6/8 | Run Production full analysis on top-N only | stage=%s | count=%s | top_n=%s",
+                stage_name,
+                len(shortlisted_symbols),
+                request.top_n,
+            )
             deep_t0 = time.perf_counter()
             # Reuse OHLCV data from screener phase (avoids duplicate FYERS fetch).
             # May be partial — run_full fills any shortlisted symbol still missing.
             prefetched_candles: dict[str, dict[AnalysisMode, list[OHLCVPoint]]] = {}
-            screener_frames = getattr(self.screener_service, "last_fetched_frames", {}) or {}
             # Build canonical→frame key index so RAIN-EQ finds RAIN / NSE:RAIN-EQ frames
             frame_by_canonical: dict[str, str] = {}
             for frame_key in screener_frames.keys():
@@ -740,10 +710,6 @@ class OrchestratorAgent:
                 len(missing_prefetch),
                 ",".join(missing_prefetch) if missing_prefetch else "none",
             )
-            # Release frames from memory after extracting prefetched candles
-            if hasattr(screener_frames, "clear"):
-                screener_frames.clear()
-            self.screener_service.last_fetched_frames = {}
             shortlist_analysis = await self.run_full(
                 analysis_request,
                 progress_callback,
@@ -755,7 +721,7 @@ class OrchestratorAgent:
             buy_candidate_symbols = [item.symbol for item in buy_items]
             watch_candidate_symbols = [item.symbol for item in watch_items]
             self.logger.info(
-                "STEP 7/8 | RecommendationAgent finished | stage=%s | buy=%s | watch=%s | reject=%s | deep_analysis_ms=%.0f",
+                "STEP 7/8 | Production shortlist analysis finished | stage=%s | buy=%s | watch=%s | reject=%s | deep_analysis_ms=%.0f",
                 stage_name,
                 len(buy_items),
                 len(watch_items),
@@ -780,7 +746,7 @@ class OrchestratorAgent:
                 ",".join(watch_candidate_symbols) if watch_candidate_symbols else "none",
             )
         else:
-            self.logger.info("STEP 6/8 | No shortlisted stocks, so downstream analysis was skipped | stage=%s", stage_name)
+            self.logger.info("STEP 6/8 | No Production shortlist; Production deep analysis skipped | stage=%s", stage_name)
             if screener_results:
                 top_ranked = ",".join(f"{item.symbol}:{item.screener_score}" for item in matched_results[:5]) or "none"
                 self.logger.info(
@@ -796,6 +762,15 @@ class OrchestratorAgent:
                         )[:5]
                     ) or "none",
                 )
+
+        # ------------------------------------------------------------------
+        # Release shared frames after both Production and lab paths have used them.
+        try:
+            if hasattr(screener_frames, "clear"):
+                screener_frames.clear()
+        except Exception:
+            pass
+        self.screener_service.last_fetched_frames = {}
 
         self.logger.info(
             "STEP 5/8 | Stage summary | stage=%s | universe=%s | valid=%s | eligible=%s | matched=%s | shortlisted=%s | buy=%s | watch=%s | data_source_failed=%s | data_quality_failed=%s | condition_rejected=%s",
@@ -898,67 +873,6 @@ class OrchestratorAgent:
             return
         self.logger.info("SCANNER_DETERMINISM %s", json.dumps(payload, sort_keys=True, default=str))
 
-    def _build_feat004_config(self) -> dict[str, Any]:
-        """Build the nested feat004_config dict from flat settings fields.
-
-        The overlay module reads nested keys (score_deltas, buy_downgrade_thresholds),
-        so we construct the dict here to avoid duplicating the defaults.
-        """
-        feat004_enabled = getattr(settings, "feat004_enabled", False)
-        feat004_stage = getattr(settings, "feat004_stage", "SHADOW")
-        feat004_score_delta_fav = getattr(settings, "feat004_score_delta_fav", 2.0)
-        feat004_score_delta_neu = getattr(settings, "feat004_score_delta_neu", 0.0)
-        feat004_score_delta_cau = getattr(settings, "feat004_score_delta_cau", -3.0)
-        feat004_score_delta_def = getattr(settings, "feat004_score_delta_def", -5.0)
-        feat004_score_delta_abs = getattr(settings, "feat004_score_delta_abs", 0.0)
-        feat004_buy_downgrade_threshold_cau = getattr(settings, "feat004_buy_downgrade_threshold_cau", 74.0)
-        feat004_buy_downgrade_threshold_def = getattr(settings, "feat004_buy_downgrade_threshold_def", 77.0)
-        feat004_buy_threshold = getattr(settings, "feat004_buy_threshold", 72.0)
-        feat004_favorable_cap_below_buy = getattr(settings, "feat004_favorable_cap_below_buy", True)
-        feat004_sector_mapping_enabled = getattr(settings, "feat004_sector_mapping_enabled", True)
-        feat004_sector_min_candles = getattr(settings, "feat004_sector_min_candles", 50)
-        return {
-            "enabled": feat004_enabled,
-            "stage": feat004_stage,
-            "score_deltas": {
-                "FAV": feat004_score_delta_fav,
-                "NEU": feat004_score_delta_neu,
-                "CAU": feat004_score_delta_cau,
-                "DEF": feat004_score_delta_def,
-                "ABS": feat004_score_delta_abs,
-            },
-            "buy_downgrade_thresholds": {
-                "CAU": feat004_buy_downgrade_threshold_cau,
-                "DEF": feat004_buy_downgrade_threshold_def,
-            },
-            "buy_threshold": feat004_buy_threshold,
-            "favorable_cap_below_buy": feat004_favorable_cap_below_buy,
-            "sector_mapping_enabled": feat004_sector_mapping_enabled,
-            "sector_min_candles": feat004_sector_min_candles,
-        }
-
-    def _build_feat007_config(self) -> dict[str, Any]:
-        """Build the feat007_config dict from flat settings fields.
-
-        Per FEAT-007 v1.1 spec and ADR-003 (difference formula).
-        """
-        feat007_enabled = getattr(settings, "feat007_enabled", False)
-        feat007_stage = getattr(settings, "feat007_stage", "SHADOW")
-        feat007_score_delta_strength = getattr(settings, "feat007_score_delta_strength", 1.5)
-        feat007_score_delta_weak = getattr(settings, "feat007_score_delta_weak", -3.0)
-        feat007_buy_downgrade_threshold = getattr(settings, "feat007_buy_downgrade_threshold", 74.0)
-        feat007_buy_threshold = getattr(settings, "feat007_buy_threshold", 72.0)
-        feat007_strength_cap_enabled = getattr(settings, "feat007_strength_cap_enabled", True)
-        return {
-            "enabled": feat007_enabled,
-            "stage": feat007_stage,
-            "score_delta_strength": feat007_score_delta_strength,
-            "score_delta_weak": feat007_score_delta_weak,
-            "buy_downgrade_threshold": feat007_buy_downgrade_threshold,
-            "buy_threshold": feat007_buy_threshold,
-            "strength_cap_enabled": feat007_strength_cap_enabled,
-        }
-
     async def _resolve_feat004_benchmark(self) -> tuple[Any, dict[str, list] | None, str | None, str | None]:
         """Fetch benchmark index OHLCV for FEAT-004 regime overlay.
 
@@ -1059,14 +973,8 @@ class OrchestratorAgent:
         request: AnalysisRequest, 
         candles_by_mode: dict[AnalysisMode, list[OHLCVPoint]],
         bulk_technical_results: dict[AnalysisMode, dict[str, TechnicalAnalysisResult]],
-        feat004_config: dict | None = None,
-        benchmark_ohlcv: Any = None,
-        benchmark_failure_reason: str | None = None,
-        benchmark_symbol: str | None = None,
-        feat007_config: dict | None = None,
         stock_id: int | None = None,
         market_regime: Any = None,
-        shared_lab_portfolio: dict | None = None,
     ) -> StockAnalysisResult:
         import asyncio
         if stock_id is None:
@@ -1116,11 +1024,11 @@ class OrchestratorAgent:
             skip_on_missing_next_bar = settings.feat008_skip_on_missing_next_bar
 
         async def _run_agents_concurrently():
-            def run_backtest():
+            async def run_backtest():
                 results = []
                 for mode in modes:
                     try:
-                        results.append(self.backtest_agent.run(
+                        results.append(await self.backtest_agent.run_async(
                             symbol, mode, candles_by_mode[mode],
                             execution_model=exec_model,
                             composite_uses_realistic=use_realistic_for_composite,
@@ -1166,7 +1074,7 @@ class OrchestratorAgent:
                     return self.fundamental_agent._fallback_result()
 
             return await asyncio.gather(
-                asyncio.to_thread(run_backtest),
+                run_backtest(),
                 _news_bounded(),
                 _fund_bounded(),
             )
@@ -1190,21 +1098,10 @@ class OrchestratorAgent:
         technical_score = max(result.score for result in technical_results)
         best_backtest = max(backtests, key=lambda item: item.total_return)
 
-        # FEAT-004: use pre-resolved benchmark (fetched once in run_full, not per-symbol)
-        if feat004_config is None:
-            feat004_config = self._build_feat004_config()
-        if benchmark_ohlcv is None:
-            benchmark_ohlcv, sector_ohlcv_cache, benchmark_failure_reason, benchmark_symbol = await self._resolve_feat004_benchmark()
-        else:
-            sector_ohlcv_cache = None
-        sector_mapping = None  # Reserved for future sector-strength integration
-
         # ------------------------------------------------------------------
         # SR-003: Evaluate sector relative strength BEFORE the recommendation
-        # agent so that FEAT-007 can consume the difference-formula
-        # sector_rs_20 value as its sector_rs_value input.
-        # The same sector_overlay result is reused post-Gate for the
-        # challenger downgrade — no duplicate calculation.
+        # so the same sector_overlay result can be reused for the challenger
+        # downgrade — no duplicate calculation.
         # ------------------------------------------------------------------
         from ..services.sector_rs_service import SectorRelativeStrengthService
         from ..schemas import FinalRecommendation as FR, RecommendationReasoning
@@ -1222,26 +1119,16 @@ class OrchestratorAgent:
             ),
         )
 
-        # Extract sector_rs_value from SR-003's difference-formula output
-        # for FEAT-007 consumption. None when unmapped/insufficient/failed.
-        sector_rs_value = sector_overlay.sector_rs_20
-        sector_index_symbol = sector_overlay.mapped_sector
-        sector_roc20 = sector_overlay.sector_roc20
-        benchmark_roc20 = sector_overlay.nifty50_roc20
-        feat007_abstained_reason = sector_overlay.feat007_abstained_reason
-
-        # FEAT-007: use pre-resolved config
-        if feat007_config is None:
-            feat007_config = self._build_feat007_config()
-
         # Stage 2: when market_breadth is production, compute live soft contribution.
         # Fail-open to 0.0 so scan path never aborts on breadth errors.
         market_breadth_soft_score: float | None = None
+        breadth_active = False
         try:
             from ..governance.rule_manager import RuleManager
             from ..services.market_breadth import calculate_market_breadth
 
-            if RuleManager().is_active_in_production("market_breadth"):
+            breadth_active = RuleManager().is_active_in_production("market_breadth")
+            if breadth_active:
                 breadth_items = self._universe_breadth_items_from_bulk(bulk_technical_results)
                 breadth_telemetry = calculate_market_breadth(breadth_items)
                 market_breadth_soft_score = float(breadth_telemetry.soft_score_contribution)
@@ -1258,38 +1145,20 @@ class OrchestratorAgent:
                 breadth_live_exc,
             )
             market_breadth_soft_score = 0.0
+            breadth_active = False
 
-        recommendation = await asyncio.to_thread(
-            self.recommendation_agent.run,
+        # Score-based recommendation (replaces the removed RecommendationEngine).
+        data_quality = self._data_quality_payload(candles_by_mode, request, symbol)
+        from ..services.score_recommendation_service import ScoreRecommendationService
+        recommendation = ScoreRecommendationService().build(
             symbol=symbol,
             technical_results=technical_results,
-            sentiment_label=sentiment_label,
             sentiment_score=sentiment_score,
             fundamental_result=fundamental_result,
             backtests=composite_backtests,
             candles_by_mode=candles_by_mode,
-            feat004_config=feat004_config,
-            benchmark_ohlcv=benchmark_ohlcv,
-            benchmark_failure_reason=benchmark_failure_reason,
-            benchmark_symbol=benchmark_symbol,
-            sector_mapping=sector_mapping,
-            sector_ohlcv_cache=sector_ohlcv_cache,
-            feat007_config=feat007_config,
-            sector_rs_value=sector_rs_value,
-            sector_index_symbol=sector_index_symbol,
-            sector_roc20=sector_roc20,
-            benchmark_roc20=benchmark_roc20,
-            feat007_abstained_reason=feat007_abstained_reason,
             market_breadth_soft_score=market_breadth_soft_score,
-        )
-        data_quality = self._data_quality_payload(candles_by_mode, request, symbol)
-        recommendation = self._enforce_strict_buy_gate(
-            symbol=symbol,
-            request=request,
-            recommendation=recommendation,
-            technical_results=technical_results,
-            backtests=backtests,
-            candles_by_mode=candles_by_mode,
+            breadth_active=breadth_active,
             data_quality=data_quality,
         )
 
@@ -1300,10 +1169,11 @@ class OrchestratorAgent:
         # challenger_action fields are updated below after the challenger is built.
         # No second SR-003 evaluation is needed.
 
-        # Integrate SR-004 Market Permission Engine (pre-resolved in run_full to avoid per-symbol re-evaluation)
+        # Integrate SR-004 Market Permission Engine (scan-scoped; never re-load INDIAVIX per symbol)
         if market_regime is None:
-            from ..services.market_permission_service import MarketPermissionService
-            market_regime = await MarketPermissionService().evaluate_market_permission(scan_date=scan_date)
+            from ..services.scan_market_context import get_or_build_market_regime
+
+            market_regime = await get_or_build_market_regime(scan_date)
 
         # Build Challenger recommendation (combining sector overlay and market permission)
         challenger_action = recommendation.action
@@ -1358,158 +1228,6 @@ class OrchestratorAgent:
             symbol=symbol,
             articles=articles
         )
-
-        # Auto paper trading for Production BUY — fail-open; independent of lab engines.
-        try:
-            prod_action = str(getattr(recommendation, "action", "") or "").strip().upper()
-            if prod_action == "BUY":
-                from ..db.session import SessionLocal
-                from ..services.auto_paper_trading_service import maybe_auto_paper_from_production
-                from ..services.re001.scan_context import get_user_id as _get_scan_user
-
-                swing_plan = None
-                try:
-                    plans = list(getattr(recommendation, "trade_plans", None) or [])
-                    swing_plan = next(
-                        (p for p in plans if str(getattr(p, "mode", "") or "").lower() == "swing"),
-                        plans[0] if plans else None,
-                    )
-                except Exception:
-                    swing_plan = None
-                stop = getattr(swing_plan, "stop_loss", None) if swing_plan else None
-                targets = list(getattr(swing_plan, "targets", None) or []) if swing_plan else []
-                entry = getattr(swing_plan, "entry", None) if swing_plan else None
-                if entry is None and swing_plan is not None:
-                    entry = getattr(swing_plan, "entry_price", None)
-
-                def _auto_prod():
-                    db = SessionLocal()
-                    try:
-                        return maybe_auto_paper_from_production(
-                            db,
-                            symbol=symbol,
-                            action=prod_action,
-                            score=float(getattr(recommendation, "score", 0) or 0) or None,
-                            confidence=float(getattr(recommendation, "confidence", 0) or 0) or None,
-                            stop_loss=float(stop) if stop else None,
-                            target=float(targets[0]) if targets else None,
-                            entry=float(entry) if entry else None,
-                            user_id=_get_scan_user(),
-                        )
-                    finally:
-                        db.close()
-
-                await asyncio.to_thread(_auto_prod)
-        except Exception as auto_prod_exc:
-            self.logger.warning(
-                "Production auto paper hook failed (ignored) | symbol=%s | err=%s",
-                symbol,
-                auto_prod_exc,
-                exc_info=True,
-            )
-
-        # Lab engines (RE-001 / RE-002): isolated async, fail-open; never mutates production.
-        # Shared portfolio snapshot once; engines run in parallel when both active.
-        re001_decision = None
-        re002_decision = None
-        try:
-            re001_on = bool(settings.is_re001_active())
-            re002_on = bool(settings.is_re002_active())
-            if re001_on or re002_on:
-                from ..db.session import SessionLocal
-                from ..services.re001.portfolio_loader import load_user_portfolio_dict
-                from ..services.re001.scan_context import get_scan_run_id, get_user_id
-
-                primary_candles = self._primary_candle_set(candles_by_mode)
-                uid = get_user_id()
-                scan_run_id = get_scan_run_id()
-                # Prefer shared shortlist portfolio; fall back to per-symbol only if needed.
-                user_portfolio = shared_lab_portfolio
-                if user_portfolio is None:
-                    try:
-                        user_portfolio = await asyncio.wait_for(
-                            asyncio.to_thread(load_user_portfolio_dict, uid, timeout_s=0),
-                            timeout=1.0,
-                        )
-                    except Exception as portfolio_exc:
-                        self.logger.warning(
-                            "Lab portfolio snapshot skipped | symbol=%s | scan_run_id=%s | err=%s",
-                            symbol,
-                            scan_run_id,
-                            portfolio_exc,
-                        )
-                        user_portfolio = None
-
-                lab_kwargs = dict(
-                    symbol=symbol,
-                    mode=request.mode.value,
-                    scan_run_id=scan_run_id,
-                    candles=primary_candles,
-                    technical_results=technical_results,
-                    sentiment_score=sentiment_score,
-                    fundamental_result=fundamental_result,
-                    backtests=backtests or [],
-                    production_recommendation=recommendation,
-                    market_regime=market_regime,
-                    sector_overlay=sector_overlay,
-                    market_breadth_soft_score=None,
-                    user_portfolio=user_portfolio,
-                    risk_settings=None,  # FR-026: no invented system portfolio
-                    analysis_history_id=analysis_history_id,
-                    db_session_factory=SessionLocal,
-                )
-
-                async def _run_re001():
-                    from ..services.re001 import run_re001_isolated_async
-
-                    return await run_re001_isolated_async(**lab_kwargs)
-
-                async def _run_re002():
-                    from ..services.re002 import run_re002_isolated_async
-
-                    return await run_re002_isolated_async(**lab_kwargs)
-
-                tasks = []
-                labels = []
-                if re001_on:
-                    tasks.append(_run_re001())
-                    labels.append("RE-001")
-                if re002_on:
-                    tasks.append(_run_re002())
-                    labels.append("RE-002")
-
-                results = await asyncio.gather(*tasks, return_exceptions=True)
-                for label, res in zip(labels, results):
-                    if isinstance(res, Exception):
-                        self.logger.warning(
-                            "%s hook failed (production path unchanged) | symbol=%s | scan_run_id=%s | err=%s",
-                            label,
-                            symbol,
-                            scan_run_id,
-                            res,
-                            exc_info=True,
-                        )
-                        continue
-                    if label == "RE-001":
-                        re001_decision = res
-                    elif label == "RE-002":
-                        re002_decision = res
-        except Exception as lab_exc:
-            try:
-                from ..services.re001.scan_context import get_scan_run_id as _get_lab_scan
-
-                _lab_scan = _get_lab_scan()
-            except Exception:
-                _lab_scan = None
-            self.logger.warning(
-                "Lab engines hook failed (production path unchanged) | symbol=%s | scan_run_id=%s | err=%s",
-                symbol,
-                _lab_scan,
-                lab_exc,
-                exc_info=True,
-            )
-            re001_decision = None
-            re002_decision = None
 
         # FEAT-011 Spec 1: Shadow Execution Context hook
         # Gate: master toggle AND stage != OFF (ACTIVE is reserved but still isolated).
@@ -1598,63 +1316,6 @@ class OrchestratorAgent:
             market_regime.market_state,
         )
 
-        lab_engines = None
-        if re001_decision is not None or re002_decision is not None:
-            lab_engines = {}
-            if re001_decision is not None:
-                try:
-                    lab_engines["RE-001"] = re001_decision.model_dump(mode="json")
-                except Exception:
-                    lab_engines["RE-001"] = {
-                        "engine_id": getattr(re001_decision, "engine_id", "RE-001"),
-                        "recommendation_state": getattr(
-                            re001_decision, "recommendation_state", None
-                        ),
-                        "confidence_score": getattr(
-                            re001_decision, "confidence_score", None
-                        ),
-                        "strategy_name": getattr(re001_decision, "strategy_name", None),
-                        "explanation": getattr(re001_decision, "explanation", None),
-                        "production_action": getattr(
-                            re001_decision, "production_action", None
-                        ),
-                        "reason_codes": getattr(re001_decision, "reason_codes", None),
-                        "market_regime": getattr(re001_decision, "market_regime", None),
-                        "recommendation_id": getattr(
-                            re001_decision, "recommendation_id", None
-                        ),
-                        "engine_version": getattr(
-                            re001_decision, "engine_version", None
-                        ),
-                    }
-            if re002_decision is not None:
-                try:
-                    lab_engines["RE-002"] = re002_decision.model_dump(mode="json")
-                except Exception:
-                    lab_engines["RE-002"] = {
-                        "engine_id": getattr(re002_decision, "engine_id", "RE-002"),
-                        "recommendation_state": getattr(
-                            re002_decision, "recommendation_state", None
-                        ),
-                        "confidence_score": getattr(
-                            re002_decision, "confidence_score", None
-                        ),
-                        "strategy_name": getattr(re002_decision, "strategy_name", None),
-                        "explanation": getattr(re002_decision, "explanation", None),
-                        "production_action": getattr(
-                            re002_decision, "production_action", None
-                        ),
-                        "reason_codes": getattr(re002_decision, "reason_codes", None),
-                        "market_regime": getattr(re002_decision, "market_regime", None),
-                        "recommendation_id": getattr(
-                            re002_decision, "recommendation_id", None
-                        ),
-                        "engine_version": getattr(
-                            re002_decision, "engine_version", None
-                        ),
-                        "experiment_id": getattr(re002_decision, "experiment_id", None),
-                    }
-
         return StockAnalysisResult(
             symbol=symbol,
             ohlcv=self._primary_candle_set(candles_by_mode),
@@ -1674,7 +1335,6 @@ class OrchestratorAgent:
             data_quality=data_quality,
             trade_readiness=self._trade_readiness(recommendation, technical_results, data_quality),
             confidence_breakdown=self._confidence_breakdown(technical_score, sentiment_score, best_backtest, recommendation),
-            lab_engines=lab_engines,
         )
 
     async def _persist_analysis(
@@ -2070,31 +1730,19 @@ class OrchestratorAgent:
 
         data_quality = self._data_quality_payload(candles_by_mode, request, symbol)
 
-        # FEAT-004: pass config even on the fallback path for consistent metadata
-        feat004_config = self._build_feat004_config()
-        # FEAT-007: pass config for consistent metadata; sector_rs_value=None (no data)
-        feat007_config = self._build_feat007_config()
-
-        recommendation = self.recommendation_agent.recommendation_service.build(
-            symbol=symbol,
-            technical_results=technical_results,
-            sentiment_score=0.0,
-            fundamental_result=None,
-            backtests=composite_backtests,
-            candles_by_mode=candles_by_mode,
-            llm_reasoning={
-                "bullets": ["Live OHLCV data was unavailable for this symbol, so the recommendation engine could not evaluate the setup."],
-                "risk_factors": ["No live market data was returned from the configured providers."],
-                "invalidation_signals": ["Wait for the backend to return fresh live candles before reviewing this symbol."],
-                "summary": f"{symbol} could not be analyzed because no live market data was available.",
-            },
-            feat004_config=feat004_config,
-            benchmark_ohlcv=None,
-            sector_mapping=None,
-            sector_ohlcv_cache=None,
-            feat007_config=feat007_config,
-            sector_rs_value=None,
-        ).model_copy(update={"action": "REJECT", "confidence": 0.0, "score": 0.0, "trade_plans": []})
+        from ..schemas import FinalRecommendation, RecommendationReasoning
+        recommendation = FinalRecommendation(
+            action="REJECT",
+            confidence=0.0,
+            score=0.0,
+            trade_plans=[],
+            reasoning=RecommendationReasoning(
+                bullets=["Live OHLCV data was unavailable for this symbol, so the score-based recommendation could not evaluate the setup."],
+                risk_factors=["No live market data was returned from the configured providers."],
+                invalidation_signals=["Wait for the backend to return fresh live candles before reviewing this symbol."],
+            ),
+            summary=f"{symbol} could not be analyzed because no live market data was available.",
+        )
 
         return StockAnalysisResult(
             symbol=symbol,
@@ -2124,128 +1772,6 @@ class OrchestratorAgent:
             summary="No live OHLCV candles were available for technical analysis.",
         )
 
-    def _enforce_strict_buy_gate(
-        self,
-        symbol: str,
-        request: AnalysisRequest,
-        recommendation,
-        technical_results: list,
-        backtests: list,
-        candles_by_mode: dict[AnalysisMode, list],
-        data_quality: dict[str, str | int | bool | float],
-    ):
-        """Final recommendation gate — runs ONLY after full analysis pipeline.
-
-        All technical, AI, sector, backtest, and trade-plan work is already done
-        by the time this method is called. This gate does NOT re-run analysis.
-
-        Production signal policy (score-based only):
-          score >= 70 → BUY
-          55 <= score < 70 → WATCH
-          score < 55 → REJECT
-
-        Informational only (never override the score decision):
-          Risk:Reward, conviction, AI confidence threshold, trend strength,
-          market regime, breakout confirmation, feature flags, safety overrides.
-
-        Mandatory preconditions (any failure → REJECT, reason=Analysis Failed):
-          market data, valid price/OHLC, trade plan with entry/SL/target,
-          score calculated, confidence calculated, analysis completed.
-        """
-        from ..services.recommendation_service import (
-            ANALYSIS_FAILED_REASON,
-            analysis_preconditions_ok,
-            classify_signal_from_score,
-        )
-
-        composite_score = float(getattr(recommendation, "score", 0.0) or 0.0)
-        confidence = getattr(recommendation, "confidence", None)
-        primary_plan = recommendation.trade_plans[0] if recommendation.trade_plans else None
-        best_technical = max(technical_results, key=lambda item: item.score) if technical_results else None
-        best_backtest = max(backtests, key=lambda item: item.total_return) if backtests else None
-        _ = best_backtest  # retained for diagnostics only
-
-        try:
-            self.logger.info(
-                "SCORE SIGNAL POLICY | symbol=%s | score=%.2f | conf=%s | plans=%s | source=%s | mock_warning=%s | min_candles_met=%s | tech=%.2f | rr=%s",
-                symbol,
-                composite_score,
-                confidence,
-                len(recommendation.trade_plans or []),
-                data_quality.get("source"),
-                data_quality.get("mock_warning"),
-                data_quality.get("minimum_swing_candles_met"),
-                float(best_technical.score) if best_technical is not None else 0.0,
-                (
-                    primary_plan.risk_reward_ratio
-                    if primary_plan is not None and getattr(primary_plan, "risk_reward_ratio", None) is not None
-                    else None
-                ),
-            )
-        except Exception:
-            pass
-
-        # Analysis-completed check: technical results present for the symbol path
-        analysis_completed = bool(technical_results) and best_technical is not None
-
-        ok, reason = analysis_preconditions_ok(
-            score=composite_score,
-            confidence=confidence,
-            trade_plans=recommendation.trade_plans,
-            data_quality=data_quality,
-        )
-        if not analysis_completed:
-            ok = False
-            reason = ANALYSIS_FAILED_REASON
-
-        if not ok:
-            updated_risks = list(recommendation.reasoning.risk_factors)
-            if ANALYSIS_FAILED_REASON not in updated_risks:
-                updated_risks.append(ANALYSIS_FAILED_REASON)
-            self.logger.info(
-                "SCORE SIGNAL REJECT | symbol=%s | reason=%s | prior_score=%.2f | source=%s | plans=%s",
-                symbol,
-                reason or ANALYSIS_FAILED_REASON,
-                composite_score,
-                data_quality.get("source"),
-                len(recommendation.trade_plans or []),
-            )
-            # True analysis failure: never invent a high score. Clear score /
-            # confidence / trade plans so the UI shows N/A rather than Score=100
-            # or leftover fields from a partial path.
-            return recommendation.model_copy(
-                update={
-                    "action": "REJECT",
-                    "score": 0.0,
-                    "confidence": 0.0,
-                    "trade_plans": [],
-                    "reasoning": recommendation.reasoning.model_copy(update={"risk_factors": updated_risks}),
-                    "summary": (
-                        f"{recommendation.summary} Signal=REJECT ({ANALYSIS_FAILED_REASON}). "
-                        "Score/Entry/SL/Target are unavailable because analysis did not complete."
-                    ),
-                }
-            )
-
-        # Pure score classification — no R:R / tech / regime overrides.
-        score_action = classify_signal_from_score(composite_score)
-        if recommendation.action != score_action:
-            self.logger.info(
-                "SCORE SIGNAL RECLASSIFY | symbol=%s | from=%s | to=%s | score=%.2f",
-                symbol,
-                recommendation.action,
-                score_action,
-                composite_score,
-            )
-            return recommendation.model_copy(update={"action": score_action})
-
-        self.logger.info(
-            "SCORE SIGNAL PASS | symbol=%s | action=%s | score=%.2f",
-            symbol,
-            score_action,
-            composite_score,
-        )
-        return recommendation
 
     def _trade_readiness(self, recommendation, technical_results: list, data_quality: dict[str, str | int | bool | float]) -> str:
         best_technical = max(technical_results, key=lambda item: item.score)

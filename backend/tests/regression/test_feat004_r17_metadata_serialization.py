@@ -15,15 +15,8 @@ from datetime import datetime, timedelta, timezone
 import pandas as pd
 import pytest
 
-from app.schemas.analysis import (
-    AnalysisMode,
-    BacktestResult,
-    FinalRecommendation,
-    OHLCVPoint,
-    RecommendationReasoning,
-    TechnicalAnalysisResult,
-)
-from app.agents.recommendation_agent import RecommendationAgent
+from app.schemas.analysis import FinalRecommendation, RecommendationReasoning
+from app.services.feat004_regime_overlay import apply_feat004_regime_overlay
 
 
 # ---------------------------------------------------------------------------
@@ -58,39 +51,37 @@ def _bm_falling_300() -> pd.DataFrame:
     return pd.DataFrame(rows).set_index("timestamp").sort_index()
 
 
-def _tech(score: float = 80.0) -> TechnicalAnalysisResult:
-    return TechnicalAnalysisResult(
-        mode=AnalysisMode.swing, signal="buy", score=score,
-        indicators={}, summary="test",
-    )
-
-
-def _backtest(ret: float = 15.0) -> BacktestResult:
-    return BacktestResult(
-        mode=AnalysisMode.swing, strategy_name="sma_rsi_macd",
-        total_return=ret, max_drawdown=5.0, win_rate=60.0,
-        profit_factor=2.0, trade_count=8, verdict="favorable",
-        equity_curve=[{"label": "Start", "equity": 100000.0}],
-    )
-
-
 def _run(
-    agent: RecommendationAgent,
     feat004_config: dict | None = None,
     benchmark_ohlcv: pd.DataFrame | None = None,
 ) -> FinalRecommendation:
-    return agent.run(
+    """Build a FinalRecommendation with FEAT-004 metadata attached.
+
+    The recommendation engine that previously produced this payload was
+    removed; the FEAT-004 overlay log is now computed directly from the
+    surviving ``apply_feat004_regime_overlay`` service.
+    """
+    composite_score = 80.0
+    current_label = "BUY"
+    adjusted_score, adjusted_label, feat004_log = apply_feat004_regime_overlay(
+        composite_score=composite_score,
+        current_label=current_label,
         symbol="TEST",
-        technical_results=[_tech()],
-        sentiment_label="positive",
-        sentiment_score=0.5,
-        fundamental_result=None,
-        backtests=[_backtest()],
-        candles_by_mode={AnalysisMode.swing: []},
-        feat004_config=feat004_config,
         benchmark_ohlcv=benchmark_ohlcv,
         sector_mapping=None,
         sector_ohlcv_cache=None,
+        feat004_config=feat004_config or {"enabled": False, "stage": "SHADOW"},
+    )
+    return FinalRecommendation(
+        action=adjusted_label,
+        confidence=0.8,
+        score=adjusted_score,
+        reasoning=RecommendationReasoning(
+            bullets=[], risk_factors=[], invalidation_signals=[]
+        ),
+        trade_plans=[],
+        summary="test",
+        feat004=feat004_log,
     )
 
 
@@ -99,8 +90,7 @@ def _run(
 # ---------------------------------------------------------------------------
 
 def test_r17_disabled_feat004_serializes():
-    agent = RecommendationAgent()
-    result = _run(agent, feat004_config={"enabled": False, "stage": "SHADOW"})
+    result = _run(feat004_config={"enabled": False, "stage": "SHADOW"})
 
     dumped = result.model_dump(mode="json")
     assert "feat004" in dumped
@@ -114,9 +104,7 @@ def test_r17_disabled_feat004_serializes():
 # ---------------------------------------------------------------------------
 
 def test_r17_shadow_mode_metadata_serialized():
-    agent = RecommendationAgent()
     result = _run(
-        agent,
         feat004_config={"enabled": True, "stage": "SHADOW"},
         benchmark_ohlcv=_bm_rising_300(),
     )
@@ -135,9 +123,7 @@ def test_r17_shadow_mode_metadata_serialized():
 # ---------------------------------------------------------------------------
 
 def test_r17_active_mode_metadata_serialized():
-    agent = RecommendationAgent()
     result = _run(
-        agent,
         feat004_config={"enabled": True, "stage": "ACTIVE"},
         benchmark_ohlcv=_bm_falling_300(),
     )
@@ -156,9 +142,7 @@ def test_r17_active_mode_metadata_serialized():
 # ---------------------------------------------------------------------------
 
 def test_r17_benchmark_unavailable_abstained_serialized():
-    agent = RecommendationAgent()
     result = _run(
-        agent,
         feat004_config={"enabled": True, "stage": "ACTIVE"},
         benchmark_ohlcv=None,
     )
@@ -174,9 +158,7 @@ def test_r17_benchmark_unavailable_abstained_serialized():
 # ---------------------------------------------------------------------------
 
 def test_r17_model_dump_all_fields_present():
-    agent = RecommendationAgent()
     result = _run(
-        agent,
         feat004_config={"enabled": True, "stage": "ACTIVE"},
         benchmark_ohlcv=_bm_rising_300(),
     )
@@ -203,9 +185,7 @@ def test_r17_model_dump_all_fields_present():
 # ---------------------------------------------------------------------------
 
 def test_r17_json_serialization_survives():
-    agent = RecommendationAgent()
     result = _run(
-        agent,
         feat004_config={"enabled": True, "stage": "ACTIVE"},
         benchmark_ohlcv=_bm_rising_300(),
     )
@@ -227,9 +207,7 @@ def test_r17_json_serialization_survives():
 
 def test_r17_backward_compat_getattr_still_works():
     """Existing code that reads feat004 via getattr must still work."""
-    agent = RecommendationAgent()
     result = _run(
-        agent,
         feat004_config={"enabled": True, "stage": "SHADOW"},
         benchmark_ohlcv=_bm_rising_300(),
     )
@@ -254,9 +232,7 @@ def test_r17_backward_compat_default_none_when_not_set():
 
 def test_r17_backward_compat_existing_fields_preserved():
     """All pre-existing schema fields must still be present and correct."""
-    agent = RecommendationAgent()
     result = _run(
-        agent,
         feat004_config={"enabled": False, "stage": "SHADOW"},
     )
 

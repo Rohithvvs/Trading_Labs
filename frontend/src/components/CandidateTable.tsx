@@ -13,7 +13,7 @@ type CandidateTableProps = {
   onSelect: (symbol: string) => void;
   onBuy?: (row: CandidateRow) => void;
   liveTicks?: Record<string, number>;
-  /** Optional export filename prefix (e.g. scan_production / scan_re001). */
+  /** Optional export filename prefix. */
   exportFilePrefix?: string;
 };
 

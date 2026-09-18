@@ -177,7 +177,11 @@ class CandleReconciliationService:
                     }
                     
                     # Run IO in thread
-                    response = await asyncio.to_thread(self.fyers_service._request_history_with_retries, client, payload, symbol)
+                    loop = asyncio.get_running_loop()
+                    response = await loop.run_in_executor(
+                        self.fyers_service._network_pool,
+                        self.fyers_service._request_history_with_retries, client, payload, symbol
+                    )
                     candle_rows = response.get("candles", []) if isinstance(response, dict) else []
                     
                     if candle_rows:
