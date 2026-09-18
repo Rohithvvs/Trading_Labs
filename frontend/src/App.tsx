@@ -3,12 +3,19 @@ import { Navigate, Route, Routes, useNavigate, useSearchParams } from "react-rou
 
 import {
   cacheLatestScanFromScreenerResponse,
+  fetchLtmLatest,
+  fetchLtmRun,
+  fetchScannerStrategies,
   fetchUniverses,
   invalidateLatestScanCaches,
   loadLatestScan,
   runPresetScreener,
   saveScannerPreset,
+  startLtmScan,
 } from "./api";
+import { LtmScanSummary } from "./components/LtmScanSummary";
+import { LtmRejectionBreakdown } from "./components/LtmRejectionBreakdown";
+import { LtmReturnBoards } from "./components/LtmReturnBoards";
 
 const AllAnalyzedStocksTable = lazy(() =>
   import("./components/AllAnalyzedStocksTable").then((m) => ({ default: m.AllAnalyzedStocksTable })),
@@ -142,6 +149,9 @@ export default function App() {
   });
   const [scanStartTime, setScanStartTime] = useState<number | null>(null);
   const [lastScanDuration, setLastScanDuration] = useState<number | null>(null);
+  const [scannerStrategy, setScannerStrategy] = useState<"production" | "17_long_term_mom">("17_long_term_mom");
+  const [ltmPayload, setLtmPayload] = useState<Record<string, any> | null>(null);
+  const [ltmStrategies, setLtmStrategies] = useState<{ id: string; display_name: string }[]>([]);
 
   const universesMapped = useMemo(
     () => universes.map(({ name, count }) => ({ name, count })),
@@ -229,6 +239,21 @@ export default function App() {
     void fetchUniverses().then(setUniverses).catch((err) => console.warn("Failed to load universes", err));
   }, []);
 
+  useEffect(() => {
+    void fetchScannerStrategies()
+      .then((res) => setLtmStrategies((res.strategies || []).filter((s: any) => s.id !== "production")))
+      .catch(() => setLtmStrategies([
+        { id: "17_long_term_mom", display_name: "Long-Term Buy & Hold Momentum" },
+      ]));
+  }, []);
+
+  useEffect(() => {
+    if (scannerStrategy !== "17_long_term_mom") return;
+    void fetchLtmLatest()
+      .then((p) => setLtmPayload(p))
+      .catch(() => setLtmPayload(null));
+  }, [scannerStrategy]);
+
   // Deep-link: /scanner?symbol=RELIANCE opens stock detail
   const initialLoad = useRef(true);
   useEffect(() => {
@@ -244,6 +269,8 @@ export default function App() {
   /** Markets / portfolio widgets always reflect the latest completed scan. */
   const analysisItems = screenerResult?.analysis?.items ?? [];
   const shortlistRows = useMemo(() => buildCandidateRows(screenerResult), [screenerResult]);
+
+  const ltmCandidateRows = useMemo(() => buildLtmCandidateRows(ltmPayload), [ltmPayload]);
 
   const filteredRows = useMemo(() => {
     const searchTerm = filters.search.trim().toUpperCase();
@@ -269,9 +296,10 @@ export default function App() {
   }, [filters, shortlistRows]);
 
   const selectedRow = useMemo(() => {
-    if (!filteredRows.length) return null;
-    return filteredRows.find((row) => row.symbol === selectedSymbol) ?? filteredRows[0];
-  }, [filteredRows, selectedSymbol]);
+    const pool = scannerStrategy === "17_long_term_mom" ? ltmCandidateRows : filteredRows;
+    if (!pool.length) return null;
+    return pool.find((row) => row.symbol === selectedSymbol) ?? pool[0];
+  }, [filteredRows, ltmCandidateRows, scannerStrategy, selectedSymbol]);
 
   const summaryMetrics = useMemo(() => {
     const src = screenerResult;
@@ -407,6 +435,62 @@ export default function App() {
     }
   }, [timeframe, lookback, selectedUniverse, universes, topN, toast, applyScanResult]);
 
+  const handleRunLtmScan = useCallback(async () => {
+    setIsLoading(true);
+    setError(null);
+    setProgressData((p) => ({ ...p, stage: "Evaluating Long-Term Buy & Hold Momentum...", progress: 5 }));
+    const startedAt = Date.now();
+    setScanStartTime(startedAt);
+    try {
+      const started = await startLtmScan();
+      let scanId = started.scan_id as string | undefined;
+      for (let i = 0; i < 180; i += 1) {
+        const latest = await fetchLtmLatest();
+        if (latest) {
+          setLtmPayload(latest);
+          const st = String(latest.status || "");
+          setProgressData((p) => ({
+            ...p,
+            stage: latest.stage || st || p.stage,
+            progress: st === "completed" ? 100 : Math.min(90, 10 + i),
+          }));
+          if (st === "completed") {
+            setLastScanDuration(Math.round((Date.now() - startedAt) / 1000));
+            toast.success("LTM scan complete", `${latest.summary?.buy ?? 0} BUY · ${latest.summary?.watch ?? 0} WATCH`);
+            return;
+          }
+          if (st === "failed" || st === "blocked_stale") {
+            throw new Error(
+              latest.message || latest.reason || latest.detail || latest.error_code || "LTM scan failed",
+            );
+          }
+          if (!scanId && latest.scan_id) scanId = latest.scan_id;
+        }
+        if (scanId) {
+          try {
+            const run = await fetchLtmRun(scanId);
+            setProgressData((p) => ({ ...p, stage: run.stage || run.status, progress: run.progress_pct ?? p.progress }));
+          } catch {
+            /* latest payload is enough */
+          }
+        }
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+      throw new Error("LTM scan timed out waiting for completion");
+    } catch (requestError: any) {
+      if (requestError?.scanInProgress) {
+        toast.info("LTM scanner is already running.");
+        return;
+      }
+      const msg = requestError?.message || "LTM scan failed";
+      setError(msg);
+      toast.error("LTM scan failed", msg);
+    } finally {
+      setIsLoading(false);
+      setScanStartTime(null);
+    }
+  }, [toast]);
+
   async function handleSaveCurrentScan() {
     const name = savedScanName.trim() || `${selectedUniverse} ${timeframe} scan`;
     try {
@@ -475,19 +559,33 @@ export default function App() {
         <div className="scanner-page-header__left">
           <p className="ds-label">Scanner</p>
           <h1 className="ds-display">Scanner</h1>
-          <p className="ds-muted">Favorites and scan results</p>
+          <p className="ds-muted">
+            Favorites and scan results
+            {" · Long-Term Buy & Hold Momentum"}
+          </p>
         </div>
 
         <div className="scanner-page-header__right">
           <div className="scanner-page-header__cta">
-            <button
-              type="button"
-              className="button ghost-button scanner-page-header__run-btn"
-              onClick={() => navigate("/markets")}
-              data-testid="scanner-run-from-markets"
-            >
-              Run from Markets
-            </button>
+            {scannerStrategy === "17_long_term_mom" ? (
+              <button
+                type="button"
+                className="button primary-button scanner-page-header__run-btn"
+                onClick={() => void handleRunLtmScan()}
+                data-testid="scanner-run-ltm"
+              >
+                Run LTM scan
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="button ghost-button scanner-page-header__run-btn"
+                onClick={() => navigate("/markets")}
+                data-testid="scanner-run-from-markets"
+              >
+                Run from Markets
+              </button>
+            )}
           </div>
           <StatusCards
             compact
@@ -509,6 +607,24 @@ export default function App() {
           Favorites count = shortlist size.
           Scan Results count = full analyzed cohort.
       */}
+      <div className="scanner-result-tabs" role="tablist" aria-label="Scanner strategy" style={{ marginBottom: 8 }}>
+        {(ltmStrategies.length ? ltmStrategies : [
+          { id: "17_long_term_mom", display_name: "Long-Term Buy & Hold Momentum" },
+        ]).filter(s => s.id !== "production").map((s) => (
+          <button
+            key={s.id}
+            type="button"
+            role="tab"
+            aria-selected={scannerStrategy === s.id}
+            className={`button ${scannerStrategy === s.id ? "primary-button" : "ghost-button"}`}
+            onClick={() => setScannerStrategy(s.id as "production" | "17_long_term_mom")}
+            data-testid={`scanner-strategy-${s.id}`}
+          >
+            {s.display_name}
+          </button>
+        ))}
+      </div>
+
       <div className="scanner-result-tabs" role="tablist" aria-label="Result views">
         <button
           type="button"
@@ -542,21 +658,56 @@ export default function App() {
           data={progressData}
           error={error}
           startTime={scanStartTime}
-          onRetry={handleRunScanner}
+          onRetry={scannerStrategy === "17_long_term_mom" ? handleRunLtmScan : handleRunScanner}
         />
       ) : null}
 
       {error ? (
         <section className="panel error-state" role="alert">
-          <h2 className="ds-title">Scan failed</h2>
+          <h2 className="ds-title">
+            {scannerStrategy === "17_long_term_mom" ? "Long-Term Buy & Hold Momentum scan failed" : "Scan failed"}
+          </h2>
           <p>{error}</p>
-          <button type="button" className="button primary-button" onClick={handleRunScanner} style={{ marginTop: 12 }}>
+          <button
+            type="button"
+            className="button primary-button"
+            onClick={() => void (scannerStrategy === "17_long_term_mom" ? handleRunLtmScan() : handleRunScanner())}
+            style={{ marginTop: 12 }}
+          >
             Retry scan
           </button>
         </section>
       ) : null}
 
-      {!isLoading && !error ? (
+      {!isLoading && !error && scannerStrategy === "17_long_term_mom" ? (
+        <>
+          <LtmScanSummary payload={ltmPayload} />
+          {ltmPayload?.recommendations_final ? (
+            <>
+              <LtmRejectionBreakdown buckets={ltmPayload.rejection_breakdown || []} />
+              <LtmReturnBoards payload={ltmPayload} />
+              {ltmCandidateRows.length ? (
+                <CandidateTable
+                  rows={ltmCandidateRows}
+                  selectedSymbol={selectedRow?.symbol ?? null}
+                  onSelect={handleSelectSymbol}
+                  onBuy={sendRowToPaperTrading}
+                  exportFilePrefix="ltm-scan"
+                />
+              ) : (
+                <EmptyState
+                  title="No LTM recommendations yet"
+                  description="Run a Long-Term Buy & Hold Momentum scan to populate this table."
+                />
+              )}
+            </>
+          ) : ltmPayload ? (
+            <p className="muted-copy">Backtesting in progress — recommendations stay hidden until the book replay finishes.</p>
+          ) : null}
+        </>
+      ) : null}
+
+      {!isLoading && !error && scannerStrategy === "production" ? (
         showAllAnalyzedStocks ? (
           // Full-universe screener breakdown
           <AllAnalyzedStocksTable stocks={screenerResult?.all_analyzed_stocks ?? []} />
@@ -597,11 +748,11 @@ export default function App() {
       ) : null}
     </div>
   ), [
-    handleRunScanner, handleSelectSymbol, navigate,
+    handleRunScanner, handleRunLtmScan, handleSelectSymbol, navigate,
     screenerResult, isLoading, error, showAllAnalyzedStocks,
     analysisItems, filteredRows, shortlistRows, selectedRow?.symbol,
     progressData, scanStartTime, lastScanDuration,
-    sendRowToPaperTrading,
+    sendRowToPaperTrading, scannerStrategy, ltmPayload, ltmCandidateRows, ltmStrategies,
   ]);
 
   const scannerView = (
@@ -844,6 +995,42 @@ function buildPaperTradingPrefill(row: CandidateRow, side?: "BUY" | "SELL"): Rec
       confidence: Math.round((row.confidence ?? 0) * 100) / 100,
     },
   };
+}
+
+function buildLtmCandidateRows(payload: Record<string, any> | null): CandidateRow[] {
+  if (!payload?.recommendations_final || !Array.isArray(payload.recommendations)) return [];
+  return payload.recommendations.map((r: any) => ({
+    rank: r.rank ?? null,
+    symbol: String(r.symbol || "").toUpperCase(),
+    signal: (r.signal === "BUY" || r.signal === "WATCH" || r.signal === "REJECT" ? r.signal : "REJECT") as CandidateRow["signal"],
+    score: typeof r.momentum_252 === "number" ? Math.round(r.momentum_252 * 1000) / 10 : null,
+    confidence: null,
+    entryLow: null,
+    entryHigh: null,
+    stopLoss: null,
+    target1: null,
+    target2: null,
+    riskReward: null,
+    trend: payload.clock_status || "—",
+    momentum: r.momentum_252 != null ? `${(r.momentum_252 * 100).toFixed(1)}%` : "unavailable",
+    volume: "n/a",
+    newsSentiment: "n/a",
+    lastUpdated: payload.evaluation_date ?? null,
+    tradeReadiness: r.signal === "BUY" ? "Review manually" : r.signal === "WATCH" ? "Review manually" : "Avoid",
+    recommendationSummary: r.first_failure
+      ? `Rejected: ${r.first_failure}`
+      : "Long-Term Buy & Hold Momentum selection",
+    ltm: {
+      technicals: r.technicals,
+      backtest_1y: r.backtest_1y,
+      equity_curve: payload.equity_curve,
+      blotter: payload.blotter,
+      book_metrics: payload.book_metrics,
+      index_curve: payload.index_curve,
+      initial_capital: payload.initial_capital ?? payload.book_metrics?.initial_capital ?? null,
+      evaluation_date: payload.evaluation_date ?? null,
+    },
+  }));
 }
 
 function buildCandidateRows(screenerResult: ScreenerResponse | null): CandidateRow[] {

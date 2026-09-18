@@ -305,6 +305,11 @@ class Settings(BaseSettings):
     strategy_daily_update_hour_ist: int = Field(default=16, ge=15, le=23, alias="STRATEGY_DAILY_UPDATE_HOUR_IST")
     strategy_daily_update_minute_ist: int = Field(default=45, ge=0, le=59, alias="STRATEGY_DAILY_UPDATE_MINUTE_IST")
 
+    # Long-Term Buy & Hold Momentum scanner (037)
+    ltm_initial_capital: float = Field(default=100_000.0, alias="LTM_INITIAL_CAPITAL")
+    ltm_lock_name: str = Field(default="scan:17_long_term_mom", alias="LTM_LOCK_NAME")
+    ltm_default_mode: str = Field(default="A", alias="LTM_DEFAULT_MODE")
+
     def is_strategy_market_data_gate_enabled(self) -> bool:
         """Live feature-flag for pre-scanner strategy market-data freshness gate."""
         try:

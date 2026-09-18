@@ -230,6 +230,17 @@ export type CandidateRow = {
   recommendationSummary: string;
   analysisItem?: StockAnalysisResult;
   screenerMatch?: ScreenerConditionResult;
+  /** Present when the row comes from Long-Term Buy & Hold Momentum. */
+  ltm?: {
+    technicals?: Record<string, unknown>;
+    backtest_1y?: Record<string, unknown> | null;
+    equity_curve?: { date?: string; label?: string; equity?: number }[];
+    blotter?: Record<string, unknown>[];
+    book_metrics?: Record<string, unknown> | null;
+    index_curve?: { date?: string; close?: number }[];
+    initial_capital?: number | null;
+    evaluation_date?: string | null;
+  };
 };
 
 export type DashboardFilters = {

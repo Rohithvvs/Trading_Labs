@@ -1,5 +1,6 @@
 import json
-from fastapi import APIRouter, Depends, Query, Request, Response
+import uuid
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from ..db import get_db
 from ..core.deps import require_feature
@@ -233,4 +234,136 @@ async def get_latest_completed_scan(
         media_type="application/json",
         headers={"X-Cache-Status": cache_status},
     )
+
+
+@router.get("/strategies")
+async def list_scanner_strategies(
+    _: User = Depends(require_feature("advanced_scanner")),
+):
+    from ..services.strategies.ltm.identity import DISPLAY_NAME, SHORT_NAME, STRATEGY_ID
+
+    return {
+        "strategies": [
+            {"id": "production", "display_name": "Production", "short_name": "PROD"},
+            {"id": STRATEGY_ID, "display_name": DISPLAY_NAME, "short_name": SHORT_NAME},
+        ]
+    }
+
+
+@router.get("/ltm/latest")
+async def get_ltm_latest(
+    _: User = Depends(require_feature("advanced_scanner")),
+):
+    from ..services.strategies.ltm import persistence
+    from ..services.strategies.ltm.identity import DISPLAY_NAME, STRATEGY_ID
+
+    row = await persistence.load_latest(STRATEGY_ID)
+    if not row or not row.payload:
+        raise HTTPException(
+            status_code=404,
+            detail={"available": False, "message": "No LTM scan yet", "strategy_id": STRATEGY_ID},
+        )
+    body = dict(row.payload)
+    body.setdefault("strategy_id", STRATEGY_ID)
+    body.setdefault("display_name", DISPLAY_NAME)
+    body["status"] = row.status
+    if row.status != "completed":
+        body["recommendations_final"] = False
+    return body
+
+
+@router.post("/ltm/runs")
+async def start_ltm_run(
+    _: User = Depends(require_feature("advanced_scanner")),
+    mode: str | None = Query(default=None),
+):
+    from ..services.strategies.ltm.scan_service import start_scan_background
+
+    result = await start_scan_background(mode=mode)
+    if result.get("error_code") == "LTM_SCAN_IN_PROGRESS":
+        raise HTTPException(status_code=409, detail=result)
+    return result
+
+
+@router.get("/ltm/runs/{scan_id}")
+async def get_ltm_run(
+    scan_id: uuid.UUID,
+    _: User = Depends(require_feature("advanced_scanner")),
+):
+    from ..services.strategies.ltm import persistence
+
+    run = await persistence.get_run(scan_id)
+    if not run:
+        raise HTTPException(status_code=404, detail={"message": "Scan run not found"})
+    return {
+        "scan_id": str(run.scan_id),
+        "strategy_id": run.strategy_id,
+        "status": run.status,
+        "progress_pct": run.progress_pct,
+        "stage": run.stage,
+        "error_code": run.error_code,
+        "recommendations_final": run.status == "completed",
+        "payload": run.payload if run.status == "completed" else None,
+    }
+
+
+@router.get("/ltm/symbols/{symbol}")
+async def get_ltm_symbol(
+    symbol: str,
+    window: str = Query(default="3Y"),
+    _: User = Depends(require_feature("advanced_scanner")),
+):
+    from datetime import date as date_cls
+
+    from ..services.strategies.ltm import persistence
+    from ..services.strategies.ltm.analytics import build_symbol_dashboard, parse_window
+    from ..services.strategies.ltm.identity import STRATEGY_ID
+
+    row = await persistence.load_latest(STRATEGY_ID)
+    if not row or not row.payload:
+        raise HTTPException(status_code=404, detail={"message": "No LTM scan yet"})
+    payload = row.payload
+    recs = payload.get("recommendations") or []
+    match = next((r for r in recs if str(r.get("symbol", "")).upper() == symbol.upper()), None)
+    if not match:
+        raise HTTPException(status_code=404, detail={"message": "Symbol not in last LTM scan"})
+    eval_raw = payload.get("evaluation_date")
+    try:
+        asof = date_cls.fromisoformat(str(eval_raw)[:10]) if eval_raw else date_cls.today()
+    except ValueError:
+        asof = date_cls.today()
+    blotter = payload.get("blotter") or []
+    if not blotter:
+        bt = match.get("backtest_1y") or {}
+        blotter = list(bt.get("trades") or [])
+        for t in blotter:
+            if isinstance(t, dict) and not t.get("symbol"):
+                t["symbol"] = match["symbol"]
+    metrics = payload.get("book_metrics") if isinstance(payload.get("book_metrics"), dict) else {}
+    dashboard = build_symbol_dashboard(
+        symbol=match["symbol"],
+        blotter=blotter,
+        equity_curve=payload.get("equity_curve") or [],
+        index_curve=payload.get("index_curve") or [],
+        asof=asof,
+        window=parse_window(window),
+        initial_capital=float(
+            payload.get("initial_capital")
+            or metrics.get("initial_capital")
+            or 100000
+        ),
+    )
+    return {
+        "strategy_id": STRATEGY_ID,
+        "symbol": match["symbol"],
+        "window": dashboard["window"],
+        "technicals": match.get("technicals"),
+        "backtest": match.get("backtest_1y"),
+        "dashboard": dashboard,
+        "book_metrics": payload.get("book_metrics"),
+        "equity_curve": payload.get("equity_curve"),
+        "signal": match.get("signal"),
+        "limitations": payload.get("limitations"),
+    }
+
 
