@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..core.deps import get_token_principal
 from ..db import get_db
 from ..schemas.workstation import (
     AlertCreate,
@@ -14,7 +15,11 @@ from ..services.workstation_service import WorkstationService
 from ..utils import sanitize_for_json
 
 
-router = APIRouter(prefix="/workstation", tags=["workstation"])
+router = APIRouter(
+    prefix="/workstation",
+    tags=["workstation"],
+    dependencies=[Depends(get_token_principal)],
+)
 
 
 def service(db: AsyncSession = Depends(get_db)) -> WorkstationService:

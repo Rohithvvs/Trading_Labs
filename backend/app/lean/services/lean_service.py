@@ -13,8 +13,8 @@ from ...services.universe_service import UniverseService
 from ...utils.datetime_utils import utc_now
 from ..adapters.data_adapter import LeanDataAdapter
 from ..engine.base import BacktestEngine
-from ..engine.existing_engine import ExistingBacktestEngine
 from ..engine.lean_engine import LeanBacktestEngine
+from ..job_store import load_all, load_job, save_job
 from ..models import (
     EngineType,
     LeanBacktestRequest,
@@ -25,27 +25,45 @@ from ..models import (
 
 logger = logging.getLogger("app.lean.service")
 
-# Global in-memory storage for active and completed backtest jobs
+# In-memory cache; disk store survives process restart.
 _JOBS: dict[str, LeanJobRecord] = {}
 _ACTIVE_TASKS: dict[str, asyncio.Task] = {}
 _SEMAPHORE = asyncio.Semaphore(4)
+_DISK_LOADED = False
+
+
+def _ensure_disk_loaded() -> None:
+    global _DISK_LOADED
+    if _DISK_LOADED:
+        return
+    for job_id, job in load_all().items():
+        _JOBS.setdefault(job_id, job)
+    _DISK_LOADED = True
 
 
 class LeanBacktestService:
-    """Orchestrates LEAN and legacy backtesting jobs with persistence and cancellation."""
+    """Orchestrates event-engine backtesting jobs with disk persistence and cancellation."""
 
     @classmethod
     def get_job(cls, job_id: str) -> LeanJobRecord | None:
-        return _JOBS.get(job_id)
+        _ensure_disk_loaded()
+        job = _JOBS.get(job_id)
+        if job is not None:
+            return job
+        loaded = load_job(job_id)
+        if loaded is not None:
+            _JOBS[job_id] = loaded
+        return loaded
 
     @classmethod
     def list_jobs(cls, limit: int = 50) -> list[LeanJobRecord]:
+        _ensure_disk_loaded()
         records = sorted(_JOBS.values(), key=lambda j: j.created_at, reverse=True)
         return records[:limit]
 
     @classmethod
     def cancel_job(cls, job_id: str) -> bool:
-        job = _JOBS.get(job_id)
+        job = cls.get_job(job_id)
         if not job:
             return False
         if job.status in {LeanJobStatus.QUEUED, LeanJobStatus.RUNNING}:
@@ -55,6 +73,7 @@ class LeanBacktestService:
             task = _ACTIVE_TASKS.pop(job_id, None)
             if task and not task.done():
                 task.cancel()
+            save_job(job)
             return True
         return False
 
@@ -78,6 +97,7 @@ class LeanBacktestService:
             request=request,
         )
         _JOBS[job_id] = job
+        save_job(job)
 
         # Launch async execution task
         task = asyncio.create_task(cls._execute_job_task(job))
@@ -123,13 +143,11 @@ class LeanBacktestService:
                 def progress_cb(pct: int, msg: str):
                     job.progress_pct = pct
                     job.stage = msg
+                    save_job(job)
 
-                # 2. Select Engine
-                engine: BacktestEngine
                 if job.request.execution_mode == EngineType.EXISTING:
-                    engine = ExistingBacktestEngine()
-                else:
-                    engine = LeanBacktestEngine()
+                    raise ValueError("The legacy EXISTING engine is disabled. Use the Labs event engine.")
+                engine: BacktestEngine = LeanBacktestEngine()
 
                 job.stage = f"Executing {engine.engine_name} Engine Backtest..."
                 result: LeanBacktestResult = await engine.run_backtest(
@@ -157,4 +175,5 @@ class LeanBacktestService:
             job.error = str(exc)
             job.completed_at = utc_now()
         finally:
+            save_job(job)
             _ACTIVE_TASKS.pop(job_id, None)

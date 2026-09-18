@@ -453,7 +453,7 @@ export async function fetchStrategyResultHistory(
 }
 
 // ---------------------------------------------------------------------------
-// QuantConnect LEAN Backtesting Engine API Client
+// Labs event-engine backtest API client
 // ---------------------------------------------------------------------------
 
 export type LeanTradeItem = {
@@ -587,7 +587,7 @@ export async function fetchLeanEngines(): Promise<{
   default_engine: string;
 }> {
   const response = await fetchWithAuthResponse("/backtests/engines", { method: "GET" }, "LEAN engines");
-  if (!response.ok) return { engines: [{ id: "LEAN", name: "QuantConnect LEAN Engine", description: "Professional event-driven backtesting engine", is_default: true, supports_portfolio: true }], default_engine: "LEAN" };
+  if (!response.ok) return { engines: [{ id: "LEAN", name: "Labs event engine", description: "Event-driven daily-bar portfolio backtest", is_default: true, supports_portfolio: true }], default_engine: "LEAN" };
   return response.json();
 }
 

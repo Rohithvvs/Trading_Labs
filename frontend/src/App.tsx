@@ -1406,9 +1406,11 @@ export default function App() {
               <Route
                 path="/diagnostics"
                 element={
-                  <Suspense fallback={<ViewFallback />}>
-                    <DiagnosticsPage />
-                  </Suspense>
+                  <AdminRoute>
+                    <Suspense fallback={<ViewFallback />}>
+                      <DiagnosticsPage />
+                    </Suspense>
+                  </AdminRoute>
                 }
               />
               <Route path="/profile" element={profileView} />
@@ -1417,9 +1419,11 @@ export default function App() {
                 path="/admin"
                 element={
                   <AdminRoute>
-                    <Suspense fallback={<ViewFallback />}>
-                      <AdminPanelPage />
-                    </Suspense>
+                    <FeatureGuard feature="admin_panel" fallback={<AccessDenied />}>
+                      <Suspense fallback={<ViewFallback />}>
+                        <AdminPanelPage />
+                      </Suspense>
+                    </FeatureGuard>
                   </AdminRoute>
                 }
               />

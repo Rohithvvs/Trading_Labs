@@ -84,7 +84,7 @@ export const StockDetailsPage: React.FC = () => {
       searchParams.get("runId") ||
       (location.state as { runId?: string })?.runId ||
       localStorage.getItem("strategy_tester_last_run_id") ||
-      "STR-20260826-001"
+      ""
     );
   });
 
@@ -164,10 +164,14 @@ export const StockDetailsPage: React.FC = () => {
         }
       }
 
-      const activeRunId = targetRunId || "STR-20260826-001";
+      const activeRunId = targetRunId || "";
       setResolvedRunId(activeRunId);
-      if (!isIndicatorScanId(activeRunId)) {
+      if (activeRunId && !isIndicatorScanId(activeRunId)) {
         localStorage.setItem("strategy_tester_last_run_id", activeRunId);
+      }
+      if (!activeRunId) {
+        setIsLoading(false);
+        return;
       }
 
       if (isIndicatorScanId(activeRunId)) {

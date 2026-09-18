@@ -107,10 +107,9 @@ async def get_catalog(_: User = Depends(require_feature("advanced_scanner"))):
         if item.get("symbol")
     ]
     data["engines"] = [
-        {"id": "LEAN", "label": "QuantConnect LEAN (Professional)"},
-        {"id": "STANDARD", "label": "Trading Labs Standard"},
+        {"id": "SCAN", "label": "Universe scan (last completed session)"},
     ]
-    data["default_engine"] = "LEAN"
+    data["default_engine"] = "SCAN"
     return data
 
 

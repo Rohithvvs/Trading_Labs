@@ -63,6 +63,14 @@ def test_parses_ternary_and_request_security():
     assert any(o.kind == "alertcondition" for o in compiled.outputs)
 
 
+def test_compiles_ta_stdev():
+    compiled = compile_source(
+        '//@version=6\nindicator("stdev")\ns = ta.stdev(close, 20)\nplot(s, "Stdev")\n'
+    )
+    assert compiled.title == "stdev"
+    assert compiled.required_bars >= 20
+
+
 def test_compiles_ema_pullback_swing_scanner():
     compiled = compile_source(EMA_PULLBACK_SCAN_SOURCE)
     assert compiled.title == EMA_PULLBACK_SCAN_TITLE

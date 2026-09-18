@@ -374,7 +374,7 @@ async def test_tradingview_validation_mode():
         )
         assert report.symbol == "RELIANCE"
         assert report.total_bars > 0
-        assert report.verdict in {"PASS", "FAIL"}
+        assert report.verdict in {"PASS", "FAIL", "INCONCLUSIVE"}
 
 
 # ===========================================================================

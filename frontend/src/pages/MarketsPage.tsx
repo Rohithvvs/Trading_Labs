@@ -222,7 +222,7 @@ export const MarketsPage = memo(function MarketsPage({
           <p className="ds-label">Markets</p>
           <h1 className="ds-display">Market overview</h1>
           <p className="ds-muted">
-            Indices, movers, and the swing decision dashboard — ready for decisions.
+            Indices, movers, watchlist, and the latest scanner highlights.
             {refreshing ? " · Updating…" : ""}
           </p>
         </div>

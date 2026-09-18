@@ -192,13 +192,44 @@ function slotPayload(id: string, name: string, runId: string, universe: string, 
   };
 }
 
+function leanSlotPayload() {
+  const slot = slotPayload("s1", "Beta Breakout", "STR-B1", "NIFTY500", "//@version=6\nstrategy('beta')\n");
+  return {
+    ...slot,
+    source: "lean",
+    metrics: {
+      ...slot.metrics,
+      net_profit: 12400,
+      total_return_pct: 12.4,
+      cagr: 8.1,
+      win_rate: 55.25,
+      total_trades: 18,
+      profit_factor: 1.4,
+      average_trade: 0.82,
+      max_drawdown: 10500,
+      max_drawdown_pct: 10.5,
+      sharpe_ratio: 0.9,
+      sortino_ratio: 1.1,
+      calmar_ratio: 0.7714,
+      avg_cash: 80000,
+      avg_exposure_pct: 22.5,
+      long_trades: 18,
+      metrics_source: "lean",
+      metrics_note: "LEAN backtest summary.",
+      best_trade: { symbol: "INFY", return_pct: 18.2 },
+      worst_trade: { symbol: "HDFCBANK", return_pct: -9.1 },
+    },
+    config: { ...slot.config, source: "lean" },
+  };
+}
+
 const comparison = {
   slot_count: 2,
   aligned_config: false,
   config_warnings: [{ field: "universe", label: "Universe", message: "Universe differs across selected runs.", values: ["ALL_755", "NIFTY500"] }],
   slots: [
     slotPayload("s0", "Alpha Momentum", "STR-A1", "ALL_755", null),
-    slotPayload("s1", "Beta Breakout", "STR-B1", "NIFTY500", "//@version=6\nstrategy('beta')\n"),
+    leanSlotPayload(),
   ],
   radar: {
     axes: [
@@ -314,6 +345,39 @@ describe("StrategyComparisonPage", () => {
     expect(await screen.findByTestId("sc-config-warning")).toBeTruthy();
     expect(screen.getByTestId("sc-radar")).toBeTruthy();
     expect(screen.getByTestId("sc-radar-chart")).toBeTruthy();
+    expect(screen.getByTestId("sc-leaderboard")).toBeTruthy();
+    const leaderboard = screen.getByTestId("sc-leaderboard");
+    const radar = screen.getByTestId("sc-radar");
+    const metrics = screen.getByTestId("sc-metrics");
+    expect(leaderboard.compareDocumentPosition(radar) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(leaderboard.compareDocumentPosition(metrics) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    (
+      [
+        ["rank", "Rank"],
+        ["strategy", "Strategy"],
+        ["score", "Score"],
+        ["grade", "Grade"],
+        ["trades", "Trades"],
+        ["winRate", "Win Rate"],
+        ["pf", "PF"],
+        ["avgTrade", "Avg Trade"],
+        ["cagr", "CAGR"],
+        ["totalReturn", "Total Return"],
+        ["maxDd", "Max DD"],
+        ["calmar", "Calmar"],
+        ["avgCash", "Avg Cash"],
+        ["avgExposure", "Avg Exposure"],
+        ["bestTrade", "Best Trade"],
+        ["worstTrade", "Worst Trade"],
+      ] as const
+    ).forEach(([key, label]) => {
+      expect(screen.getByTestId(`sc-lb-col-${key}`).textContent).toBe(label);
+    });
+    expect(screen.getByTestId("sc-lb-row-s1").textContent).toContain("₹80,000");
+    expect(screen.getByTestId("sc-lb-row-s1").textContent).toContain("8.10%");
+    expect(screen.getByTestId("sc-lb-row-s1").textContent).toContain("1.40");
+    expect(screen.getByTestId("sc-lb-row-s1").textContent).toContain("22.5%");
+    expect(screen.getByTestId("sc-lb-row-s0").textContent).toMatch(/—/);
     expect(screen.getByTestId("sc-metrics")).toBeTruthy();
     expect(screen.getByTestId("sc-logic")).toBeTruthy();
     expect(screen.getByTestId("sc-signals")).toBeTruthy();
@@ -324,7 +388,6 @@ describe("StrategyComparisonPage", () => {
     expect(screen.getByTestId("sc-summary")).toBeTruthy();
     expect(screen.getByTestId("sc-charts")).toBeTruthy();
     expect(screen.getByTestId("sc-config")).toBeTruthy();
-    expect(screen.queryByText(/ranked #1/i)).toBeNull();
     expect(screen.queryByText(/best strategy/i)).toBeNull();
   });
 
@@ -338,6 +401,7 @@ describe("StrategyComparisonPage", () => {
     renderPage();
     fireEvent.click(await screen.findByText("Alpha Momentum vs Beta Breakout"));
     expect(await screen.findByTestId("sc-metrics")).toBeTruthy();
+    expect(await screen.findByTestId("sc-leaderboard")).toBeTruthy();
     expect(await screen.findByTestId("sc-radar")).toBeTruthy();
     expect(screen.getAllByText("BUY signals").length).toBeGreaterThan(0);
     expect(screen.getByTestId("sc-signals")).toBeTruthy();
@@ -358,6 +422,7 @@ describe("StrategyComparisonPage", () => {
     await screen.findByTestId("sc-metrics");
     fireEvent.click(screen.getByTestId("sc-highlight-toggle"));
     expect(screen.queryByText(/best strategy/i)).toBeNull();
-    expect(screen.getByText(/does not rank strategies/i)).toBeTruthy();
+    expect(screen.getByTestId("sc-leaderboard-note").textContent).toMatch(/radar display-scale/i);
+    expect(screen.getByTestId("sc-leaderboard").querySelectorAll(".sc-cell--hi").length).toBeGreaterThan(0);
   });
 });

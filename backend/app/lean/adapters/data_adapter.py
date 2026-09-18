@@ -106,9 +106,17 @@ class LeanDataAdapter:
         benchmark: str | None = "NIFTY500",
     ) -> tuple[dict[str, list[TradeBar]], list[TradeBar] | None]:
         """Fetch and align multi-symbol historical data with required warmup bars."""
-        # Calculate from_date ensuring at least warmup_sessions calendar cushion (e.g. 400+ calendar days for 260 trading sessions)
-        cushion_days = max(int(warmup_sessions * 1.6), 420)
-        from_date = start_date - timedelta(days=cushion_days)
+        from ...services.market_data_ingestion.nse_sessions import iter_nse_sessions
+        from ...utils.datetime_utils import ist_now
+
+        probe_start = start_date - timedelta(days=max(warmup_sessions * 3, 420))
+        prior = [d for d in iter_nse_sessions(probe_start, start_date - timedelta(days=1))]
+        if len(prior) >= warmup_sessions:
+            from_date = prior[-warmup_sessions]
+        elif prior:
+            from_date = prior[0]
+        else:
+            from_date = probe_start
 
         clean_symbols = [canonical_symbol(s) or s.upper() for s in symbols if s]
         clean_symbols = list(dict.fromkeys(clean_symbols))
@@ -121,11 +129,13 @@ class LeanDataAdapter:
             benchmark,
         )
 
+        today = ist_now().date()
         series_map, bench_series, source = await prepare_scan_market_data(
             clean_symbols,
             from_date=from_date,
             to_date=end_date,
             need_benchmark=bool(benchmark),
+            overlay_live=end_date >= today,
         )
 
         data_map: dict[str, list[TradeBar]] = {}

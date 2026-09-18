@@ -32,6 +32,30 @@ def test_validate_requires_auth(api):
     assert api.post("/indicators/validate", json={"source_code": "plot(close)"}).status_code == 401
 
 
+def test_lab_templates_and_seed(api):
+    headers = _register(api)
+    listed = api.get("/indicators/templates", headers=headers)
+    assert listed.status_code == 200, listed.text
+    body = listed.json()
+    assert body["count"] == 21
+    names = [row["name"] for row in body["templates"]]
+    assert names[0].startswith("01 ")
+    assert any("09 52-Week High Breakout" in n for n in names)
+    seeded = api.post("/indicators/seed-lab", headers=headers)
+    assert seeded.status_code == 200, seeded.text
+    payload = seeded.json()
+    assert payload["count"] == 21
+    assert len(payload["created"]) == 21
+    again = api.post("/indicators/seed-lab", headers=headers)
+    assert again.status_code == 200
+    assert again.json()["created"] == []
+    assert len(again.json()["skipped"]) == 21
+    library = api.get("/indicators", headers=headers)
+    assert library.status_code == 200
+    saved_names = [row["name"] for row in library.json()["indicators"]]
+    assert len(saved_names) == 21
+
+
 def test_validate_success_extracts_outputs_and_required_bars(api):
     headers = _register(api)
     res = api.post("/indicators/validate", json={"source_code": BREAKOUT_SCAN_SOURCE, "timeframe": "1D"}, headers=headers)
@@ -734,6 +758,29 @@ def test_start_indicator_backtest_endpoints(api):
     status_res = api.get(f"/indicators/{indicator_id}/backtests/{job_id}", headers=headers)
     assert status_res.status_code == 200
     assert status_res.json()["jobId"] == job_id
+
+
+def test_unknown_indicator_backtest_is_refused(api):
+    headers = _register(api)
+    save = api.post(
+        "/indicators",
+        json={
+            "name": "Custom Volume Spike",
+            "description": "Not a mapped LEAN strategy",
+            "source_code": '//@version=6\nindicator("Custom Volume Spike")\nplot(volume)\n',
+            "timeframe": "1D",
+        },
+        headers=headers,
+    )
+    assert save.status_code == 200, save.text
+    indicator_id = save.json()["id"]
+    res = api.post(
+        f"/indicators/{indicator_id}/backtest",
+        json={"start_date": "2021-01-01", "end_date": "2021-06-01", "engine": "LEAN"},
+        headers=headers,
+    )
+    assert res.status_code == 400, res.text
+    assert "mapped" in (res.json().get("detail") or {}).get("message", "").lower() or "mapped" in res.text.lower()
 
 
 def test_momentum_pulse_backtest_uses_pulse_algorithm_not_ltm(api):

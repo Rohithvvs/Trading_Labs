@@ -85,6 +85,7 @@ ALLOWED_CALLS = {
     "ta.rsi",
     "ta.crossover",
     "ta.crossunder",
+    "ta.stdev",
     "request.security",
 }
 
@@ -622,7 +623,7 @@ class _CompileCtx:
         if isinstance(expr, Call):
             qname = qualified_call_name(expr)
             length = 0
-            if qname in {"ta.sma", "ta.ema", "ta.rma", "ta.highest", "ta.lowest", "ta.rsi"}:
+            if qname in {"ta.sma", "ta.ema", "ta.rma", "ta.highest", "ta.lowest", "ta.rsi", "ta.stdev"}:
                 if len(expr.args) >= 2:
                     length = self._length_value(expr.args[1])
             elif qname == "ta.atr":

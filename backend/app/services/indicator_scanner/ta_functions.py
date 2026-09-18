@@ -134,6 +134,23 @@ def atr(highs: Sequence[Scalar], lows: Sequence[Scalar], closes: Sequence[Scalar
     return rma(true_range(highs, lows, closes), length)
 
 
+def stdev(values: Sequence[Scalar], length: int, ddof: int = 1) -> list[Scalar]:
+    """Rolling standard deviation. ddof=1 matches pandas rolling().std() used by the lab."""
+    n = len(values)
+    out: list[Scalar] = [None] * n
+    if length <= 0 or length <= ddof:
+        return out
+    for i in range(length - 1, n):
+        window = [as_float(values[j]) for j in range(i - length + 1, i + 1)]
+        if any(v is None for v in window):
+            continue
+        nums = [float(v) for v in window]  # type: ignore[arg-type]
+        mean = sum(nums) / length
+        var = sum((x - mean) ** 2 for x in nums) / (length - ddof)
+        out[i] = var ** 0.5
+    return out
+
+
 def rsi(values: Sequence[Scalar], length: int) -> list[Scalar]:
     """Wilder RSI via RMA of gains/losses — same formulation as TradingView ta.rsi."""
     n = len(values)

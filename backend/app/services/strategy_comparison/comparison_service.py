@@ -391,6 +391,9 @@ def _empty_metrics() -> dict[str, Any]:
         "max_drawdown_pct": None,
         "sharpe_ratio": None,
         "sortino_ratio": None,
+        "calmar_ratio": None,
+        "avg_cash": None,
+        "avg_exposure_pct": None,
         "long_trades": None,
         "short_trades": None,
         "best_trade": None,
@@ -421,6 +424,7 @@ def metrics_from_lean(summary: Any, trades: list[Any]) -> dict[str, Any]:
             "max_drawdown_pct": _round(_num(data.get("maximum_drawdown_pct") or data.get("maximumDrawdownPct")), 4),
             "sharpe_ratio": _round(_num(data.get("sharpe_ratio") or data.get("sharpeRatio")), 4),
             "sortino_ratio": _round(_num(data.get("sortino_ratio") or data.get("sortinoRatio")), 4),
+            "calmar_ratio": _round(_num(data.get("calmar_ratio") or data.get("calmarRatio")), 4),
             "final_equity": _round(_num(data.get("final_equity") or data.get("finalEquity")), 2),
             "initial_capital": _round(_num(data.get("initial_capital") or data.get("initialCapital")), 2),
             "metrics_source": SOURCE_LEAN,
@@ -453,6 +457,10 @@ def metrics_from_lean(summary: Any, trades: list[Any]) -> dict[str, Any]:
     metrics["short_trades"] = short_n
     metrics["best_trade"] = best
     metrics["worst_trade"] = worst
+    cagr = metrics.get("cagr")
+    dd = metrics.get("max_drawdown_pct")
+    if metrics.get("calmar_ratio") is None and cagr is not None and dd is not None and abs(dd) > 0:
+        metrics["calmar_ratio"] = _round(float(cagr) / abs(float(dd)), 4)
     return metrics
 
 
@@ -920,6 +928,17 @@ def _trades_from_results(
     return trades
 
 
+def _apply_equity_averages(metrics: dict[str, Any], equity: list[dict[str, Any]]) -> dict[str, Any]:
+    cashes = [p.get("cash") for p in equity if p.get("cash") is not None]
+    invested = [p.get("invested") for p in equity if p.get("invested") is not None]
+    if cashes:
+        metrics["avg_cash"] = _round(sum(cashes) / len(cashes), 2)
+    initial = _num(metrics.get("initial_capital"))
+    if invested and initial and initial > 0:
+        metrics["avg_exposure_pct"] = _round(sum(float(v) / initial * 100.0 for v in invested) / len(invested), 4)
+    return metrics
+
+
 def _equity_from_lean(job: LeanJobRecord) -> list[dict[str, Any]]:
     if not job.result:
         return []
@@ -930,6 +949,8 @@ def _equity_from_lean(job: LeanJobRecord) -> list[dict[str, Any]]:
             {
                 "date": str(data.get("date") or "")[:10],
                 "equity": _num(data.get("equity")),
+                "cash": _num(data.get("cash")),
+                "invested": _num(data.get("investedCapital") or data.get("invested_capital") or data.get("invested")),
                 "drawdown": _num(data.get("drawdown")),
                 "drawdown_pct": _num(data.get("drawdownPct") or data.get("drawdown_pct")),
             }
@@ -1065,7 +1086,7 @@ def _load_lean_slot(strategy: StrategyDefinition, run_id: str, slot_id: str) -> 
         "source": SOURCE_LEAN,
         "status": str(job.status.value if hasattr(job.status, "value") else job.status),
         "logic": logic,
-        "metrics": metrics_from_lean(job.result.summary, job.result.trades),
+        "metrics": _apply_equity_averages(metrics_from_lean(job.result.summary, job.result.trades), equity),
         "config": config,
         "signals": [],
         "trades": trades,

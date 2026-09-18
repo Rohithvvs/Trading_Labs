@@ -1,10 +1,13 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   createIndicator,
   fetchIndicators,
+  fetchIndicatorTemplates,
+  seedLabIndicators,
   updateIndicator,
   validateIndicatorSource,
   type IndicatorValidation,
+  type LabIndicatorTemplate,
   type SavedIndicator,
 } from "../../api_indicator_scanner";
 import { uniqueIndicatorsByIdAndName } from "../../utils/indicatorScannerState";
@@ -32,12 +35,53 @@ export const IndicatorEditorPanel: React.FC<IndicatorEditorPanelProps> = ({
   const [validatedSource, setValidatedSource] = useState<string | null>(null);
   const [validatedTimeframe, setValidatedTimeframe] = useState<string | null>(null);
   const [validation, setValidation] = useState<IndicatorValidation | null>(null);
-  const [busy, setBusy] = useState<"observe" | "save" | "apply" | null>(null);
+  const [busy, setBusy] = useState<"observe" | "save" | "apply" | "seed" | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [templates, setTemplates] = useState<LabIndicatorTemplate[]>([]);
+  const [templateId, setTemplateId] = useState<string>("");
 
   const isEditing = Boolean(initial?.id);
   const isValid = validation?.ok === true && validatedSource === source && validatedTimeframe === timeframe;
   const canAttemptSave = name.trim().length > 0 && !busy && timeframe === "1D";
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchIndicatorTemplates()
+      .then((rows) => {
+        if (!cancelled) setTemplates(rows);
+      })
+      .catch(() => {
+        if (!cancelled) setTemplates([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const applyTemplate = (strategyId: string) => {
+    setTemplateId(strategyId);
+    const match = templates.find((row) => row.strategy_id === strategyId);
+    if (!match?.source_code) return;
+    setName((match.name || "").slice(0, 120));
+    setDescription((match.description || "").slice(0, 500));
+    setSource(match.source_code);
+    setValidation(null);
+    setValidatedSource(null);
+    setValidatedTimeframe(null);
+    setError(null);
+  };
+
+  const handleSaveAllLab = async () => {
+    setBusy("seed");
+    setError(null);
+    try {
+      await seedLabIndicators();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to save the 21 research-lab strategies.");
+    } finally {
+      setBusy(null);
+    }
+  };
 
   const runValidation = async (): Promise<IndicatorValidation | null> => {
     const result = await validateIndicatorSource(source, timeframe);
@@ -135,6 +179,22 @@ export const IndicatorEditorPanel: React.FC<IndicatorEditorPanelProps> = ({
           validation errors.
         </p>
       </div>
+
+      <label className="st-config-field" data-testid="lab-template-picker">
+        <span>Research-lab strategy (21)</span>
+        <select
+          value={templateId}
+          onChange={(e) => applyTemplate(e.target.value)}
+          data-testid="select-lab-template"
+        >
+          <option value="">Custom / 52-Week High Breakout template</option>
+          {templates.map((row) => (
+            <option key={row.strategy_id} value={row.strategy_id}>
+              {row.name}
+            </option>
+          ))}
+        </select>
+      </label>
 
       <div className="ind-editor-grid">
         <label className="st-config-field">
@@ -284,6 +344,15 @@ export const IndicatorEditorPanel: React.FC<IndicatorEditorPanelProps> = ({
       <div className="ind-editor-actions">
         <button type="button" className="st-btn-dark" onClick={onCancel}>
           Cancel
+        </button>
+        <button
+          type="button"
+          className="st-btn-dark"
+          onClick={handleSaveAllLab}
+          disabled={!!busy}
+          data-testid="btn-save-all-lab-strategies"
+        >
+          {busy === "seed" ? "Saving 21…" : "Save all 21 strategies"}
         </button>
         <button
           type="button"

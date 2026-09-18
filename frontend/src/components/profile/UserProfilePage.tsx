@@ -703,6 +703,7 @@ export function UserProfilePage({ onNavigate, retailMode = false }: Props) {
             onCommand={() => navigate("/admin/command")}
             onLogs={() => navigate("/admin/logs")}
             onDiagnostics={() => navigate("/diagnostics")}
+            hideAiCoach={retailMode}
           />
         ) : null}
 
@@ -870,6 +871,7 @@ const OverviewSection = memo(function OverviewSection(props: {
   onCommand?: () => void;
   onLogs?: () => void;
   onDiagnostics?: () => void;
+  hideAiCoach?: boolean;
 }) {
   const {
     fullName,
@@ -1216,6 +1218,7 @@ const OverviewSection = memo(function OverviewSection(props: {
           </button>
         </div>
 
+        {!props.hideAiCoach ? (
         <div className="glass-card profile-chart-card ai-card">
           <div className="profile-card-head">
             <h3>
@@ -1251,6 +1254,7 @@ const OverviewSection = memo(function OverviewSection(props: {
             View Full Analysis
           </button>
         </div>
+        ) : null}
       </section>
 
       {/* Bottom row */}

@@ -179,6 +179,31 @@ export async function fetchIndicatorTemplate(): Promise<IndicatorValidation> {
   return response.json();
 }
 
+export type LabIndicatorTemplate = IndicatorValidation & {
+  strategy_id: string;
+  number?: string;
+  rank?: string;
+  pine_kind?: string;
+};
+
+export async function fetchIndicatorTemplates(): Promise<LabIndicatorTemplate[]> {
+  const response = await fetchWithAuth("/indicators/templates");
+  if (!response.ok) throw new Error(await parseError(response, "Unable to load research-lab templates."));
+  const body = await response.json();
+  return Array.isArray(body?.templates) ? body.templates : [];
+}
+
+export async function seedLabIndicators(): Promise<{
+  created: string[];
+  skipped: string[];
+  count: number;
+  indicators: SavedIndicator[];
+}> {
+  const response = await fetchWithAuth("/indicators/seed-lab", { method: "POST" });
+  if (!response.ok) throw new Error(await parseError(response, "Unable to save research-lab strategies."));
+  return response.json();
+}
+
 export async function createIndicator(payload: {
   name: string;
   description?: string;

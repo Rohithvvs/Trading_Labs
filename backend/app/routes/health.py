@@ -171,6 +171,6 @@ async def heartbeat() -> dict[str, object]:
     from ..services.market_engine_service import market_engine
 
     await market_engine.heartbeat()
-    return sanitize_for_json({"status": "ok", "engine": market_engine.status()})
+    return sanitize_for_json({"status": "ok", "engine": await market_engine.status()})
 
 

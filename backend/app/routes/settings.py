@@ -16,6 +16,7 @@ from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import settings
+from ..core.deps import get_token_principal
 from ..db import get_db
 from ..models import FyersToken, FyersTokenHistory
 from ..services.logger_service import logger_service
@@ -115,6 +116,7 @@ async def _validate_token_with_fyers(access_token: str) -> tuple[bool, str]:
 async def validate_and_save_token(
     payload: TokenValidateRequest,
     db: AsyncSession = Depends(get_db),
+    _: object = Depends(get_token_principal),
 ):
     """Validate a FYERS access token against the broker API, then persist it.
 

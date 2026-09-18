@@ -12,6 +12,7 @@ import {
   type ComparisonSuggestion,
 } from "../api_strategy_comparison";
 import { ComparisonCharts, SLOT_COLORS } from "../components/strategy_comparison/ComparisonCharts";
+import { ComparisonLeaderboard } from "../components/strategy_comparison/LeaderboardTable";
 import { ComparisonRadar } from "../components/strategy_comparison/ComparisonRadar";
 import { PineCodeEditor } from "../components/strategy_tester/PineCodeEditor";
 import "./strategyTester.css";
@@ -66,6 +67,148 @@ function signedClass(value: number | null | undefined): string {
 function listOrDash(items: string[] | null | undefined): string {
   if (!items || items.length === 0) return "—";
   return items.join("\n");
+}
+
+function SlotHeadCell({
+  index,
+  slot,
+  catalog,
+  catalogLoading,
+  canRemove,
+  onRemove,
+  onSelectStrategy,
+  onSelectRun,
+  onToggleOpen,
+  onQuery,
+}: {
+  index: number;
+  slot: DraftSlot;
+  catalog: ComparisonCatalogStrategy[];
+  catalogLoading: boolean;
+  canRemove: boolean;
+  onRemove: () => void;
+  onSelectStrategy: (item: ComparisonCatalogStrategy) => void;
+  onSelectRun: (runId: string) => void;
+  onToggleOpen: (open: boolean) => void;
+  onQuery: (query: string) => void;
+}) {
+  const filtered = catalog.filter((item) => {
+    const q = slot.query.trim().toLowerCase();
+    if (!q || item.id === slot.strategyId) return true;
+    return item.name.toLowerCase().includes(q) || (item.description || "").toLowerCase().includes(q);
+  });
+
+  return (
+    <div className="sc-radar-head-cell sc-head-picker" data-testid={`sc-slot-${index}`} data-slot-picker>
+      {canRemove ? (
+        <button type="button" className="sc-head-remove" onClick={onRemove} aria-label="Remove strategy" data-testid={`sc-remove-${index}`}>
+          ×
+        </button>
+      ) : null}
+      {slot.strategyId ? (
+        <>
+          <button type="button" className="sc-head-trigger" onClick={() => onToggleOpen(!slot.open)} data-testid={`sc-strategy-search-${index}`}>
+            <span className="sc-radar-head-swatch" style={{ background: SLOT_COLORS[index] }} />
+            <span className="sc-radar-head-name">{slot.strategyName || "Strategy"}</span>
+            <span className="sc-radar-head-chevron" aria-hidden>▾</span>
+          </button>
+          {slot.open ? (
+            <div className="sc-head-menu" data-testid={`sc-strategy-options-${index}`}>
+              <input
+                className="sc-search"
+                autoFocus
+                value={slot.query}
+                placeholder="Search strategies"
+                onChange={(e) => onQuery(e.target.value)}
+              />
+              <div className="sc-option-list sc-option-list--head">
+                {filtered.length === 0 ? (
+                  <div className="sc-option sc-muted">No matching saved strategies</div>
+                ) : (
+                  filtered.map((item) => (
+                    <button
+                      type="button"
+                      key={item.id}
+                      className={`sc-option ${item.id === slot.strategyId ? "is-active" : ""}`}
+                      onClick={() => onSelectStrategy(item)}
+                    >
+                      {item.name}
+                      <small>
+                        {item.completed_run_count} scan run{item.completed_run_count === 1 ? "" : "s"}
+                        {item.completed_lean_count ? ` · ${item.completed_lean_count} LEAN` : ""}
+                      </small>
+                    </button>
+                  ))
+                )}
+              </div>
+            </div>
+          ) : null}
+          {slot.runsLoading ? <div className="sc-skeleton" style={{ height: 22, width: "70%" }} /> : null}
+          {!slot.runsLoading && slot.strategyId && slot.runs.length > 0 ? (
+            <select
+              className="sc-head-run"
+              value={slot.runId}
+              onChange={(e) => onSelectRun(e.target.value)}
+              data-testid={`sc-run-select-${index}`}
+            >
+              <option value="">Select a completed run</option>
+              {slot.runs.map((run) => (
+                <option key={run.run_id} value={run.run_id}>
+                  {run.label}
+                </option>
+              ))}
+            </select>
+          ) : null}
+          {!slot.runsLoading && slot.strategyId && slot.runs.length === 0 ? (
+            <span className="sc-head-run-empty">
+              No runs · <Link to="/strategy-tester">Tester</Link>
+            </span>
+          ) : null}
+        </>
+      ) : (
+        <>
+          <button
+            type="button"
+            className="sc-head-trigger sc-head-trigger--empty"
+            onClick={() => onToggleOpen(true)}
+            data-testid={`sc-select-cta-${index}`}
+          >
+            + Select a strategy
+            <span className="sc-radar-head-chevron" aria-hidden>▾</span>
+          </button>
+          {slot.open ? (
+            <div className="sc-head-menu">
+              <input
+                className="sc-search"
+                autoFocus
+                placeholder="Search strategies"
+                value={slot.query}
+                onChange={(e) => onQuery(e.target.value)}
+                data-testid={`sc-strategy-search-${index}`}
+              />
+              <div className="sc-option-list sc-option-list--head">
+                {catalogLoading ? <div className="sc-option">Loading…</div> : null}
+                {!catalogLoading && catalog.length === 0 ? (
+                  <div className="sc-option sc-muted">Save a strategy in Strategy Tester first.</div>
+                ) : (
+                  catalog
+                    .filter((item) => item.name.toLowerCase().includes(slot.query.toLowerCase()))
+                    .map((item) => (
+                      <button type="button" key={item.id} className="sc-option" onClick={() => onSelectStrategy(item)}>
+                        {item.name}
+                        <small>
+                          {item.completed_run_count} completed run{item.completed_run_count === 1 ? "" : "s"}
+                        </small>
+                      </button>
+                    ))
+                )}
+              </div>
+            </div>
+          ) : null}
+        </>
+      )}
+    </div>
+  );
 }
 
 function strongerIndexes(values: Array<number | null | undefined>, higherIsBetter: boolean): Set<number> {
@@ -307,8 +450,8 @@ export function StrategyComparisonPage() {
           <p className="sc-kicker">Strategy Tester / Compare</p>
           <h1 className="sc-title">Strategy Comparison</h1>
           <p className="sc-subtitle">
-            Compare 2–4 saved strategies using completed Strategy Tester scans and LEAN backtests. Metrics come from
-            existing runs only — nothing is ranked as best.
+            Compare 2–4 saved strategies using completed Strategy Tester scans and LEAN backtests. The summary table
+            at the top uses the same radar display-scale for Score, Grade, and Rank. Missing metrics stay blank.
           </p>
         </div>
         <div className="sc-header-actions">
@@ -336,141 +479,46 @@ export function StrategyComparisonPage() {
         </div>
       ) : null}
 
-      <div className={`sc-slots sc-slots--${slots.length}`} data-testid="sc-slots">
-        {slots.map((slot, index) => {
-          const filtered = catalog.filter((item) => {
-            const q = slot.query.trim().toLowerCase();
-            if (!q || item.id === slot.strategyId) return true;
-            return item.name.toLowerCase().includes(q) || (item.description || "").toLowerCase().includes(q);
-          });
-          return (
-            <article
+      <section className="sc-radar-panel sc-compare-canvas">
+        <div
+          className="sc-radar-head"
+          data-testid="sc-slots"
+          style={{ gridTemplateColumns: `minmax(48px, 0.7fr) repeat(${slots.length}, minmax(0, 1fr))` }}
+        >
+          <div className="sc-radar-head-cell sc-radar-head-cell--empty" />
+          {slots.map((slot, index) => (
+            <SlotHeadCell
               key={`slot-${index}`}
-              className={`sc-slot ${slot.strategyId ? "" : "sc-slot--empty"}`}
-              style={{ borderColor: slot.strategyId ? SLOT_COLORS[index] : undefined }}
-              data-testid={`sc-slot-${index}`}
-              data-slot-picker
-            >
-              {slots.length > 2 ? (
-                <button
-                  type="button"
-                  className="sc-icon-btn"
-                  style={{ position: "absolute", top: 8, right: 8 }}
-                  aria-label="Remove strategy"
-                  onClick={() => removeSlot(index)}
-                  data-testid={`sc-remove-${index}`}
-                >
-                  ×
-                </button>
-              ) : null}
-              {slot.strategyId ? (
-                <>
-                  <div className="sc-slot-top">
-                    <span className="sc-dot" style={{ background: SLOT_COLORS[index] }} />
-                    <div className="sc-slot-title">{slot.strategyName || "Strategy"}</div>
-                  </div>
-                  <input
-                    className="sc-search"
-                    value={slot.query}
-                    placeholder="Search / select strategy"
-                    onChange={(e) =>
-                      setSlots((prev) => prev.map((s, i) => (i === index ? { ...s, query: e.target.value, open: true } : s)))
-                    }
-                    onFocus={() => setSlots((prev) => prev.map((s, i) => (i === index ? { ...s, open: true } : s)))}
-                    data-testid={`sc-strategy-search-${index}`}
-                  />
-                  {slot.open ? (
-                    <div className="sc-option-list" data-testid={`sc-strategy-options-${index}`}>
-                      {filtered.length === 0 ? (
-                        <div className="sc-option sc-muted">No matching saved strategies</div>
-                      ) : (
-                        filtered.map((item) => (
-                          <button
-                            type="button"
-                            key={item.id}
-                            className={`sc-option ${item.id === slot.strategyId ? "is-active" : ""}`}
-                            onClick={() => selectStrategy(index, item)}
-                          >
-                            {item.name}
-                            <small>
-                              {item.completed_run_count} scan run{item.completed_run_count === 1 ? "" : "s"}
-                              {item.completed_lean_count ? ` · ${item.completed_lean_count} LEAN` : ""}
-                            </small>
-                          </button>
-                        ))
-                      )}
-                    </div>
-                  ) : null}
-                  {slot.runsLoading ? <div className="sc-skeleton" style={{ height: 36 }} /> : null}
-                  {slot.runsError ? <div className="sc-muted">{slot.runsError}</div> : null}
-                  {!slot.runsLoading && slot.strategyId ? (
-                    slot.runs.length === 0 ? (
-                      <div className="sc-muted">
-                        No completed runs.{" "}
-                        <Link to="/strategy-tester">Run this strategy in Strategy Tester</Link>.
-                      </div>
-                    ) : (
-                      <select
-                        className="sc-select"
-                        value={slot.runId}
-                        onChange={(e) => selectRun(index, e.target.value)}
-                        data-testid={`sc-run-select-${index}`}
-                      >
-                        <option value="">Select a completed run</option>
-                        {slot.runs.map((run) => (
-                          <option key={run.run_id} value={run.run_id}>
-                            {run.label}
-                          </option>
-                        ))}
-                      </select>
-                    )
-                  ) : null}
-                </>
-              ) : (
-                <button
-                  type="button"
-                  className="sc-btn"
-                  onClick={() => setSlots((prev) => prev.map((s, i) => (i === index ? { ...s, open: true, query: s.query || "" } : s)))}
-                  data-testid={`sc-select-cta-${index}`}
-                >
-                  + Select a strategy
-                </button>
-              )}
-              {!slot.strategyId && slot.open ? (
-                <>
-                  <input
-                    className="sc-search"
-                    autoFocus
-                    placeholder="Search strategies"
-                    value={slot.query}
-                    onChange={(e) =>
-                      setSlots((prev) => prev.map((s, i) => (i === index ? { ...s, query: e.target.value, open: true } : s)))
-                    }
-                    data-testid={`sc-strategy-search-${index}`}
-                  />
-                  <div className="sc-option-list">
-                    {catalogLoading ? <div className="sc-option">Loading…</div> : null}
-                    {!catalogLoading && catalog.length === 0 ? (
-                      <div className="sc-option sc-muted">Save a strategy in Strategy Tester first.</div>
-                    ) : (
-                      catalog
-                        .filter((item) => item.name.toLowerCase().includes(slot.query.toLowerCase()))
-                        .map((item) => (
-                          <button type="button" key={item.id} className="sc-option" onClick={() => selectStrategy(index, item)}>
-                            {item.name}
-                            <small>
-                              {item.completed_run_count} completed run{item.completed_run_count === 1 ? "" : "s"}
-                            </small>
-                          </button>
-                        ))
-                    )}
-                  </div>
-                </>
-              ) : null}
-            </article>
-          );
-        })}
-      </div>
+              index={index}
+              slot={slot}
+              catalog={catalog}
+              catalogLoading={catalogLoading}
+              canRemove={slots.length > 2}
+              onRemove={() => removeSlot(index)}
+              onSelectStrategy={(item) => selectStrategy(index, item)}
+              onSelectRun={(runId) => selectRun(index, runId)}
+              onToggleOpen={(open) =>
+                setSlots((prev) => prev.map((s, i) => (i === index ? { ...s, open, query: open ? s.query || s.strategyName : s.strategyName || s.query } : { ...s, open: false })))
+              }
+              onQuery={(query) =>
+                setSlots((prev) => prev.map((s, i) => (i === index ? { ...s, query, open: true } : s)))
+              }
+            />
+          ))}
+        </div>
+        {comparison ? (
+          <>
+            <ComparisonLeaderboard comparison={comparison} highlight={highlightDiffs} />
+            <ComparisonRadar comparison={comparison} hideHeader />
+          </>
+        ) : (
+          <div className="sc-radar-body">
+            <div className="sc-chart-empty">
+              {compareLoading ? "Loading comparison from completed runs…" : "Select two strategies to plot a metric profile."}
+            </div>
+          </div>
+        )}
+      </section>
 
       {!catalogLoading && catalog.length === 0 && !catalogError ? (
         <div className="sc-empty" data-testid="sc-empty-catalog">
@@ -544,7 +592,6 @@ export function StrategyComparisonPage() {
             </div>
           )}
 
-          <ComparisonRadar comparison={comparison} />
           <MetricSection comparison={comparison} cols={cols} highlight={highlightDiffs} />
           <SummarySection comparison={comparison} />
           <SignalSection comparison={comparison} search={signalSearch} onSearch={setSignalSearch} />
@@ -672,7 +719,8 @@ function SummarySection({ comparison }: { comparison: ComparisonPayload }) {
           </p>
         ))}
         <p>
-          Figures are copied from the selected completed runs. This page does not rank strategies or name a winner.
+          Figures are copied from the selected completed runs. Score, Grade, and Rank in the summary table use the radar
+          display scale only — they are not a trading recommendation.
         </p>
       </div>
     </section>

@@ -15,7 +15,7 @@ import {
 } from "recharts";
 import type { ComparisonPayload, ComparisonSlot } from "../../api_strategy_comparison";
 
-export const SLOT_COLORS = ["#60a5fa", "#34d399", "#a78bfa", "#f59e0b"];
+export const SLOT_COLORS = ["#60a5fa", "#22c55e", "#a78bfa", "#f59e0b"];
 
 type Props = {
   comparison: ComparisonPayload;

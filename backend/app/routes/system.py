@@ -1,9 +1,14 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
+from ..core.deps import require_admin
 from ..db.session import get_db
 from ..services.diagnostics_service import diagnostics
 
-router = APIRouter(prefix="/system/shadow-run", tags=["system"])
+router = APIRouter(
+    prefix="/system/shadow-run",
+    tags=["system"],
+    dependencies=[Depends(require_admin)],
+)
 
 @router.get("/status")
 async def shadow_run_status(db: AsyncSession = Depends(get_db)):

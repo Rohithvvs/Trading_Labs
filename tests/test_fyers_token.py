@@ -157,6 +157,17 @@ class TestLoadFyersConfig:
         with mock.patch.dict(os.environ, env, clear=True):
             assert load_fyers_config()["FYERS_APP_SECRET"] == "alias_secret"
 
+    def test_strips_surrounding_quotes_and_totp_separators(self):
+        env = {
+            **REQUIRED_ENV,
+            "FYERS_CLIENT_ID": '"YJ08718"',
+            "FYERS_TOTP_SECRET": "'MFRG GZDF-MZTW Q2LK'",
+        }
+        with mock.patch.dict(os.environ, env, clear=True):
+            config = load_fyers_config()
+        assert config["FYERS_CLIENT_ID"] == "YJ08718"
+        assert config["FYERS_TOTP_SECRET"] == "MFRGGZDFMZTWQ2LK"
+
 
 # -----------------------------------------------------------------------------
 # US1 / US2 — Success path (no retry) — FR-004, SC-004
@@ -456,6 +467,58 @@ class TestPermanentFailFast:
         mock_uniform.assert_not_called()
         # Only inner window sleep (if any), not two outer delays
         assert mock_post.call_count == 3
+
+    @mock.patch("fyers_token.time.sleep")
+    @mock.patch("fyers_token.random.uniform")
+    @mock.patch("fyers_token.requests.post")
+    def test_http_400_wrong_totp_after_inner_retry_is_permanent(
+        self, mock_post, mock_uniform, mock_sleep, valid_env, mock_totp
+    ):
+        """Live Fyers returns HTTP 400 for wrong TOTP; still one inner retry only."""
+        wrong = _json_response(
+            {"s": "error", "message": "you have entered wrong totp"},
+            status_code=400,
+        )
+        mock_post.side_effect = [_otp_ok(), wrong, wrong]
+        with pytest.raises(FyersAuthError) as exc:
+            generate_fyers_access_token()
+        assert "TOTP verification failed" in str(exc.value)
+        mock_uniform.assert_not_called()
+        assert mock_post.call_count == 3
+        assert mock_sleep.call_count == 1
+
+    @mock.patch("fyers_token.time.sleep")
+    @mock.patch("fyers_token.random.uniform")
+    @mock.patch("fyers_token.requests.post")
+    @mock.patch("fyers_token.requests.get")
+    def test_http_400_wrong_totp_retries_next_window_then_succeeds(
+        self,
+        mock_get,
+        mock_post,
+        mock_uniform,
+        mock_sleep,
+        valid_env,
+        mock_totp,
+        mock_session_success,
+    ):
+        """FR-010: HTTP 400 wrong totp must not skip the inner window retry."""
+        mock_post.side_effect = [
+            _otp_ok(),
+            _json_response(
+                {"s": "error", "message": "you have entered wrong totp"},
+                status_code=400,
+            ),
+            _totp_ok(),
+            _pin_ok(),
+            _token_post(),
+        ]
+        mock_get.return_value = _authcode_redirect()
+
+        token = generate_fyers_access_token()
+        assert token == FINAL_TOKEN
+        mock_uniform.assert_not_called()
+        assert mock_post.call_count == 5
+        assert mock_sleep.call_count == 1
 
 
 # -----------------------------------------------------------------------------

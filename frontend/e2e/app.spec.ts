@@ -40,9 +40,15 @@ test("token management saves a token and backend confirms SQLite persistence", a
 
 test("scanner flow renders results and records browser localStorage history", async ({ page }) => {
   await mockScannerResponse(page);
-  // Run Scanner lives on the Scanner page
+  // Run Scanner lives on the Scanner page (LTM is the default strategy)
   await page.goto("/scanner");
-  await page.getByTestId("run-scanner-button").click();
+  const ltm = page.getByTestId("scanner-run-ltm");
+  const legacy = page.getByTestId("run-scanner-button");
+  if (await ltm.count()) {
+    await ltm.click();
+  } else {
+    await legacy.click();
+  }
 
   // Verify the progress UI appears and updates through stages without hanging
   const progressContainer = page.locator(".progress-container, .scanner-progress");
@@ -61,9 +67,21 @@ test("scanner flow renders results and records browser localStorage history", as
 test("scanner Buy action prefills paper trading flow", async ({ page }) => {
   await mockScannerResponse(page);
   await page.goto("/scanner");
-  await page.getByTestId("run-scanner-button").click();
+  const ltm = page.getByTestId("scanner-run-ltm");
+  const legacy = page.getByTestId("run-scanner-button");
+  if (await ltm.count()) {
+    await ltm.click();
+  } else {
+    await legacy.click();
+  }
   await page.getByText("Buy", { exact: true }).click();
-  await expect(page.getByTestId("paper-symbol-select")).toHaveValue("INFY-EQ");
+  const paperSelect = page.getByTestId("paper-symbol-select");
+  const paperOrderSymbol = page.getByTestId("paper-order-symbol");
+  if (await paperSelect.count()) {
+    await expect(paperSelect).toHaveValue("INFY-EQ");
+  } else {
+    await expect(paperOrderSymbol).toHaveValue(/INFY/);
+  }
 });
 
 

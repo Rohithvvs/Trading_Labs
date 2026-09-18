@@ -41,7 +41,7 @@ class NseFeeModel(IFeeModel):
         sebi_rate: float = 0.000001,
         stamp_duty_rate: float = 0.00015,
         gst_rate: float = 0.18,
-        dp_charge_flat: float = 13.50,
+        dp_charge_flat: float = 15.93,
     ) -> None:
         self.brokerage_rate = brokerage_rate
         self.brokerage_flat_cap = brokerage_flat_cap

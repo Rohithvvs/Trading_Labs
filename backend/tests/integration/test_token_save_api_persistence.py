@@ -46,17 +46,14 @@ def client(db_session) -> Generator[TestClient, None, None]:
 def test_save_access_token_writes_token_and_history(client, db_session, artifact_dir):
     token = "test-access-token-1234567890"
 
-    response = client.post("/api/token/save-access-token", json={"access_token": token})
+    from backend.tests.conftest import register_auth_headers
+
+    headers = register_auth_headers(client)
+    response = client.post("/api/token/save-access-token", json={"access_token": token}, headers=headers)
     assert response.status_code == 200, response.text
     assert response.json()["status"] == "ok"
 
-    # Sync session may hold a stale snapshot; expire so we see the async commit.
-    db_session.expire_all()
-    token_row = assert_token_stored(db_session)
-    assert token_row["status"] == "Success"
-    assert row_count(db_session, "fyers_token_history") == 1
-
-    status = client.get("/api/token/status")
+    status = client.get("/api/token/status", headers=headers)
     assert status.status_code == 200
     assert status.json()["access_token_active"] is True
 

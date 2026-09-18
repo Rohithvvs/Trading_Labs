@@ -56,7 +56,7 @@ COST_SCENARIOS = {
         "exc_trans_rate": 0.0000325,   # 0.00325% NSE
         "sebi_rate": 0.000001,         # 0.0001%
         "stamp_duty_rate": 0.00015,     # 0.015% buy only
-        "dp_charge": 13.5,
+        "dp_charge": 15.93,
         "gst_rate": 0.18,              # 18% on (brokerage + exchange fee + SEBI fee)
         "slippage_rate": 0.0002,       # 0.02% slippage
     },
@@ -68,7 +68,7 @@ COST_SCENARIOS = {
         "exc_trans_rate": 0.0000345,
         "sebi_rate": 0.000001,
         "stamp_duty_rate": 0.00015,
-        "dp_charge": 13.5,
+        "dp_charge": 15.93,
         "gst_rate": 0.18,
         "slippage_rate": 0.0005,       # 0.05% slippage
     },
@@ -80,7 +80,7 @@ COST_SCENARIOS = {
         "exc_trans_rate": 0.0000345,
         "sebi_rate": 0.000001,
         "stamp_duty_rate": 0.00015,
-        "dp_charge": 15.0,
+        "dp_charge": 15.93,
         "gst_rate": 0.18,
         "slippage_rate": 0.0015,       # 0.15% slippage
     }
@@ -139,7 +139,7 @@ def calculate_transaction_costs(
     # GST (18% on brokerage, etc, and sebi)
     gst = config["gst_rate"] * (brokerage + etc + sebi)
 
-    # DP charges (only on sell side for delivery/swing, standard flat ₹13.5 per company/day)
+    # DP charges (only on sell side for delivery/swing, standard flat ₹15.93 per company/day)
     dp = 0.0
     if side == "SELL" and not is_intraday:
         dp = config["dp_charge"]

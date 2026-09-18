@@ -123,28 +123,10 @@ export const StrategyConfigurationPanel: React.FC<StrategyConfigurationPanelProp
           </div>
         </div>
 
-        {/* Backtest Engine */}
         <div className="st-config-field" style={{ minWidth: 150 }}>
-          <label htmlFor="st-engine-select">Engine</label>
-          <div className="st-config-box">
-            <select
-              id="st-engine-select"
-              value={selectedEngine}
-              onChange={(e) => onEngineChange?.(e.target.value)}
-              data-testid="select-backtest-engine"
-              style={{
-                background: "transparent",
-                color: "#38bdf8",
-                fontWeight: 600,
-                border: "none",
-                fontSize: "0.75rem",
-                outline: "none",
-                cursor: "pointer",
-              }}
-            >
-              <option value="LEAN" style={{ background: "#0f172a", color: "#f8fafc" }}>QuantConnect LEAN</option>
-              <option value="STANDARD" style={{ background: "#0f172a", color: "#f8fafc" }}>Trading Labs Standard</option>
-            </select>
+          <label>Mode</label>
+          <div className="st-config-box" title="Evaluates filters on the last completed daily bar">
+            <span>Universe scan</span>
           </div>
         </div>
 
@@ -242,7 +224,7 @@ export const StrategyConfigurationPanel: React.FC<StrategyConfigurationPanelProp
               <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
                 <polygon points="5 3 19 12 5 21 5 3" />
               </svg>
-              Run Strategy
+              Scan universe
             </>
           )}
         </button>

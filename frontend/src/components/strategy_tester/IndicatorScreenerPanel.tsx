@@ -11,6 +11,7 @@ import {
   fetchIndicatorScanDiagnostics,
   fetchIndicatorScanResults,
   fetchIndicators,
+  seedLabIndicators,
   startIndicatorBacktest,
   startIndicatorScan,
   type IndicatorBacktestJob,
@@ -508,7 +509,24 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
 
   useEffect(() => {
     let cancelled = false;
-    fetchIndicators()
+    const loadLibrary = async () => {
+      let rows = await fetchIndicators();
+      const hasLab = rows.some((row) => /^\d{2}\s/.test(row.name) && row.name.includes("[SCAN]"));
+      if (!hasLab) {
+        try {
+          const seeded = await seedLabIndicators();
+          if (Array.isArray(seeded.indicators) && seeded.indicators.length) {
+            rows = seeded.indicators;
+          } else {
+            rows = await fetchIndicators();
+          }
+        } catch {
+          /* keep whatever the library already had */
+        }
+      }
+      return rows;
+    };
+    loadLibrary()
       .then((rows) => {
         if (cancelled) return;
         setLoadError(null);
@@ -1100,7 +1118,7 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
         title="Run multi-asset historical portfolio backtest with LEAN"
       >
         <span>⚡</span>
-        <span>Backtest (LEAN)</span>
+        <span>Portfolio backtest</span>
       </button>
       {scanning && scan?.scan_id && (
         <button type="button" className="st-btn-reset" onClick={handleCancel} data-testid="btn-cancel-indicator-scan">

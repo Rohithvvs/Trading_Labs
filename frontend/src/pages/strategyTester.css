@@ -1573,6 +1573,10 @@
   gap: 10px;
 }
 
+.ind-editor [data-testid="lab-template-picker"] select {
+  width: 100%;
+}
+
 .ind-editor-grid input,
 .ind-editor-grid select,
 .ind-editor textarea,

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useCallback, type ReactNode } from "react"
 import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
 import { useTheme } from "../hooks/useTheme";
-import { useDensity } from "../hooks/useDensity";
+
 import { useFeaturePermissions } from "../hooks/useFeaturePermissions";
 import { ADMIN_NAV, RETAIL_NAV, isNavActive } from "./navConfig";
 import { ThemeToggle } from "../components/ThemeToggle";
@@ -36,7 +36,7 @@ function readSidebarCollapsed(): boolean {
 export function AppShell({ children, topActions, title }: Props) {
   const { user, logout, role } = useAuth();
   const { theme, toggleTheme } = useTheme();
-  const { density, setDensity } = useDensity();
+
   const location = useLocation();
   const isAdmin = role === "admin";
   const navigate = useNavigate();
@@ -176,8 +176,8 @@ export function AppShell({ children, topActions, title }: Props) {
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
               </span>
               <div className="sidebar-universe-text">
-                <div className="sidebar-universe-count">755 Stocks</div>
-                <div className="sidebar-universe-name">All Stocks</div>
+                <div className="sidebar-universe-count">Nifty 500</div>
+                <div className="sidebar-universe-name">All stocks</div>
               </div>
             </div>
           </div>
@@ -203,8 +203,8 @@ export function AppShell({ children, topActions, title }: Props) {
           >
             <div className="sidebar-user-avatar">{initials}</div>
             <div className="sidebar-user-info">
-              <div className="sidebar-user-name">{user?.full_name || "Demn"}</div>
-              <div className="sidebar-user-email">{user?.email || "demo@tradedesk.com"}</div>
+              <div className="sidebar-user-name">{user?.full_name || user?.email || "Account"}</div>
+              <div className="sidebar-user-email">{user?.email || "Signed in"}</div>
             </div>
             <div className="sidebar-user-chevron">⌄</div>
           </div>
@@ -390,19 +390,24 @@ export function AppShell({ children, topActions, title }: Props) {
       ) : null}
 
       {/* Floating scan button — mobile only */}
-      <button
-        type="button"
-        className="floating-scan-btn"
-        aria-label="Run scanner"
-        title="Run scanner"
-        onClick={() => navigate("/scanner")}
-      >
-        ⚡
-      </button>
+      {canAccess("advanced_scanner") ? (
+        <button
+          type="button"
+          className="floating-scan-btn"
+          aria-label="Open scanner"
+          title="Open scanner"
+          onClick={() => navigate("/scanner")}
+        >
+          ⚡
+        </button>
+      ) : null}
 
       {/* Mobile bottom navigation */}
       <nav className="app-bottom-nav" aria-label="Primary">
-        {RETAIL_NAV.filter((item) => item.mobilePrimary && item.id !== "profile").map((item) => {
+        {RETAIL_NAV.filter((item) => item.mobilePrimary && item.id !== "profile").filter((item) => {
+          if (item.featureKey && !canAccess(item.featureKey)) return false;
+          return true;
+        }).map((item) => {
           const active = isNavActive(location.pathname, item);
           return (
             <NavLink

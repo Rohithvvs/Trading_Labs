@@ -8,18 +8,24 @@ const validateIndicatorSource = vi.fn();
 const createIndicator = vi.fn();
 const fetchIndicators = vi.fn(async () => []);
 const updateIndicator = vi.fn();
+const fetchIndicatorTemplates = vi.fn(async () => []);
+const seedLabIndicators = vi.fn(async () => ({ created: [], skipped: [], count: 0, indicators: [] }));
 
 vi.mock("../../../api_indicator_scanner", () => ({
   validateIndicatorSource: (...args: unknown[]) => validateIndicatorSource(...args),
   createIndicator: (...args: unknown[]) => createIndicator(...args),
   fetchIndicators: (...args: unknown[]) => fetchIndicators(...args),
   updateIndicator: (...args: unknown[]) => updateIndicator(...args),
+  fetchIndicatorTemplates: (...args: unknown[]) => fetchIndicatorTemplates(...args),
+  seedLabIndicators: (...args: unknown[]) => seedLabIndicators(...args),
 }));
 
 describe("IndicatorEditorPanel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     fetchIndicators.mockResolvedValue([]);
+    fetchIndicatorTemplates.mockResolvedValue([]);
+    seedLabIndicators.mockResolvedValue({ created: [], skipped: [], count: 0, indicators: [] });
   });
 
   it("renders create indicator copy, template, and keeps Save & Apply clickable", () => {
@@ -32,7 +38,26 @@ describe("IndicatorEditorPanel", () => {
     expect((screen.getByTestId("pine-textarea") as HTMLTextAreaElement).value).toContain("indicator(\"52-Week High Breakout [SCAN]\"");
     expect((screen.getByTestId("btn-save-apply-indicator") as HTMLButtonElement).disabled).toBe(false);
     expect((screen.getByTestId("btn-save-indicator") as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.getByTestId("select-lab-template")).toBeTruthy();
+    expect(screen.getByTestId("btn-save-all-lab-strategies")).toBeTruthy();
     expect(DEFAULT_INDICATOR_TEMPLATE).toContain("plot(scanSignal ? 1 : 0, \"52W Breakout Signal\")");
+  });
+
+  it("fills pine from a research-lab template", async () => {
+    fetchIndicatorTemplates.mockResolvedValue([
+      {
+        strategy_id: "08_golden_cross_20_50",
+        name: "08 Golden Cross 20/50 [SCAN]",
+        description: "SMA20 crosses above SMA50.",
+        source_code:
+          '//@version=6\nindicator("08 Golden Cross 20/50 [SCAN]", overlay=false)\nscanSignal = true\nplot(scanSignal ? 1 : 0, "Signal")\n',
+      },
+    ]);
+    render(<IndicatorEditorPanel onCancel={vi.fn()} onSaved={vi.fn()} onSavedAndApply={vi.fn()} />);
+    await waitFor(() => expect(screen.getByText("08 Golden Cross 20/50 [SCAN]")).toBeTruthy());
+    fireEvent.change(screen.getByTestId("select-lab-template"), { target: { value: "08_golden_cross_20_50" } });
+    expect((screen.getByTestId("input-indicator-name") as HTMLInputElement).value).toBe("08 Golden Cross 20/50 [SCAN]");
+    expect((screen.getByTestId("pine-textarea") as HTMLTextAreaElement).value).toContain("08 Golden Cross 20/50 [SCAN]");
   });
 
   it("validates successfully and enables save", async () => {

@@ -37,6 +37,7 @@ from .ta_functions import (
     rsi,
     shift,
     sma,
+    stdev,
 )
 
 
@@ -329,6 +330,8 @@ class SeriesEngine:
             return rolling_extreme(src, length, high=False)
         if qname == "ta.rsi":
             return rsi(src, length)
+        if qname == "ta.stdev":
+            return stdev(src, length)
         raise PineRuntimeError(f"Unsupported function '{qname}'.")
 
     def _security(self, expr: Call) -> list[Scalar]:
@@ -456,7 +459,7 @@ def evaluate_indicator(
         timeframe_period="D",
     )
     try:
-        return engine.last_bar()
+        result = engine.last_bar()
     except PineRuntimeError as exc:
         return EvalResult(
             as_of=bars.dates[-1] if bars.dates else None,
@@ -466,3 +469,12 @@ def evaluate_indicator(
             error_detail=str(exc),
             bar_count=len(bars),
         )
+    try:
+        from ..research_lab.overlay import overlay_native_last_bar
+
+        bench = None
+        if benchmark_by_symbol:
+            bench = next(iter(benchmark_by_symbol.values()), None)
+        return overlay_native_last_bar(compiled, bars, result, bench)
+    except Exception:
+        return result

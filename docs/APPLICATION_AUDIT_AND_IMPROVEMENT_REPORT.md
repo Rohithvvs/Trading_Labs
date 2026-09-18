@@ -1,6 +1,7 @@
 # Trading Labs — Full Application Audit and Improvement Report
 
 **Date:** 16 September 2026  
+**Remediation:** P0/P1 items in this report were implemented in the same session (auth on token/engine/LEAN/analysis/workstation/walk-forward/events/shadow-run; LEAN job disk persistence; TV validator uses stored tape; EXISTING engine hidden; unknown Pine no longer maps to 52W; Strategy Tester labelled as universe scan; DP cost aligned to ₹15.93; live overlay off for historical windows; session warmup; nightly candle sync scheduled; `/diagnostics` and `/admin` gated; mobile nav feature flags; Central Command close; STR-005 tests ignored).  
 **Scope:** Entire product (frontend, backend, scanners, backtesting, paper trading, auth, admin, docs)  
 **Method:** Code and route audit of the current repository, plus existing unit/API tests. This is **not** a live production run against FYERS. Claims below are from source, not from a full click-through of every screen.
 

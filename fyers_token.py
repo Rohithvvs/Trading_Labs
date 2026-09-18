@@ -342,6 +342,12 @@ def load_fyers_config() -> dict:
             )
 
         stripped = raw.strip()
+        if (
+            len(stripped) >= 2
+            and stripped[0] == stripped[-1]
+            and stripped[0] in "\"'"
+        ):
+            stripped = stripped[1:-1].strip()
         if not stripped:
             hint = canonical
             if canonical == "FYERS_APP_SECRET":
@@ -350,6 +356,11 @@ def load_fyers_config() -> dict:
                 f"Required environment variable is empty: {hint}"
             )
         config[canonical] = stripped
+
+    # Authenticator secrets are often pasted with spaces or hyphens.
+    config["FYERS_TOTP_SECRET"] = re.sub(
+        r"[\s-]+", "", config["FYERS_TOTP_SECRET"]
+    )
 
     # Optional early PIN format check (4 or 6 digits) — fail fast before network.
     pin = config["FYERS_PIN"]
@@ -381,8 +392,16 @@ def _post_json(
     payload: dict,
     headers: dict,
     step: str,
+    *,
+    accept_4xx_json: bool = False,
 ) -> dict[str, Any]:
-    """POST JSON with timeout; map network failures to FyersConnectionError."""
+    """POST JSON with timeout; map network failures to FyersConnectionError.
+
+    ``accept_4xx_json`` is for TOTP verify: Fyers returns HTTP 400 +
+    ``{"s": "error", "message": "you have entered wrong totp"}`` instead of
+    HTTP 200 with ``s != ok``. Callers need that body so the inner window
+    retry (FR-010) can run instead of treating the 400 as a hard fail.
+    """
     resp: requests.Response | None = None
     try:
         resp = requests.post(
@@ -392,6 +411,27 @@ def _post_json(
             timeout=REQUEST_TIMEOUT_SEC,
         )
         _record_server_drift(_extract_server_time_drift(resp))
+        status = getattr(resp, "status_code", None)
+        if (
+            accept_4xx_json
+            and status is not None
+            and 400 <= int(status) < 500
+        ):
+            try:
+                body = resp.json()
+            except ValueError:
+                body = None
+            if isinstance(body, dict):
+                logger.warning(
+                    "step=%s http_status=%s outcome=4xx_json message=%s",
+                    step,
+                    status,
+                    _redact_sensitive(
+                        str(body.get("message") or body.get("error") or ""),
+                        max_len=80,
+                    ),
+                )
+                return body
         resp.raise_for_status()
         return resp.json()
     except requests.Timeout as e:
@@ -733,7 +773,6 @@ def generate_fyers_access_token() -> str:
                 raise FyersAuthError("Missing request_key in OTP request response")
 
             # Step 2: Generate and Verify TOTP (fresh code every attempt — FR-007)
-            logger.info("step=totp_verify attempt=%s outcome=start", attempt)
             try:
                 totp_generator = pyotp.TOTP(totp_secret)
                 totp_time = time.time() + _SERVER_TIME_DRIFT
@@ -746,15 +785,24 @@ def generate_fyers_access_token() -> str:
             except Exception as e:
                 raise FyersConfigError(f"Invalid TOTP secret format: {e}") from e
 
+            logger.info(
+                "step=totp_verify attempt=%s clock_drift_s=%.2f totp_digits=%s outcome=start",
+                attempt,
+                _SERVER_TIME_DRIFT,
+                len(str(totp_code)),
+            )
+
             url_verify_totp = "https://api-t2.fyers.in/vagator/v2/verify_otp"
             data_totp = _post_json(
                 url_verify_totp,
                 {"request_key": request_key_1, "otp": totp_code},
                 headers,
                 step="TOTP verification",
+                accept_4xx_json=True,
             )
 
             # Sprint 2 FR-010: one inner window-aligned TOTP retry (budget-capped).
+            # Live Fyers returns HTTP 400 "wrong totp"; older mocks use 200 + s!=ok.
             if data_totp.get("s") != "ok":
                 fail_msg = data_totp.get("message", "Unknown error")
                 logger.warning(
@@ -781,6 +829,7 @@ def generate_fyers_access_token() -> str:
                     {"request_key": request_key_1, "otp": retry_code},
                     headers,
                     step="TOTP retry verification",
+                    accept_4xx_json=True,
                 )
                 if data_totp.get("s") != "ok":
                     # Permanent credential/sync failure — do not outer-retry (H1).

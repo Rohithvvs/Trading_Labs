@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from app.services.strategy_comparison.comparison_service import (
+    _apply_equity_averages,
     config_mismatches,
     extract_logic,
+    metrics_from_lean,
     metrics_from_strategy_run,
     monthly_yearly_from_equity,
     radar_profile,
@@ -267,3 +269,32 @@ def test_radar_builds_hexagon_from_scan_summary():
     assert profile["series"][0]["raw"]["buy_count"] == 8.0
     assert profile["series"][0]["values"]["buy_count"] == 100.0
     assert profile["series"][1]["values"]["buy_count"] == 50.0
+
+
+def test_lean_metrics_keep_calmar_and_equity_averages():
+    class _Summary:
+        def model_dump(self):
+            return {
+                "netProfitPct": 12.0,
+                "cagr": 8.0,
+                "winRate": 55.0,
+                "totalTrades": 10,
+                "profitFactor": 1.4,
+                "averageTrade": 1.1,
+                "maximumDrawdownPct": 10.0,
+                "calmarRatio": 0.8,
+                "finalEquity": 112000,
+                "initialCapital": 100000,
+            }
+
+    metrics = metrics_from_lean(_Summary(), [])
+    assert metrics["calmar_ratio"] == 0.8
+    filled = _apply_equity_averages(
+        metrics,
+        [
+            {"cash": 90000, "invested": 10000},
+            {"cash": 70000, "invested": 30000},
+        ],
+    )
+    assert filled["avg_cash"] == 80000.0
+    assert filled["avg_exposure_pct"] == 20.0

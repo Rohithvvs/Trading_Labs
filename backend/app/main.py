@@ -781,6 +781,15 @@ async def lifespan(app: FastAPI):
         coalesce=True,
     )
 
+    scheduler.add_job(
+        nightly_candle_sync,
+        CronTrigger(day_of_week="mon-fri", hour=18, minute=30, timezone="Asia/Kolkata"),
+        id="nightly_candle_sync",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
     # Clear in-memory FYERS quarantine on every app start
     from .services.fyers_service import QUARANTINED_SYMBOLS
     QUARANTINED_SYMBOLS.clear()

@@ -66,7 +66,7 @@ export const IndicatorLeanBacktestModal: React.FC<IndicatorLeanBacktestModalProp
         <div className="st-modal-header">
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <span style={{ fontSize: "1.2rem" }}>⚡</span>
-            <h2>QuantConnect LEAN Backtest</h2>
+            <h2>Portfolio backtest (event engine)</h2>
           </div>
           <button
             type="button"
@@ -88,7 +88,7 @@ export const IndicatorLeanBacktestModal: React.FC<IndicatorLeanBacktestModalProp
                 {indicatorName}
               </div>
               <div style={{ fontSize: "0.75rem", color: "#94a3b8", marginTop: 4 }}>
-                Execution Engine: <strong style={{ color: "#38bdf8" }}>QuantConnect LEAN (NSE Delivery Portfolio)</strong>
+                Execution Engine: <strong style={{ color: "#38bdf8" }}>Labs event engine (NSE delivery, next-bar open)</strong>
               </div>
             </div>
 

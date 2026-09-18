@@ -7,6 +7,8 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+from ...core.deps import require_feature
+from ...models.auth import User
 from ..models import (
     EngineType,
     LeanBacktestRequest,
@@ -18,7 +20,11 @@ from ..models import (
 from ..services.lean_service import LeanBacktestService
 from ..services.validation_service import LeanTradingViewValidationService
 
-router = APIRouter(prefix="/backtests", tags=["lean-backtesting"])
+router = APIRouter(
+    prefix="/backtests",
+    tags=["lean-backtesting"],
+    dependencies=[Depends(require_feature("advanced_scanner"))],
+)
 
 
 @router.get("/engines")
@@ -28,19 +34,11 @@ async def get_available_engines():
         "engines": [
             {
                 "id": "LEAN",
-                "name": "QuantConnect LEAN Engine",
-                "description": "Professional event-driven backtesting engine with strict daily bar alignment and multi-asset portfolio accounting",
+                "name": "Labs event engine",
+                "description": "Event-driven daily-bar portfolio backtest with NSE delivery costs and next-bar-open fills. In-process engine (not the QuantConnect LEAN binary).",
                 "is_default": True,
                 "supports_portfolio": True,
                 "supports_tradingview_validation": True,
-            },
-            {
-                "id": "EXISTING",
-                "name": "Trading Labs Standard Engine",
-                "description": "Legacy single-asset backtesting engine with realistic statutory cost profiles",
-                "is_default": False,
-                "supports_portfolio": False,
-                "supports_tradingview_validation": False,
             },
         ],
         "default_engine": "LEAN",
@@ -48,10 +46,15 @@ async def get_available_engines():
 
 
 @router.post("", response_model=LeanJobRecord)
-async def create_backtest_job(request: LeanBacktestRequest):
+async def create_backtest_job(request: LeanBacktestRequest, user: User = Depends(require_feature("advanced_scanner"))):
     """Start an asynchronous backtesting job."""
+    if request.execution_mode == EngineType.EXISTING:
+        raise HTTPException(
+            status_code=400,
+            detail={"message": "The legacy EXISTING engine is disabled. Use the Labs event engine."},
+        )
     try:
-        job = await LeanBacktestService.create_and_start_job(request)
+        job = await LeanBacktestService.create_and_start_job(request, user_id=str(user.id))
         return job
     except Exception as exc:
         raise HTTPException(status_code=400, detail={"message": str(exc)}) from exc
@@ -99,12 +102,12 @@ async def cancel_backtest_job(job_id: str):
 
 @router.post("/validate-tv", response_model=LeanValidationReport)
 async def validate_against_tradingview(
-    symbol: str = Query(default="RELIANCE"),
+    symbol: str = Query(default="WELCORP"),
     start_date: date | None = Query(default=None),
     end_date: date | None = Query(default=None),
     strategy_id: str = Query(default="09_52w_breakout"),
 ):
-    """Run bar-level validation comparing LEAN vs TradingView."""
+    """Run bar-level validation comparing LEAN vs a stored TradingView tape."""
     try:
         report = await LeanTradingViewValidationService.validate_symbol(
             symbol=symbol,

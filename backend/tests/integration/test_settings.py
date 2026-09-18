@@ -77,10 +77,14 @@ def client(db_session, test_engine) -> Generator[TestClient, None, None]:
 
 def test_save_token_too_short(client, db_session):
     """Token shorter than 10 chars is rejected, not saved, and logged masked."""
+    from backend.tests.conftest import auth_headers
+
+    headers = auth_headers()
     with patch.object(settings_routes, "logger_service") as mock_logger:
         response = client.post(
             "/settings/token",
             json={"access_token": "shorty"},
+            headers=headers,
         )
         assert response.status_code == 400
         assert response.json() == {"detail": "Access token is empty or too short."}
@@ -107,11 +111,15 @@ def test_save_token_fyers_network_error(client, db_session, monkeypatch):
 
     monkeypatch.setattr(httpx.AsyncClient, "get", mock_get)
 
+    from backend.tests.conftest import auth_headers
+
+    headers = auth_headers()
     token = "valid_length_token_but_network_fails"
     with patch.object(settings_routes, "logger_service") as mock_logger:
         response = client.post(
             "/settings/token",
             json={"access_token": token},
+            headers=headers,
         )
         assert response.status_code == 400
         assert response.json() == {"detail": "Invalid or Expired FYERS Token."}
@@ -142,10 +150,14 @@ def test_save_token_fyers_rejected(client, db_session, monkeypatch):
 
     monkeypatch.setattr(httpx.AsyncClient, "get", mock_get)
 
+    from backend.tests.conftest import auth_headers
+
+    headers = auth_headers()
     with patch.object(settings_routes, "logger_service") as mock_logger:
         response = client.post(
             "/settings/token",
             json={"access_token": "valid_length_token_but_fyers_rejects"},
+            headers=headers,
         )
         assert response.status_code == 400
         assert response.json() == {"detail": "Invalid or Expired FYERS Token."}
@@ -177,11 +189,15 @@ def test_save_token_success(client, db_session, monkeypatch):
 
     monkeypatch.setattr(httpx.AsyncClient, "get", mock_get)
 
+    from backend.tests.conftest import auth_headers
+
+    headers = auth_headers()
     plaintext = "valid_length_token_and_fyers_accepts"
     with patch.object(settings_routes, "logger_service") as mock_logger:
         response = client.post(
             "/settings/token",
             json={"access_token": plaintext},
+            headers=headers,
         )
         assert response.status_code == 200, response.text
         data = response.json()

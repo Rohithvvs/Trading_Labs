@@ -85,7 +85,7 @@ SUPPORTED_SYNTAX_HELP = [
     "input.int / input.float / input.bool / input.string / input.symbol",
     "OHLCV: open, high, low, close, volume and series indexing such as close[1]",
     "math.max/min/abs/round/floor/ceil",
-    "ta.sma, ta.ema, ta.rma, ta.highest, ta.lowest, ta.atr, ta.rsi, ta.crossover, ta.crossunder",
+    "ta.sma, ta.ema, ta.rma, ta.highest, ta.lowest, ta.atr, ta.rsi, ta.stdev, ta.crossover, ta.crossunder",
     "na(x), nz(x, replacement=0)",
     "request.security(symbol, timeframe.period, close or ta.sma(close, n))",
     "plot, plotshape, alertcondition — become screener columns",

@@ -7,6 +7,7 @@ import secrets
 import time
 from typing import Optional
 
+from ..core.deps import get_token_principal
 from ..db import get_db
 from ..schemas import FyersTokenCreate
 from ..services import token_service
@@ -180,7 +181,12 @@ async def generate_access_token_route(
 
 
 @router.post("/save-access-token")
-async def save_access_token_route(payload: FyersTokenCreate, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_db)):
+async def save_access_token_route(
+    payload: FyersTokenCreate,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    _: object = Depends(get_token_principal),
+):
     token = payload.access_token
     if not token or not str(token).strip():
         raise HTTPException(status_code=400, detail="access_token cannot be empty")
@@ -239,7 +245,7 @@ async def save_access_token_route(payload: FyersTokenCreate, background_tasks: B
 
 
 @router.get("/status")
-async def token_status(db: AsyncSession = Depends(get_db)):
+async def token_status(db: AsyncSession = Depends(get_db), _: object = Depends(get_token_principal)):
     try:
         status = await token_service.get_token_status(db)
     except Exception as exc:
@@ -249,7 +255,11 @@ async def token_status(db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/history")
-async def token_history(limit: int = Query(50, ge=1, le=500), db: AsyncSession = Depends(get_db)):
+async def token_history(
+    limit: int = Query(50, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
+    _: object = Depends(get_token_principal),
+):
     try:
         history = await token_service.get_token_history(db, limit=limit)
     except Exception as exc:
@@ -259,7 +269,7 @@ async def token_history(limit: int = Query(50, ge=1, le=500), db: AsyncSession =
 
 
 @router.get("/diagnostic")
-async def token_diagnostic(db: AsyncSession = Depends(get_db)):
+async def token_diagnostic(db: AsyncSession = Depends(get_db), _: object = Depends(get_token_principal)):
     """Ops diagnostic — no raw token material. Uses same status model as /api/token/status."""
     from ..db.session import engine
 

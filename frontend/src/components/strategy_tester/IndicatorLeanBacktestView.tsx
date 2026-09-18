@@ -216,7 +216,7 @@ export const IndicatorLeanBacktestView: React.FC<IndicatorLeanBacktestViewProps>
               gap: 6,
             }}
           >
-            <span>⚡ QuantConnect LEAN</span>
+            <span>⚡ Labs event engine</span>
           </div>
           <div>
             <h3 style={{ margin: 0, fontSize: "1.05rem", color: "#f8fafc", fontWeight: 600 }}>
@@ -290,7 +290,7 @@ export const IndicatorLeanBacktestView: React.FC<IndicatorLeanBacktestViewProps>
         >
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
             <span style={{ fontSize: "0.875rem", color: "#93c5fd", fontWeight: 600 }}>
-              Execution in progress: {job?.stage || "Running QuantConnect LEAN engine..."}
+              Execution in progress: {job?.stage || "Running Labs event engine..."}
             </span>
             <span style={{ fontSize: "1.1rem", fontWeight: 700, color: "#60a5fa" }}>
               {job?.progressPct || 0}%

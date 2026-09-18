@@ -144,6 +144,21 @@ async def get_template(_: User = Depends(require_feature("advanced_scanner"))):
     return payload
 
 
+@router.get("/templates")
+async def list_lab_templates(_: User = Depends(require_feature("advanced_scanner"))):
+    from ..services.research_lab.seed import template_payloads
+
+    templates = template_payloads()
+    return {"templates": templates, "count": len(templates)}
+
+
+@router.post("/seed-lab")
+async def seed_lab_strategies(user: User = Depends(require_feature("advanced_scanner"))):
+    from ..services.research_lab.seed import seed_lab_indicators
+
+    return await seed_lab_indicators(user.id)
+
+
 @router.post("/validate")
 async def validate_indicator(body: ValidateBody, _: User = Depends(require_feature("advanced_scanner"))):
     return _compile_payload(body.source_code, body.timeframe)
@@ -306,17 +321,47 @@ async def start_indicator_backtest(
     if row.is_archived:
         raise HTTPException(status_code=404, detail={"message": "Indicator not found"})
 
+    from ..services.research_lab.catalog import strategy_id_from_indicator_name
+
     name_lower = row.name.lower()
     source_lower = str(getattr(row, "source_code", "") or "").lower()
     blob = f"{name_lower} {source_lower}"
-    if "pulse" in blob or ("ta.crossover" in source_lower and "rsi" in source_lower):
+    lab_id = strategy_id_from_indicator_name(row.name)
+    if lab_id == "09_52w_breakout":
+        strat_id = "09_52w_breakout"
+    elif lab_id == "17_long_term_mom":
+        strat_id = "17_long_term_mom"
+    elif lab_id:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": (
+                    f"{row.name} is a research-lab strategy. Scan it in the Indicator Scanner "
+                    "or run the shared 10%×10 book; LEAN does not map this id yet."
+                )
+            },
+        )
+    elif "pulse" in blob or ("ta.crossover" in source_lower and "rsi" in source_lower):
         strat_id = "momentum_pulse"
     elif "ltm" in blob or "long term mom" in blob or "momentum 252" in blob:
         strat_id = "17_long_term_mom"
-    elif "52" in name_lower or "breakout" in name_lower:
+    elif "52" in name_lower or "52w" in name_lower:
         strat_id = "09_52w_breakout"
+    elif "sma" in name_lower and "cross" in blob:
+        strat_id = "01_sma_cross"
+    elif "rsi" in name_lower:
+        strat_id = "02_rsi_oversold"
     else:
-        strat_id = "09_52w_breakout"
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": (
+                    "No mapped event-engine strategy for this indicator. "
+                    "Name it as 52W/breakout, LTM, pulse, SMA cross, or RSI, "
+                    "or scan it in Strategy Tester instead of running a portfolio backtest."
+                )
+            },
+        )
 
     start_d = body.start_date or date(2020, 1, 1)
     end_d = body.end_date or date.today()

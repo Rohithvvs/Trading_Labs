@@ -17,6 +17,7 @@ const fetchIndicatorScanDiagnostics = vi.fn();
 const startIndicatorBacktest = vi.fn();
 const fetchIndicatorBacktest = vi.fn();
 const fetchIndicatorBacktestResults = vi.fn();
+const seedLabIndicators = vi.fn(async () => ({ created: [], skipped: [], count: 0, indicators: [] }));
 
 vi.mock("../../../api_strategy_tester", () => ({
   fetchStrategyCatalog: vi.fn(async () => ({
@@ -42,6 +43,8 @@ vi.mock("../../../api_indicator_scanner", () => ({
   startIndicatorBacktest: (...args: unknown[]) => startIndicatorBacktest(...args),
   fetchIndicatorBacktest: (...args: unknown[]) => fetchIndicatorBacktest(...args),
   fetchIndicatorBacktestResults: (...args: unknown[]) => fetchIndicatorBacktestResults(...args),
+  seedLabIndicators: (...args: unknown[]) => seedLabIndicators(...args),
+  fetchIndicatorTemplates: vi.fn(async () => []),
 }));
 
 const applied = {

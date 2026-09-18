@@ -476,7 +476,9 @@ async def prepare_scan_market_data(
     if filled:
         sources.append("historical_candles")
 
-    if overlay_live:
+    from ...utils.datetime_utils import ist_now as _ist_now
+
+    if overlay_live and to_date >= _ist_now().date():
         series_by_symbol, benchmark_series, live_source = await overlay_live_session(
             series_by_symbol,
             symbols,

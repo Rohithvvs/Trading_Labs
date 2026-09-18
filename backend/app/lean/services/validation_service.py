@@ -7,8 +7,9 @@ import logging
 from typing import Any
 
 from ...services.strategies.breakout52w.tv_ohlc_csv import (
-    load_tv_tester_session_dates,
-    resolve_tv_tester_ohlc_csv,
+    default_tv_trades_csv_path,
+    is_tv_reference_symbol,
+    parse_tv_trades_dates,
 )
 from ..adapters.data_adapter import LeanDataAdapter
 from ..engine.lean_engine import LeanBacktestEngine
@@ -58,74 +59,93 @@ class LeanTradingViewValidationService:
         engine = LeanBacktestEngine()
         lean_result: LeanBacktestResult = await engine.run_backtest(req, data_map, bench_bars)
 
-        # Compare debug trace against TradingView expectation
-        trace = lean_result.debug_trace or []
-        total_bars = len(trace)
-        signal_matches = 0
-        signal_mismatches = 0
+        tv_path = default_tv_trades_csv_path()
+        if not is_tv_reference_symbol(symbol) or not tv_path.is_file():
+            return LeanValidationReport(
+                symbol=symbol,
+                strategy=strategy_id,
+                startDate=start_d.isoformat(),
+                endDate=end_d.isoformat(),
+                totalBars=len(lean_result.debug_trace or []),
+                signalMatches=0,
+                signalMismatches=0,
+                tradeMatches=0,
+                metricsComparison={
+                    "Total Trades": {
+                        "LEAN": len(lean_result.trades),
+                        "TradingView": None,
+                        "Difference": None,
+                    }
+                },
+                mismatchDetails=[
+                    {
+                        "reason": (
+                            "No stored TradingView tape for this symbol. "
+                            "Validation only compares against hermes-research Strategy_001 trades.csv (WELCORP)."
+                        )
+                    }
+                ],
+                verdict="INCONCLUSIVE",
+            )
+
+        tv_entry_dates, first_tv_entry = parse_tv_trades_dates(tv_path)
+        lean_entry_dates: set[date] = set()
+        for tr in lean_result.trades:
+            raw = str(tr.entry_date or "")[:10]
+            try:
+                lean_entry_dates.add(date.fromisoformat(raw))
+            except ValueError:
+                continue
+
+        windowed_tv = {d for d in tv_entry_dates if start_d <= d <= end_d}
+        matches = lean_entry_dates & windowed_tv
+        extra_lean = sorted(lean_entry_dates - windowed_tv)
+        missing_tv = sorted(windowed_tv - lean_entry_dates)
         mismatch_details: list[dict[str, Any]] = []
-
-        for b in trace:
-            # Validate 252 lookback logic
-            # Condition: close >= high252 and volume > volSma20
-            has_high = b.high_252 is not None
-            has_vol = b.vol_sma_20 is not None
-            expected_entry = False
-
-            if has_high and has_vol:
-                if b.close >= b.high_252 and b.volume > b.vol_sma_20:
-                    expected_entry = True
-
-            if b.entry_condition == expected_entry:
-                signal_matches += 1
-            else:
-                signal_mismatches += 1
-                mismatch_details.append({
-                    "date": b.date,
-                    "symbol": b.symbol,
-                    "close": b.close,
-                    "high_252": b.high_252,
-                    "volume": b.volume,
-                    "vol_sma_20": b.vol_sma_20,
-                    "lean_signal": b.entry_condition,
-                    "expected_signal": expected_entry,
-                    "reason": "Signal mismatch between LEAN calculation and 52W rule",
-                })
+        for d in extra_lean[:25]:
+            mismatch_details.append({"date": d.isoformat(), "reason": "LEAN entry not in TradingView tape"})
+        for d in missing_tv[:25]:
+            mismatch_details.append({"date": d.isoformat(), "reason": "TradingView entry missing from LEAN"})
 
         metrics_comparison = {
-            "Total Bars": {"LEAN": total_bars, "TradingView": total_bars, "Difference": 0},
-            "Total Trades": {"LEAN": len(lean_result.trades), "TradingView": len(lean_result.trades), "Difference": 0},
-            "Final Equity": {"LEAN": lean_result.summary.final_equity, "TradingView": lean_result.summary.final_equity, "Difference": 0.0},
-            "Max Drawdown %": {"LEAN": lean_result.summary.maximum_drawdown_pct, "TradingView": lean_result.summary.maximum_drawdown_pct, "Difference": 0.0},
+            "Total Trades": {
+                "LEAN": len(lean_result.trades),
+                "TradingView": len(windowed_tv),
+                "Difference": len(lean_result.trades) - len(windowed_tv),
+            },
+            "Shared entry dates": {
+                "LEAN": len(matches),
+                "TradingView": len(windowed_tv),
+                "Difference": len(windowed_tv) - len(matches),
+            },
+            "First TV entry": {
+                "LEAN": None,
+                "TradingView": first_tv_entry.isoformat() if first_tv_entry else None,
+                "Difference": None,
+            },
         }
-
-        if lean_result.trades:
-            first_tr = lean_result.trades[0]
-            metrics_comparison["First Entry Date"] = {"LEAN": first_tr.entry_date, "TradingView": first_tr.entry_date, "Difference": 0}
-            metrics_comparison["First Entry Price"] = {"LEAN": first_tr.entry_price, "TradingView": first_tr.entry_price, "Difference": 0.0}
-
-        verdict = "PASS" if signal_mismatches == 0 else "FAIL"
+        verdict = "PASS" if not extra_lean and not missing_tv else "FAIL"
 
         report = LeanValidationReport(
             symbol=symbol,
             strategy=strategy_id,
             startDate=start_d.isoformat(),
             endDate=end_d.isoformat(),
-            totalBars=total_bars,
-            signalMatches=signal_matches,
-            signalMismatches=signal_mismatches,
-            tradeMatches=len(lean_result.trades),
+            totalBars=len(lean_result.debug_trace or []),
+            signalMatches=len(matches),
+            signalMismatches=len(extra_lean) + len(missing_tv),
+            tradeMatches=len(matches),
             metricsComparison=metrics_comparison,
-            mismatchDetails=mismatch_details[:50],  # cap to top 50
+            mismatchDetails=mismatch_details,
             verdict=verdict,
         )
 
         logger.info(
             "LEAN_TV_VALIDATION | symbol=%s | total_bars=%d | matches=%d | mismatches=%d | verdict=%s",
             symbol,
-            total_bars,
-            signal_matches,
-            signal_mismatches,
+            report.total_bars,
+            report.signal_matches,
+            report.signal_mismatches,
             verdict,
         )
         return report

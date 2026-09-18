@@ -89,6 +89,9 @@ export type ComparisonMetrics = {
   max_drawdown_pct: number | null;
   sharpe_ratio: number | null;
   sortino_ratio: number | null;
+  calmar_ratio?: number | null;
+  avg_cash?: number | null;
+  avg_exposure_pct?: number | null;
   long_trades: number | null;
   short_trades: number | null;
   best_trade: { symbol?: string | null; net_pnl?: number | null; return_pct?: number | null } | null;
@@ -155,7 +158,7 @@ export type ComparisonSlot = {
   config: ComparisonConfig;
   signals: Array<{ symbol: string; signal: string | null; return_pct: number | null }>;
   trades: ComparisonTrade[];
-  equity_curve: Array<{ date: string; equity: number | null; drawdown?: number | null; drawdown_pct?: number | null }>;
+  equity_curve: Array<{ date: string; equity: number | null; cash?: number | null; invested?: number | null; drawdown?: number | null; drawdown_pct?: number | null }>;
   drawdown_curve: Array<{ date: string; drawdown: number | null; drawdown_pct: number | null }>;
   monthly_returns: Array<{ period: string; return_pct: number | null }>;
   yearly_returns: Array<{ period: string; return_pct: number | null }>;
