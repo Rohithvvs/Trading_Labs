@@ -51,6 +51,7 @@ import { IndicatorLeanBacktestModal } from "./IndicatorLeanBacktestModal";
 import { IndicatorLeanBacktestView } from "./IndicatorLeanBacktestView";
 import { mapIndicatorResultToStock } from "../../utils/indicatorScanDetail";
 import { ScreenerColumnChip } from "./signalSetup/ScreenerColumnChip";
+import { IndicatorCustomDropdown } from "./IndicatorCustomDropdown";
 import type { FilterStat, FunnelStep, RankedReturn, StrategyResultRow } from "../../api_strategy_tester";
 import type { NavigateFunction } from "react-router-dom";
 
@@ -1154,11 +1155,19 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
           />
         </label>
         {showScanChrome && (
-          <label className="ind-pill ind-pill-grow">
+          <div className="ind-pill-grow" style={{ display: "inline-flex", position: "relative" }}>
+            <IndicatorCustomDropdown
+              selected={selected}
+              indicators={visibleIndicators}
+              onSelect={(id) => setSelectedId(id)}
+            />
             <select
               value={selected?.id || selectedId}
               onChange={(e) => setSelectedId(e.target.value)}
               data-testid="select-saved-indicator"
+              style={{ position: "absolute", opacity: 0, pointerEvents: "none", width: 0, height: 0 }}
+              tabIndex={-1}
+              aria-hidden="true"
             >
               {!selected?.id && !selectedId && <option value="">Select indicator</option>}
               {visibleIndicators.map((item) => (
@@ -1167,7 +1176,7 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
                 </option>
               ))}
             </select>
-          </label>
+          </div>
         )}
         {showScanChrome && (
           <label className="ind-pill">
