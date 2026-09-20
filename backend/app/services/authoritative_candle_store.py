@@ -427,6 +427,10 @@ class AuthoritativeCandleStore:
         dual_write_status = "SKIPPED"
         if settings.candle_store_dual_write:
             # FR-004: secondary dual-write is non-blocking background work.
+            # v1 Turso cutover does not include ACS / historical_candles.
+            # Do not change CANDLE_STORE_DUAL_WRITE defaults here. After a future
+            # ACS migration, leaving this True would keep writing large candle
+            # rows into Postgres/Neon (refill risk). Review before ACS cutover.
             dual_write_status = "SUCCESS"
 
             async def _dual() -> None:

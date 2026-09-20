@@ -345,9 +345,15 @@ async def lifespan(app: FastAPI):
     logger.info("APP_START | Application is starting")
     try:
         # Make DB target visible immediately — avoids confusion when multiple Neon projects exist.
-        db_target = settings.database_url.split("@")[-1] if "@" in settings.database_url else "(local/unknown)"
-        # Never log credentials; host/db path only.
-        logger.info("DATABASE_TARGET | %s", db_target.split("?")[0])
+        from .db.urls import public_db_target
+        from .db.turso import assert_startup_candle_history_config, log_candle_history_backend
+
+        logger.info("DATABASE_TARGET | %s", public_db_target(settings.database_url))
+        assert_startup_candle_history_config(settings)
+        log_candle_history_backend(settings)
+        app.state.turso_client = None
+    except RuntimeError:
+        raise
     except Exception:
         pass
     try:
@@ -410,7 +416,7 @@ async def lifespan(app: FastAPI):
                 await conn.run_sync(Base.metadata.create_all)
         
         await _init_db()
-        
+        app.state.turso_client = None
         yield
         # Shutdown for test env: no scheduler running
         try:
@@ -473,6 +479,44 @@ async def lifespan(app: FastAPI):
 
     def _is_prod_like() -> bool:
         return str(_startup_settings.app_env).strip().lower() in {"production", "prod", "staging"}
+
+    if _startup_settings.is_safe_api_mode():
+        logger.info("SAFE_API_MODE | Launching in Safe API Mode: partition DDL, schedulers, and background engines bypassed.")
+        from .db.session import check_alembic_head
+        from .services.admin_bootstrap_service import ensure_default_admin_safe
+        from .services.feature_permission_service import (
+            assert_feature_permissions_table_ready,
+            ensure_default_feature_permissions,
+        )
+
+        check_alembic_head()
+        async with AsyncSessionLocal() as admin_db_session:
+            await ensure_default_admin_safe(admin_db_session, fail_closed=_is_prod_like())
+
+        async with AsyncSessionLocal() as fp_db:
+            await assert_feature_permissions_table_ready(fp_db, fail_closed=_is_prod_like())
+            await ensure_default_feature_permissions(fp_db, commit=True)
+
+        if _startup_settings.uses_turso_candle_history():
+            from .db.turso import connect_turso
+            app.state.turso_client = connect_turso(_startup_settings)
+            logger.info("TURSO_CLIENT | opened for CANDLE_HISTORY_BACKEND=turso in safe API mode")
+
+        await _await_redis_wsl_prewarm()
+        logger.info("APP_LIFESPAN_COMPLETED | Safe API mode ready to serve requests")
+        yield
+        if getattr(app.state, "turso_client", None) is not None:
+            try:
+                app.state.turso_client.close()
+            except Exception:
+                pass
+        return
+
+    from .services.partition_manager import verify_and_create_partitions
+    try:
+        await verify_and_create_partitions()
+    except Exception as e:
+        logger.error(f"Failed to verify partitions: {e}")
 
     if not worker_lease.acquired:
         logger.warning("Another instance owns singleton workers; API-only mode enabled for this pod.")
@@ -975,10 +1019,25 @@ async def lifespan(app: FastAPI):
     await _await_redis_wsl_prewarm()
 
     logger.info("APP_LIFESPAN_COMPLETED | Lifespan startup fully completed")
+    turso_client = None
+    if settings.uses_turso_candle_history():
+        from .db.turso import connect_turso
+
+        turso_client = connect_turso(settings)
+        app.state.turso_client = turso_client
+        logger.info("TURSO_CLIENT | opened for CANDLE_HISTORY_BACKEND=turso")
+    else:
+        app.state.turso_client = None
+        logger.info("TURSO_CLIENT | skipped (CANDLE_HISTORY_BACKEND=postgres)")
     # yield control to the application
     yield
     # Shutdown
     logger.info("APP_SHUTDOWN | Application is shutting down")
+    if turso_client is not None:
+        try:
+            turso_client.close()
+        except Exception:
+            logger.exception("Failed to close Turso client")
     log_process_event("PROCESS_STOP", reason="lifespan_shutdown")
     # Cancel jobs that hold DB sessions before tearing down the engine/pool.
     try:

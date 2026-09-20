@@ -1481,6 +1481,8 @@ function PaperOrderRouteBridge() {
         score: detail.score ?? null,
         confidence: detail.confidence ?? null,
         riskReward: detail.riskReward ?? null,
+        strategyName: detail.strategyName ?? null,
+        runId: detail.runId ?? null,
       });
     };
     window.addEventListener("paper:open-order", handler);

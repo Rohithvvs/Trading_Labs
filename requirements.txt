@@ -98,3 +98,4 @@ email-validator
 google-auth
 lean>=1.0.229
 quantconnect-stubs>=18041
+libsql-client>=0.3.1

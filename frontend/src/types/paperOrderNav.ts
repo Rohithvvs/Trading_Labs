@@ -13,6 +13,9 @@ export type PaperOrderNavState = {
   score?: number | null;
   confidence?: number | null;
   riskReward?: number | null;
+  /** Originating strategy / indicator scanner name */
+  strategyName?: string | null;
+  runId?: string | null;
 };
 
 export function isPaperOrderNavState(value: unknown): value is PaperOrderNavState {

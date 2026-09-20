@@ -561,6 +561,79 @@ describe("StockDetailsPage", () => {
     expect(screen.getByText("Heavy Electrical Equipment")).toBeTruthy();
   });
 
+  it("renders BUY, SELL/Trade, and PaperTrade actions and BUY opens the paper order page", async () => {
+    render(
+      <MemoryRouter initialEntries={["/stock/CUPID"]}>
+        <Routes>
+          <Route path="/stock/:symbol" element={<StockDetailsPage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await screen.findByTestId("stock-details-symbol");
+    expect(screen.getByTestId("stock-details-buy").textContent).toBe("BUY");
+    expect(screen.getByTestId("stock-details-sell").textContent).toBe("SELL / Trade");
+    expect(screen.getByTestId("stock-details-paper-trade").textContent).toBe("PaperTrade");
+
+    fireEvent.click(screen.getByTestId("stock-details-buy"));
+    expect(mockNavigate).toHaveBeenCalledWith(
+      expect.stringMatching(/\/paper-order\?.*symbol=CUPID.*side=BUY/),
+      expect.objectContaining({
+        state: expect.objectContaining({
+          symbol: "CUPID",
+          side: "BUY",
+          strategyName: "52-Week High Breakout",
+        }),
+      }),
+    );
+  });
+
+  it("PaperTrade opens the paper desk with the selected symbol", async () => {
+    render(
+      <MemoryRouter initialEntries={["/stock/CUPID"]}>
+        <Routes>
+          <Route path="/stock/:symbol" element={<StockDetailsPage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await screen.findByTestId("stock-details-symbol");
+    fireEvent.click(screen.getByTestId("stock-details-paper-trade"));
+    expect(mockNavigate).toHaveBeenCalledWith(
+      "/paper?symbol=CUPID",
+      expect.objectContaining({
+        state: expect.objectContaining({
+          symbol: "CUPID",
+          strategyName: "52-Week High Breakout",
+        }),
+      }),
+    );
+  });
+
+  it("carries indicator scanner strategy name into the paper order ticket", async () => {
+    render(
+      <MemoryRouter initialEntries={["/stock/RATEGAIN?runId=IND-20260904-001"]}>
+        <Routes>
+          <Route path="/stock/:symbol" element={<StockDetailsPage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await screen.findByTestId("stock-details-symbol");
+    fireEvent.click(screen.getByTestId("stock-details-buy"));
+    expect(mockNavigate).toHaveBeenCalledWith(
+      expect.stringMatching(/\/paper-order\?.*symbol=RATEGAIN.*side=BUY/),
+      expect.objectContaining({
+        state: expect.objectContaining({
+          symbol: "RATEGAIN",
+          side: "BUY",
+          strategyName: "LTM Momentum 252 [SCAN]",
+          runId: "IND-20260904-001",
+        }),
+      }),
+    );
+  });
+
   it("handles back button click returning to Strategy Tester", async () => {
     render(
       <MemoryRouter

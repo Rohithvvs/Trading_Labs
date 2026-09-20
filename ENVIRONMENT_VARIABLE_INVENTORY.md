@@ -2,7 +2,10 @@
 
 ## Required Variables
 *(Must be set securely per deployment stage)*
-- `DATABASE_URL`: Primary PostgreSQL connection string. Must use `postgresql+asyncpg://` schema.
+- `DATABASE_URL`: Sole operational PostgreSQL URL (local or Nova/Neon). Must use `postgresql+asyncpg://` schema. The app does not use Turso or `LOCAL_POSTGRES_DATABASE_URL` at runtime.
+- `LOCAL_POSTGRES_DATABASE_URL`: Optional local `trading_data` URL used only as the Turso copy source. Live migration refuses if unset; it does not fall back to `DATABASE_URL`.
+- `TURSO_DATABASE_URL` / `TURSO_AUTH_TOKEN`: Turso/libSQL v1 history (`daily_ohlcv`, `index_ohlcv`). Required only when `CANDLE_HISTORY_BACKEND=turso`. Never log values.
+- `CANDLE_HISTORY_BACKEND`: `postgres` (default) or `turso`. Do not switch to `turso` until you explicitly approve cutover after live validation.
 - `REDIS_URL`: Primary Redis connection string.
 - `GROQ_API_KEY`: Required for LLM recommendations in OrchestratorAgent.
 - `FYERS_APP_ID`: Required for broker authentication.

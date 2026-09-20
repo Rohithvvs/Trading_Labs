@@ -660,6 +660,7 @@ export type PaperOrderTicketState = {
   sourceSignal?: string | null;
   sourceScore?: number | null;
   sourceConfidence?: number | null;
+  sourceStrategy?: string | null;
 };
 
 export type RecommendationPrefillRequest = {

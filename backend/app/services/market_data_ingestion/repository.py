@@ -16,6 +16,19 @@ from ...models.strategy_market_data import DailyOhlcv, IndexOhlcv
 _ohlcv_log = logging.getLogger("app.market_data.ohlcv")
 
 
+def _use_turso_history() -> bool:
+    """Route daily/index history to Turso only when explicitly selected.
+
+    Any evaluation error falls back to Postgres so default runtime is unchanged.
+    """
+    try:
+        from .history_backend import uses_turso
+
+        return bool(uses_turso())
+    except Exception:
+        return False
+
+
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
@@ -25,6 +38,10 @@ def _dec(v: Any) -> Decimal:
 
 
 async def max_equity_trade_date(symbols: list[str] | None = None) -> date | None:
+    if _use_turso_history():
+        from . import turso_repository as turso
+
+        return await turso.fetch_max_equity_trade_date(symbols)
     async with AsyncSessionLocal() as db:
         stmt = select(func.max(DailyOhlcv.trade_date))
         if symbols:
@@ -34,6 +51,10 @@ async def max_equity_trade_date(symbols: list[str] | None = None) -> date | None
 
 async def equity_date_span(symbol: str) -> tuple[date | None, date | None, int]:
     """Return (min_trade_date, max_trade_date, row_count) for one equity symbol."""
+    if _use_turso_history():
+        from . import turso_repository as turso
+
+        return await turso.fetch_equity_date_span(symbol)
     async with AsyncSessionLocal() as db:
         row = (
             await db.execute(
@@ -48,24 +69,40 @@ async def equity_date_span(symbol: str) -> tuple[date | None, date | None, int]:
 
 
 async def max_index_trade_date(symbol: str = "NIFTY500") -> date | None:
+    if _use_turso_history():
+        from . import turso_repository as turso
+
+        return await turso.fetch_max_index_trade_date(symbol)
     async with AsyncSessionLocal() as db:
         stmt = select(func.max(IndexOhlcv.trade_date)).where(IndexOhlcv.symbol == symbol)
         return (await db.execute(stmt)).scalar_one_or_none()
 
 
 async def min_index_trade_date(symbol: str = "NIFTY500") -> date | None:
+    if _use_turso_history():
+        from . import turso_repository as turso
+
+        return await turso.fetch_min_index_trade_date(symbol)
     async with AsyncSessionLocal() as db:
         stmt = select(func.min(IndexOhlcv.trade_date)).where(IndexOhlcv.symbol == symbol)
         return (await db.execute(stmt)).scalar_one_or_none()
 
 
 async def index_row_count(symbol: str = "NIFTY500") -> int:
+    if _use_turso_history():
+        from . import turso_repository as turso
+
+        return await turso.fetch_index_row_count(symbol)
     async with AsyncSessionLocal() as db:
         stmt = select(func.count()).select_from(IndexOhlcv).where(IndexOhlcv.symbol == symbol)
         return int((await db.execute(stmt)).scalar() or 0)
 
 
 async def symbols_present_on(trade_date: date, symbols: list[str] | None = None) -> set[str]:
+    if _use_turso_history():
+        from . import turso_repository as turso
+
+        return await turso.fetch_symbols_present_on(trade_date, symbols)
     async with AsyncSessionLocal() as db:
         stmt = select(DailyOhlcv.symbol).where(DailyOhlcv.trade_date == trade_date)
         if symbols:
@@ -75,6 +112,10 @@ async def symbols_present_on(trade_date: date, symbols: list[str] | None = None)
 
 
 async def index_present(trade_date: date, symbol: str = "NIFTY500") -> bool:
+    if _use_turso_history():
+        from . import turso_repository as turso
+
+        return await turso.fetch_index_present(trade_date, symbol)
     async with AsyncSessionLocal() as db:
         stmt = (
             select(IndexOhlcv.symbol)
@@ -247,16 +288,31 @@ async def update_adtv_for_session(
 
 
 async def upsert_daily_bars(rows: list[dict[str, Any]]) -> tuple[int, int]:
-    """Idempotent upsert. Returns (inserted_or_updated_count, 0) — PG upsert doesn't split easily.
+    """Idempotent upsert. Returns (accepted_count, rejected_count).
 
-    Delivery fields: only overwrite when the incoming row has a non-null value
-    (COALESCE) so OHLCV-only rewrites do not wipe prior delivery backfill.
+    Source allowlist (FYERS only) is applied before the OHLC gate. Invalid OHLC
+    is dropped (not clamped). Delivery fields: only overwrite when the incoming
+    row has a non-null value (COALESCE) so OHLCV-only rewrites do not wipe prior
+    delivery backfill.
     """
-    if not rows:
-        return 0, 0
+    from .source_policy import filter_strategy_store_sources
+    from .validators.ohlcv_gate import filter_valid_ohlcv_rows
+
+    sourced, source_rejected = filter_strategy_store_sources(
+        rows, table_name="daily_ohlcv", log_context="upsert_daily_bars"
+    )
+    accepted, ohlc_rejected = filter_valid_ohlcv_rows(sourced, log_context="upsert_daily_bars")
+    rejected_n = len(source_rejected) + len(ohlc_rejected)
+    if _use_turso_history():
+        from . import turso_repository as turso
+
+        n = turso.upsert_daily_rows(turso._client(), accepted)
+        return n, rejected_n
+    if not accepted:
+        return 0, rejected_n
     loaded_at = _utc_now()
     payload = []
-    for r in rows:
+    for r in accepted:
         payload.append(
             {
                 "trade_date": r["trade_date"],
@@ -294,7 +350,7 @@ async def upsert_daily_bars(rows: list[dict[str, Any]]) -> tuple[int, int]:
         )
         await db.execute(stmt)
         await db.commit()
-    return len(payload), 0
+    return len(payload), rejected_n
 
 
 async def delete_cloned_daily_bars(session: date, previous: date) -> int:
@@ -523,6 +579,10 @@ async def fetch_recent_equity_before(
     limit: int = 19,
 ) -> list[dict[str, Any]]:
     """Last ``limit`` bars strictly before ``before_date`` (ascending)."""
+    if _use_turso_history():
+        from . import turso_repository as turso
+
+        return await turso.fetch_recent_equity_before(symbol, before_date, limit)
     async with AsyncSessionLocal() as db:
         stmt = (
             select(DailyOhlcv)
@@ -549,11 +609,22 @@ async def fetch_recent_equity_before(
 
 
 async def upsert_index_bars(rows: list[dict[str, Any]]) -> int:
-    if not rows:
+    from .source_policy import filter_strategy_store_sources
+    from .validators.ohlcv_gate import filter_valid_ohlcv_rows
+
+    sourced, _source_rejected = filter_strategy_store_sources(
+        rows, table_name="index_ohlcv", log_context="upsert_index_bars"
+    )
+    accepted, _ohlc_rejected = filter_valid_ohlcv_rows(sourced, log_context="upsert_index_bars")
+    if _use_turso_history():
+        from . import turso_repository as turso
+
+        return turso.upsert_index_rows(turso._client(), accepted)
+    if not accepted:
         return 0
     loaded_at = _utc_now()
     payload = []
-    for r in rows:
+    for r in accepted:
         payload.append(
             {
                 "trade_date": r["trade_date"],
@@ -611,6 +682,10 @@ async def fetch_equity_history(
     from_date: date | None = None,
     limit: int | None = None,
 ) -> list[dict[str, Any]]:
+    if _use_turso_history():
+        from . import turso_repository as turso
+
+        return await turso.fetch_equity_history(symbol, from_date=from_date, limit=limit)
     from ...utils.symbol import ohlcv_symbol_variants, preferred_ohlcv_store_symbol
 
     variants = ohlcv_symbol_variants(symbol) or [symbol]
@@ -641,6 +716,10 @@ async def fetch_index_history(
     *,
     from_date: date | None = None,
 ) -> list[dict[str, Any]]:
+    if _use_turso_history():
+        from . import turso_repository as turso
+
+        return await turso.fetch_index_history(symbol, from_date=from_date)
     async with AsyncSessionLocal() as db:
         stmt = select(IndexOhlcv).where(IndexOhlcv.symbol == symbol)
         if from_date:
@@ -662,6 +741,10 @@ async def fetch_index_history(
 
 
 async def symbol_has_sufficient_history(symbol: str, min_rows: int = 500) -> bool:
+    if _use_turso_history():
+        from . import turso_repository as turso
+
+        return await turso.fetch_symbol_has_sufficient_history(symbol, min_rows)
     async with AsyncSessionLocal() as db:
         cnt = (
             await db.execute(
@@ -805,6 +888,16 @@ async def fetch_daily_ohlcv_for_symbols(
     historical 52W boards). Date bounds take precedence over lookback.
     """
     unique = list(dict.fromkeys(s for s in symbols if s))
+    if _use_turso_history():
+        from collections import namedtuple
+        from . import turso_repository as turso
+
+        dict_rows = await turso.fetch_daily_ohlcv_for_symbols(
+            unique, lookback=lookback, from_date=from_date, to_date=to_date
+        )
+        col_names = _ohlcv_column_names(columns)
+        RowCls = namedtuple("DailyOhlcvRow", col_names)
+        return [RowCls(*(r.get(c) for c in col_names)) for r in dict_rows]
     col_names = _ohlcv_column_names(columns)
     cols = columns or _default_ohlcv_columns()
     bound = None if from_date is not None else (clamp_ohlcv_lookback(lookback) if lookback is not None else None)

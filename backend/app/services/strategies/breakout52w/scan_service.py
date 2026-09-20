@@ -18,9 +18,11 @@ from ....models.market_data import HistoricalCandle
 from ....models.strategy_market_data import DailyOhlcv, IndexOhlcv
 from ....services.lock_service import DistributedLockService
 from ....services.market_data_ingestion.freshness import evaluate_freshness
+from ....services.market_data_ingestion.history_backend import uses_turso
 from ....services.market_data_ingestion.repository import (
     clamp_ohlcv_lookback,
     fetch_daily_ohlcv_for_symbols,
+    fetch_index_history,
     iter_symbol_chunks,
 )
 from ....services.universe_service import UniverseService
@@ -162,13 +164,15 @@ async def _load_from_strategy(symbols: list[str], *, from_date: date):
     for trade_date, *_rest in rows:
         if min_date is None or trade_date < min_date:
             min_date = trade_date
-    async with AsyncSessionLocal() as db:
-        idx_stmt = select(IndexOhlcv.trade_date, IndexOhlcv.close).where(
-            IndexOhlcv.symbol == settings.strategy_index_store_symbol
+    idx_records = await fetch_index_history(
+        settings.strategy_index_store_symbol,
+        from_date=min_date,
+    )
+    if uses_turso() and not idx_records:
+        raise RuntimeError(
+            f"Turso index history for {settings.strategy_index_store_symbol} returned no data; "
+            "refusing fallback to Postgres."
         )
-        if min_date is not None:
-            idx_stmt = idx_stmt.where(IndexOhlcv.trade_date >= min_date)
-        idx_rows = (await db.execute(idx_stmt)).all()
 
     high_m: dict[str, dict[date, float]] = defaultdict(dict)
     low_m: dict[str, dict[date, float]] = defaultdict(dict)
@@ -181,7 +185,7 @@ async def _load_from_strategy(symbols: list[str], *, from_date: date):
         close_m[symbol][trade_date] = float(close)
         vol_m[symbol][trade_date] = float(volume or 0)
         dates_set.add(trade_date)
-    index = {d: float(c) for d, c in idx_rows}
+    index = {r["trade_date"]: float(r["close"]) for r in idx_records}
     # Evaluation calendar is the union of equity sessions. Do not replace it with
     # the index calendar — that drops symbol-specific dates (holidays / 2026-06-26)
     # and would again mis-count a name's own 252 sessions.
@@ -230,6 +234,11 @@ async def _load_matrices(symbols: list[str], *, from_date: date):
     dates, high_m, low_m, close_m, vol_m, index = await _load_from_strategy(symbols, from_date=from_date)
     source = "daily_ohlcv"
     if len(dates) < 253:
+        if uses_turso():
+            raise RuntimeError(
+                f"Turso daily candle history has insufficient sessions ({len(dates)} < 253); "
+                "refusing fallback to historical_candles."
+            )
         fb = await _load_from_candles(symbols, from_date=from_date)
         if len(fb[0]) > len(dates):
             dates, high_m, low_m, close_m, vol_m, index = fb[0], fb[1], fb[2], fb[3], fb[4], fb[5] or index

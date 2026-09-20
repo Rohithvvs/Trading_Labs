@@ -49,6 +49,7 @@ def _prepare_asyncpg_url(raw_database_url: str) -> tuple[str, dict[str, object]]
     return async_database_url, async_connect_args
 
 
+# Operational Postgres only (DATABASE_URL). Turso history uses db.turso, never this engine.
 database_url, ssl_connect_args = _prepare_asyncpg_url(settings.database_url)
 connect_args.update(ssl_connect_args)
 

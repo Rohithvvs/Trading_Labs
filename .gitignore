@@ -44,3 +44,40 @@ backend/server_state.json
 
 backend/tests/data/*.db
 backend/tests/data/*.bak
+
+
+# --- Research & Strategy Labs ---
+backend/research_lab/
+hermes-research/
+STRATEGY_RESEARCH_RANKINGS.md
+BackTest_Images/
+
+# --- Backtest Engines & Scratch Data ---
+data/
+scratch/
+*.sqlite
+*.sqlite3
+*.parquet
+*.feather
+
+# --- Temporary Audit, Migration & Repair Dumps ---
+*.jsonl
+backend/*.jsonl
+backend/*_result.json
+backend/*_report.json
+backend/*_verification.json
+backend/*_preflight.json
+backend/*_manifest*.json
+backend/repair_manifest*.json
+backend/preview_*.json
+backend/limited_repair_*.json
+backend/full_repair_*.json
+backend/turso_*.json
+backend/anomaly_report.json
+backend/phantom_rows_delete_review.json
+local_postgres_storage_report.json
+backend/local_postgres_storage_report.json
+
+# --- Backups ---
+backups/
+backend/backups/

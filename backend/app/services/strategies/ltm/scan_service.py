@@ -17,9 +17,11 @@ from ....models.market_data import HistoricalCandle
 from ....models.strategy_market_data import DailyOhlcv, IndexOhlcv
 from ....services.lock_service import DistributedLockService
 from ....services.market_data_ingestion.freshness import evaluate_freshness
+from ....services.market_data_ingestion.history_backend import uses_turso
 from ....services.market_data_ingestion.repository import (
     extend_scan_statement_timeout,
     fetch_daily_ohlcv_for_symbols,
+    fetch_index_history,
     iter_symbol_chunks,
 )
 from ....services.universe_service import UniverseService
@@ -113,19 +115,19 @@ async def _load_matrix_from_strategy(symbols: list[str]) -> tuple[list[date], di
         symbols,
         columns=(DailyOhlcv.trade_date, DailyOhlcv.symbol, DailyOhlcv.close),
     )
-    async with AsyncSessionLocal() as db:
-        idx_stmt = (
-            select(IndexOhlcv.trade_date, IndexOhlcv.close)
-            .where(IndexOhlcv.symbol == settings.strategy_index_store_symbol)
+    idx_records = await fetch_index_history(settings.strategy_index_store_symbol)
+    if uses_turso() and not idx_records:
+        raise RuntimeError(
+            f"Turso index history for {settings.strategy_index_store_symbol} returned no data; "
+            "refusing fallback to Postgres."
         )
-        idx_rows = (await db.execute(idx_stmt)).all()
 
     matrix: dict[str, dict[date, float]] = defaultdict(dict)
     dates_set: set[date] = set()
     for trade_date, symbol, close in rows:
         matrix[symbol][trade_date] = float(close)
         dates_set.add(trade_date)
-    index = {d: float(c) for d, c in idx_rows}
+    index = {r["trade_date"]: float(r["close"]) for r in idx_records}
     dates = sorted(index.keys()) if index else sorted(dates_set)
     return dates, dict(matrix), index
 
@@ -161,6 +163,11 @@ async def _load_matrix(symbols: list[str]) -> tuple[list[date], dict[str, dict[d
     dates, matrix, index = await _load_matrix_from_strategy(symbols)
     source = "daily_ohlcv"
     if len(dates) < 253:
+        if uses_turso():
+            raise RuntimeError(
+                f"Turso daily candle history has insufficient sessions ({len(dates)} < 253); "
+                "refusing fallback to historical_candles."
+            )
         fb_dates, fb_matrix, fb_index = await _load_matrix_from_historical_candles(symbols)
         if len(fb_dates) > len(dates):
             logger.warning(

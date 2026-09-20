@@ -1,5 +1,6 @@
 export * from "./types";
 export * from "./StockHeader";
+export * from "./StockTradeActions";
 export * from "./StockTabs";
 export * from "./OverviewTab";
 export * from "./ChartTab";

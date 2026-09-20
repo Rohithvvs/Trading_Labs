@@ -24,6 +24,8 @@ export type OpenPaperOrderOptions = {
   score?: number | null;
   confidence?: number | null;
   riskReward?: number | null;
+  strategyName?: string | null;
+  runId?: string | null;
 };
 
 /**
@@ -61,6 +63,16 @@ export function navigateToPaperOrder(
         ? Number(options.prefill.recommendation_meta.confidence)
         : null),
     riskReward: options.riskReward ?? null,
+    strategyName:
+      options.strategyName ??
+      (typeof options.prefill?.recommendation_meta?.strategy_name === "string"
+        ? String(options.prefill.recommendation_meta.strategy_name)
+        : null),
+    runId:
+      options.runId ??
+      (typeof options.prefill?.recommendation_meta?.strategy_id === "string"
+        ? String(options.prefill.recommendation_meta.strategy_id)
+        : null),
   };
 
   const params = new URLSearchParams();

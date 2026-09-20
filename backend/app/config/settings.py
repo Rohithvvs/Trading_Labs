@@ -72,7 +72,26 @@ class Settings(BaseSettings):
     app_host: str = Field(default="0.0.0.0", alias="HOST")   # ← critical change
     app_port: int = Field(default=8000, alias="PORT")
     frontend_url: str = Field(default="http://localhost:5173", alias="FRONTEND_URL")
+    # Single operational Postgres URL (local in development, Nova/Neon in deployment).
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/trading_system"
+    # One-time local trading_data source for Turso copy. Never used by app runtime.
+    # Live migration must set this explicitly; it does not fall back to DATABASE_URL.
+    local_postgres_database_url: str = Field(default="", alias="LOCAL_POSTGRES_DATABASE_URL")
+    turso_database_url: str = Field(default="", alias="TURSO_DATABASE_URL")
+    turso_auth_token: str = Field(default="", alias="TURSO_AUTH_TOKEN")
+    # postgres (default, current SoT) | turso (future cutover; never auto-selected)
+    candle_history_backend: str = Field(default="postgres", alias="CANDLE_HISTORY_BACKEND")
+    safe_api_mode: bool = Field(default=False, alias="SAFE_API_MODE")
+
+    def is_safe_api_mode(self) -> bool:
+        """Live feature-flag read for Safe API Mode (bypasses partition DDL and schedulers)."""
+        raw = os.environ.get("SAFE_API_MODE")
+        if raw is not None and str(raw).strip() != "":
+            enabled = str(raw).strip().lower() in {"1", "true", "yes", "on"}
+            object.__setattr__(self, "safe_api_mode", enabled)
+            return enabled
+        return bool(self.safe_api_mode)
+
     redis_url: str = "redis://localhost:6379/0"
     # Evaluated live via is_scanner_latest_cache_enabled() — mutating this attribute
     # takes effect on the next request without code redeploy (audit H5).
@@ -280,6 +299,10 @@ class Settings(BaseSettings):
             return False
 
     # Sprint 4: Authoritative Candle Store feature flags
+    # V1 Turso work does NOT cover ACS / historical_candles. Leave these defaults
+    # unchanged. After a future ACS cutover, CANDLE_STORE_DUAL_WRITE=True would
+    # keep writing large candle rows into Postgres/Neon — review before enabling
+    # CANDLE_HISTORY_BACKEND=turso for ACS. See docs/TURSO_MARKET_DATA.md.
     authoritative_candle_store_enabled: bool = Field(default=False, alias="AUTHORITATIVE_CANDLE_STORE_ENABLED")
     candle_store_dual_write: bool = Field(default=True, alias="CANDLE_STORE_DUAL_WRITE")
     candle_store_allow_fallback: bool = Field(default=True, alias="CANDLE_STORE_ALLOW_FALLBACK")
@@ -490,6 +513,69 @@ class Settings(BaseSettings):
             return normalize_database_url(v)
         return "postgresql+asyncpg://postgres:postgres@localhost:5432/trading_system"
 
+    @field_validator("local_postgres_database_url", mode="before")
+    @classmethod
+    def _normalize_optional_postgres_url(cls, v: str | None) -> str:
+        if v is None or not str(v).strip():
+            return ""
+        return normalize_database_url(str(v).strip())
+
+    @field_validator("turso_database_url", "turso_auth_token", mode="before")
+    @classmethod
+    def _strip_turso_secrets(cls, v: str | None) -> str:
+        if v is None:
+            return ""
+        return str(v).strip()
+
+    @field_validator("candle_history_backend", mode="before")
+    @classmethod
+    def _normalize_candle_history_backend(cls, v: str | None) -> str:
+        if v is None or not str(v).strip():
+            return "postgres"
+        cleaned = str(v).strip().lower()
+        if cleaned in {"postgres", "postgresql", "pg", "nova", "neon"}:
+            return "postgres"
+        if cleaned in {"turso", "libsql"}:
+            return "turso"
+        raise ValueError("CANDLE_HISTORY_BACKEND must be 'postgres' or 'turso'")
+
+    @model_validator(mode="after")
+    def _require_turso_credentials_when_selected(self):
+        if self.candle_history_backend_name() != "turso":
+            return self
+        url_set = bool((self.turso_database_url or "").strip())
+        token_set = bool((self.turso_auth_token or "").strip())
+        if not url_set or not token_set:
+            raise ValueError(
+                "CANDLE_HISTORY_BACKEND=turso requires TURSO_DATABASE_URL and "
+                "TURSO_AUTH_TOKEN. Secret values are never logged."
+            )
+        return self
+
+    def candle_history_backend_name(self) -> str:
+        """Live-read backend flag. Defaults to postgres; never logs secrets."""
+        try:
+            raw = os.environ.get("CANDLE_HISTORY_BACKEND")
+            if raw is not None and str(raw).strip() != "":
+                return self._normalize_candle_history_backend(raw)
+            return self._normalize_candle_history_backend(self.candle_history_backend)
+        except ValueError:
+            raise
+        except Exception:
+            return "postgres"
+
+    def uses_turso_candle_history(self) -> bool:
+        return self.candle_history_backend_name() == "turso"
+
+    def local_postgres_source_url(self) -> str:
+        """Explicit LOCAL_POSTGRES_DATABASE_URL only. Never falls back to DATABASE_URL."""
+        return (self.local_postgres_database_url or "").strip()
+
+    def turso_configured(self) -> bool:
+        return bool((self.turso_database_url or "").strip()) and bool(
+            (self.turso_auth_token or "").strip()
+        )
+
     @field_validator("feat008_execution_model", mode="before")
     @classmethod
     def _normalize_exec_model(cls, v: str | None) -> str:
@@ -671,7 +757,35 @@ class Settings(BaseSettings):
                 "(no shadow DB writes yet)."
             )
 
+    def log_candle_history_config_snapshot(self) -> None:
+        """Emit non-secret candle-history routing (never logs URLs with credentials)."""
+        backend = self.candle_history_backend_name()
+        _logger.info(
+            "CANDLE_HISTORY_BACKEND | backend=%s | turso_url_set=%s | turso_token_set=%s | "
+            "local_postgres_source_set=%s | acs_enabled=%s | acs_dual_write=%s",
+            backend,
+            bool((self.turso_database_url or "").strip()),
+            bool((self.turso_auth_token or "").strip()),
+            bool(self.local_postgres_source_url()),
+            bool(self.authoritative_candle_store_enabled),
+            bool(self.candle_store_dual_write),
+        )
+        if backend == "turso":
+            _logger.warning(
+                "CANDLE_HISTORY_BACKEND=turso is selected. v1 routes daily_ohlcv/index_ohlcv "
+                "only. historical_candles / ACS still use Postgres. Default remains postgres "
+                "until an explicit cutover."
+            )
+            if self.candle_store_dual_write or self.authoritative_candle_store_enabled:
+                _logger.warning(
+                    "ACS_NEON_REFILL_RISK | AUTHORITATIVE_CANDLE_STORE_ENABLED or "
+                    "CANDLE_STORE_DUAL_WRITE is on. ACS is not in v1 Turso scope; those "
+                    "flags can still write historical_candles into Postgres/Neon. Do not "
+                    "change their defaults here; review them before an ACS cutover."
+                )
+
 
 settings = Settings()
 settings.log_portfolio_config_snapshot()
 settings.log_shadow_config_snapshot()
+settings.log_candle_history_config_snapshot()

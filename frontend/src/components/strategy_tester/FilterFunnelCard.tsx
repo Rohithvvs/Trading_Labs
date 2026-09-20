@@ -57,6 +57,28 @@ export const FilterFunnelCard: React.FC<FilterFunnelCardProps> = ({
     <div className="st-card st-funnel-card" data-testid="card-filter-funnel">
       <div className="st-card-title">Filter Funnel (Sequential)</div>
 
+      {displaySteps.length > 1 && (
+        <div
+          className="st-funnel-flow-summary"
+          data-testid="funnel-flow-summary"
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            padding: "4px 10px",
+            background: "rgba(56, 189, 248, 0.08)",
+            border: "1px solid rgba(56, 189, 248, 0.25)",
+            borderRadius: "6px",
+            color: "#38bdf8",
+            fontSize: "0.8125rem",
+            fontWeight: 700,
+            fontVariantNumeric: "tabular-nums",
+            marginBottom: "10px",
+          }}
+        >
+          {displaySteps.map((s) => s.remaining).join(" → ")}
+        </div>
+      )}
+
       <div className="st-funnel-container">
         {displaySteps.map((step, idx) => {
           const color = FUNNEL_COLORS[idx % FUNNEL_COLORS.length];

@@ -510,10 +510,11 @@ export const StrategyTesterPageInner: React.FC = () => {
         state: {
           stock: found || null,
           runId: activeRun?.run_id,
+          strategyName: activeRun?.strategy_name || found?.strategy_name || null,
         },
       });
     },
-    [navigate, activeRun?.run_id, results]
+    [navigate, activeRun?.run_id, activeRun?.strategy_name, results]
   );
 
   // Run strategy handler

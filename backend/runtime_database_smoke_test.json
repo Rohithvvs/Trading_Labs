@@ -1,0 +1,37 @@
+{
+  "timestamp": "2026-09-20T10:07:59.614768+00:00",
+  "status": "ALL_READ_CHECKS_PASSED",
+  "preconditions": {
+    "local_postgres_url_empty": true,
+    "local_postgres_disabled": true,
+    "candle_backend": "turso",
+    "candle_backend_is_turso": true,
+    "neon_target": "postgresql+asyncpg://neondb_owner:***@ep-patient-bonus-aonma8xh-pooler.c-2.ap-southeast-1.aws.neon.tech/neondb",
+    "turso_target": "libsql://tradinghistory-rohithvvs.aws-ap-south-1.turso.io"
+  },
+  "neon_operational_read": {
+    "table": "stocks_master",
+    "count": 755,
+    "expected": 755,
+    "status": "SUCCESS"
+  },
+  "turso_daily_candle_read": {
+    "symbol": "INFY-EQ",
+    "rows_returned": 5,
+    "first_date": "2008-07-22",
+    "sample_close": 197.29,
+    "status": "SUCCESS"
+  },
+  "turso_index_candle_read": {
+    "symbol": "NIFTY500",
+    "rows_returned": 5,
+    "first_date": "2008-07-22",
+    "sample_close": 3355.9,
+    "status": "SUCCESS"
+  },
+  "safety_audit": {
+    "local_postgres_contacted": false,
+    "writes_attempted": false,
+    "read_only_transaction_enforced": true
+  }
+}

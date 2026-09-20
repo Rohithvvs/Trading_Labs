@@ -25,6 +25,7 @@ import {
   ResearchTab,
   StockHeader,
   StockTabs,
+  StockTradeActions,
   type FilterEvalItem,
   type StockDetailTabId,
 } from "../components/StockDetails";
@@ -503,6 +504,12 @@ export const StockDetailsPage: React.FC = () => {
         >
           ← Back to Strategy Tester
         </button>
+        <StockTradeActions
+          symbol={symbol}
+          strategyName={strategyName}
+          runId={resolvedRunId}
+          stock={stock}
+        />
       </nav>
 
       {/* 2. Full-Width Stock Header & Metric Hero Card */}

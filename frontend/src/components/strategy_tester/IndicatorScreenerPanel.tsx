@@ -185,21 +185,23 @@ function IndicatorRunStatusCard({
   scan,
   scanning,
   fallbackAsOf,
+  universeCount = 755,
 }: {
-  scan: IndicatorScanStatus;
+  scan: IndicatorScanStatus | null;
   scanning: boolean;
   fallbackAsOf: string;
+  universeCount?: number;
 }) {
-  const processed = scan.processed_count || 0;
-  const total = scan.total_count || scan.universe_size || 755;
-  const pct = scan.progress_pct ?? (total > 0 ? Math.round((processed / total) * 100) : 0);
-  const matched = scan.matched_count ?? 0;
-  const failedCalc = scan.failed_count ?? 0;
-  const skipped = scan.skipped_count ?? 0;
-  const unmatched = Math.max(0, (scan.success_count ?? 0) - matched);
+  const processed = scan?.processed_count || (scan?.status === "completed" ? (universeCount || 755) : 0);
+  const total = scan?.total_count || scan?.universe_size || universeCount || 755;
+  const pct = scan?.progress_pct ?? (total > 0 ? Math.round((processed / total) * 100) : scan?.status === "completed" ? 100 : 0);
+  const matched = scan?.matched_count ?? 0;
+  const failedCalc = scan?.failed_count ?? 0;
+  const skipped = scan?.skipped_count ?? 0;
+  const unmatched = Math.max(0, (scan?.success_count ?? 0) - matched);
   const failed = unmatched + failedCalc;
-  const summary = scan.summary && typeof scan.summary === "object" ? scan.summary : {};
-  const scannedCount = Number(summary.stocks_scanned ?? scan.total_count ?? total);
+  const summary = (scan?.summary && typeof scan.summary === "object" ? scan.summary : {}) as Record<string, unknown>;
+  const scannedCount = Number(summary.stocks_scanned ?? scan?.total_count ?? total);
   const posCount = Number(summary.positive_returns ?? 0);
   const negCount = Number(summary.negative_returns ?? 0);
   const flatCount = Number(summary.flat_returns ?? Math.max(0, scannedCount - posCount - negCount));
@@ -211,62 +213,66 @@ function IndicatorRunStatusCard({
   const negPct = scannedCount > 0 ? ((negCount / scannedCount) * 100).toFixed(1) : "0.0";
   const status = scanning
     ? "running"
-    : scan.status === "failed" || scan.status === "cancelled"
-      ? scan.status
-      : scan.status === "completed"
-        ? "completed"
-        : scan.status;
+    : !scan
+      ? "idle"
+      : scan.status === "failed" || scan.status === "cancelled"
+        ? scan.status
+        : scan.status === "completed"
+          ? "completed"
+          : scan.status;
   return (
     <div className="st-status-row" data-testid="indicator-scan-status">
       <div className="st-card" data-testid="card-run-info">
         <div className="st-card-title">
-          <span className="st-run-id-text">RUN ID: {scan.scan_id || scan.id || "—"}</span>
+          <span className="st-run-id-text">RUN ID: {scan?.scan_id || scan?.id || "—"}</span>
           {status === "running" || status === "queued" || status === "cancelling" ? (
             <span className="st-status-badge st-status-badge--running">⏳ Running</span>
           ) : status === "failed" ? (
             <span className="st-status-badge st-status-badge--failed">✕ Failed</span>
           ) : status === "cancelled" ? (
             <span className="st-status-badge st-status-badge--failed">✕ Cancelled</span>
-          ) : (
+          ) : status === "completed" ? (
             <span className="st-status-badge st-status-badge--completed">✓ Completed</span>
+          ) : (
+            <span className="st-status-badge">Ready to scan</span>
           )}
         </div>
         <div className="st-run-meta-list">
           <div>
             <span>Started:</span>
-            <span className="val">{formatDateTime(scan.started_at)}</span>
+            <span className="val">{scan ? formatDateTime(scan.started_at) : "—"}</span>
           </div>
           <div>
             <span>Completed:</span>
-            <span className="val">{scanning ? "—" : formatDateTime(scan.completed_at)}</span>
+            <span className="val">{scanning || !scan ? "—" : formatDateTime(scan.completed_at)}</span>
           </div>
           <div>
             <span>Duration:</span>
-            <span className="val">{formatDuration(scan.elapsed_seconds)}</span>
+            <span className="val">{scan ? formatDuration(scan.elapsed_seconds) : "00:00:00"}</span>
           </div>
           <div>
-            <span>Scan bar:</span>
+            <span>Scan Date:</span>
             <span className="val" data-testid="run-scan-as-of">
-              {scanBarDate(scan, fallbackAsOf)}
+              {scan ? scanBarDate(scan, fallbackAsOf) : (fallbackAsOf || currentCashSessionIST())}
             </span>
           </div>
         </div>
-        {scanDateMismatch(scan) ? (
+        {scan && scanDateMismatch(scan) ? (
           <p className="st-scan-bar-warning" data-testid="scan-date-mismatch">
             Symbols were evaluated on different session dates. Re-run after market data is filled so every name uses the same last 1D bar as TradingView.
           </p>
         ) : null}
-        {typeof scan.summary?.scan_bar_note === "string" && scan.summary.scan_bar_note ? (
+        {scan && typeof scan.summary?.scan_bar_note === "string" && scan.summary.scan_bar_note ? (
           <p className="st-scan-bar-note" data-testid="scan-bar-note">
             {String(scan.summary.scan_bar_note)}
           </p>
         ) : null}
-        {typeof scan.summary?.scan_bar_warning === "string" && scan.summary.scan_bar_warning ? (
+        {scan && typeof scan.summary?.scan_bar_warning === "string" && scan.summary.scan_bar_warning ? (
           <p className="st-scan-bar-warning" data-testid="scan-bar-warning">
             {String(scan.summary.scan_bar_warning)}
           </p>
         ) : null}
-        {scan.status === "failed" && scan.error_detail ? (
+        {scan?.status === "failed" && scan.error_detail ? (
           <p className="st-scan-bar-warning">{scan.error_detail}</p>
         ) : null}
       </div>
@@ -277,10 +283,10 @@ function IndicatorRunStatusCard({
           <div className="st-progress-bar-fill" style={{ width: `${Math.max(0, Math.min(100, pct))}%` }} />
         </div>
         <div className="st-progress-sub">
-          {scanning && isFetchingCurrentData(scan)
+          {scanning && scan && isFetchingCurrentData(scan)
             ? "Fetching current market data…"
             : `${processed} / ${total} stocks processed`}
-          {scanning && scan.stage && scan.stage !== "scanning" && !isFetchingCurrentData(scan)
+          {scanning && scan?.stage && scan.stage !== "scanning" && !isFetchingCurrentData(scan)
             ? ` · ${String(scan.stage).replace(/_/g, " ")}`
             : ""}
         </div>
@@ -308,25 +314,25 @@ function IndicatorRunStatusCard({
               <span className="st-summary-val">{scannedCount}</span>
             </div>
             <div className="st-summary-row">
-              <span className="st-summary-label">MATCHED Signals:</span>
+              <span className="st-summary-label">Matched:</span>
               <span className="st-summary-val green">{matched} ({matchedPct}%)</span>
             </div>
             <div className="st-summary-row">
-              <span className="st-summary-label">REJECTED Signals:</span>
+              <span className="st-summary-label">Rejected:</span>
               <span className="st-summary-val red">{failed} ({failedPct}%)</span>
             </div>
             <div className="st-summary-row">
-              <span className="st-summary-label">SKIPPED Signals:</span>
+              <span className="st-summary-label">Skipped:</span>
               <span className="st-summary-val yellow">{skipped} ({skippedPct}%)</span>
             </div>
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             <div className="st-summary-row">
-              <span className="st-summary-label">Positive Returns:</span>
+              <span className="st-summary-label">Positive:</span>
               <span className="st-summary-val green">{posCount} ({posPct}%)</span>
             </div>
             <div className="st-summary-row">
-              <span className="st-summary-label">Negative Returns:</span>
+              <span className="st-summary-label">Negative:</span>
               <span className="st-summary-val red">{negCount} ({negPct}%)</span>
             </div>
             <div className="st-summary-row">
@@ -410,7 +416,7 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
   const [topNegativeRows, setTopNegativeRows] = useState<RankedReturn[]>([]);
   const [columnsOpen, setColumnsOpen] = useState(false);
   const [visibleColumns, setVisibleColumns] = useState<Set<string>>(
-    () => new Set(["rank", "symbol", "company", "signal", "evaluation_date", "exit_price", "return_pct", "pass_count", "primary_failure"]),
+    () => new Set(["rank", "symbol", "company", "signal", "entry_price", "exit_price", "return_pct", "evaluation_date", "pass_count", "primary_failure"]),
   );
   const [busy, setBusy] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -1411,88 +1417,10 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
         </p>
       )}
 
-      {scan && (
-        <IndicatorRunStatusCard scan={scan} scanning={scanning} fallbackAsOf={scanDate} />
-      )}
-      {!scan && (
-        <p className="ind-scan-strip" data-testid="indicator-scan-ready">
-          {scanStatusText(null, Boolean(selected))}
-        </p>
-      )}
-
-      <section className="st-upper-analytics-grid" aria-label="Strategy overview analytics">
-        <div className="st-builder-col">
-          <StrategyBuilderCard
-            rules={builderRules.length ? builderRules : [{ id: "1", label: selected?.name || "Scan indicator", join: "AND" }]}
-            logicText="Logic: ALL conditions must be true"
-            universeCount={universeCount || 755}
-            timeframe="1 Day"
-            positionSide="LONG ONLY"
-            exitRule="Scan only — no trade is opened"
-            capital={0}
-            sourceType="pine"
-            onEditClick={() => (selected ? onEditIndicator(selected) : onAddIndicator())}
-          />
-        </div>
-        <div className="st-top-returns-col">
-          <TopReturnsCard
-            type="positive"
-            items={topPositive}
-            totalCount={Number(scanSummary.positive_returns ?? 0)}
-            onStockClick={(symbol) =>
-              navigateToStock(navigate, symbol, { runId: scan?.scan_id, returnTo: "/strategy-tester" })
-            }
-            onViewAllClick={() => {
-              setReturnFilter("POSITIVE");
-              setPage(1);
-              document.getElementById("all-results-section")?.scrollIntoView({ behavior: "smooth" });
-            }}
-          />
-          <TopReturnsCard
-            type="negative"
-            items={topNegative}
-            totalCount={Number(scanSummary.negative_returns ?? 0)}
-            onStockClick={(symbol) =>
-              navigateToStock(navigate, symbol, { runId: scan?.scan_id, returnTo: "/strategy-tester" })
-            }
-            onViewAllClick={() => {
-              setReturnFilter("NEGATIVE");
-              setPage(1);
-              document.getElementById("all-results-section")?.scrollIntoView({ behavior: "smooth" });
-            }}
-          />
-        </div>
-      </section>
-
-      <section className="st-lower-analytics-grid" aria-label="Filter and signal analytics">
-        <FilterAnalyticsCard stats={filterStats} totalUniverse={universeCount || 755} />
-        <FilterFunnelCard
-          steps={funnelSteps}
-          totalUniverse={universeCount || 755}
-          onStepClick={(step) => {
-            if (step.step === 0) setSignalFilter("ALL");
-            if (step.filter_id === "final" || step.label?.toLowerCase().includes("matched")) setSignalFilter("MATCH");
-            setPage(1);
-            document.getElementById("all-results-section")?.scrollIntoView({ behavior: "smooth" });
-          }}
-        />
-        <SignalDistributionCard
-          buyCount={matchedCount}
-          watchCount={skippedCount}
-          rejectCount={unmatchedCount}
-          failedCount={0}
-          totalUniverse={universeCount || 755}
-          labels={{ buy: "MATCHED", watch: "SKIPPED", reject: "REJECTED" }}
-          onSignalClick={(sig) => {
-            setSignalFilter(sig);
-            setPage(1);
-            document.getElementById("all-results-section")?.scrollIntoView({ behavior: "smooth" });
-          }}
-        />
-      </section>
-
+      {/* 1. All Stock Results Table (Top) */}
       <div data-testid="indicator-results-table">
         <AllStockResultsTable
+          title={`All ${scanned ? total : listCount} Stock Results`}
           results={tableRows}
           totalResults={scanned ? total : listCount}
           selectedSymbol={selectedSymbol}
@@ -1539,7 +1467,11 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
           }}
           onStockSelect={(symbol) => {
             setSelectedSymbol(symbol);
-            navigateToStock(navigate, symbol, { runId: scan?.scan_id, returnTo: "/strategy-tester" });
+            navigateToStock(navigate, symbol, {
+              runId: scan?.scan_id,
+              returnTo: "/strategy-tester",
+              state: { strategyName: selected?.name || scan?.indicator_name || "Indicator Scanner" },
+            });
           }}
           onColumnsClick={() => setColumnsOpen(true)}
           onExportClick={() => {
@@ -1553,6 +1485,101 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
       <button type="button" className="sr-only" onClick={handleDiagnostics} disabled={!scan} data-testid="btn-indicator-diagnostics">
         View Diagnostics
       </button>
+
+      {/* 2. Run Status Row (RUN ID | SCAN PROGRESS | RUN SUMMARY) */}
+      <IndicatorRunStatusCard
+        scan={scan}
+        scanning={scanning}
+        fallbackAsOf={scanDate}
+        universeCount={universeCount}
+      />
+      {!scan && (
+        <p className="ind-scan-strip" data-testid="indicator-scan-ready" style={{ display: "none" }}>
+          {scanStatusText(null, Boolean(selected))}
+        </p>
+      )}
+
+      {/* 3. Upper Analytics Grid (STRATEGY BUILDER | TOP 5 POSITIVE & NEGATIVE RETURNS) */}
+      <section className="st-upper-analytics-grid" aria-label="Strategy overview analytics">
+        <div className="st-builder-col">
+          <StrategyBuilderCard
+            strategyName={selected?.name || "Indicator Strategy"}
+            rules={builderRules.length ? builderRules : [{ id: "1", label: selected?.name || "Scan indicator", join: "AND" }]}
+            logicText="Logic: ALL conditions must be true"
+            universeCount={universeCount || 755}
+            timeframe={timeframe || "1 Day"}
+            positionSide="LONG ONLY"
+            exitRule="EOD (End of Day)"
+            capital={1000000}
+            sourceType="pine"
+            onEditClick={() => (selected ? onEditIndicator(selected) : onAddIndicator())}
+          />
+        </div>
+        <div className="st-top-returns-col">
+          <TopReturnsCard
+            type="positive"
+            items={topPositive}
+            totalCount={Number(scanSummary.positive_returns ?? 0)}
+            onStockClick={(symbol) =>
+              navigateToStock(navigate, symbol, {
+                runId: scan?.scan_id,
+                returnTo: "/strategy-tester",
+                state: { strategyName: selected?.name || scan?.indicator_name || "Indicator Scanner" },
+              })
+            }
+            onViewAllClick={() => {
+              setReturnFilter("POSITIVE");
+              setPage(1);
+              document.getElementById("all-results-section")?.scrollIntoView({ behavior: "smooth" });
+            }}
+          />
+          <TopReturnsCard
+            type="negative"
+            items={topNegative}
+            totalCount={Number(scanSummary.negative_returns ?? 0)}
+            onStockClick={(symbol) =>
+              navigateToStock(navigate, symbol, {
+                runId: scan?.scan_id,
+                returnTo: "/strategy-tester",
+                state: { strategyName: selected?.name || scan?.indicator_name || "Indicator Scanner" },
+              })
+            }
+            onViewAllClick={() => {
+              setReturnFilter("NEGATIVE");
+              setPage(1);
+              document.getElementById("all-results-section")?.scrollIntoView({ behavior: "smooth" });
+            }}
+          />
+        </div>
+      </section>
+
+      {/* 4. Lower Analytics Grid (FILTER ANALYTICS | FILTER FUNNEL | SIGNAL DISTRIBUTION) */}
+      <section className="st-lower-analytics-grid" aria-label="Filter and signal analytics">
+        <FilterAnalyticsCard stats={filterStats} totalUniverse={universeCount || 755} />
+        <FilterFunnelCard
+          steps={funnelSteps}
+          totalUniverse={universeCount || 755}
+          onStepClick={(step) => {
+            if (step.step === 0) setSignalFilter("ALL");
+            if (step.filter_id === "final" || step.label?.toLowerCase().includes("matched")) setSignalFilter("MATCH");
+            setPage(1);
+            document.getElementById("all-results-section")?.scrollIntoView({ behavior: "smooth" });
+          }}
+        />
+        <SignalDistributionCard
+          buyCount={matchedCount}
+          watchCount={skippedCount}
+          rejectCount={unmatchedCount}
+          failedCount={0}
+          totalUniverse={universeCount || 755}
+          labels={{ buy: "MATCHED", watch: "SKIPPED", reject: "REJECTED" }}
+          onSignalClick={(sig) => {
+            setSignalFilter(sig);
+            setPage(1);
+            document.getElementById("all-results-section")?.scrollIntoView({ behavior: "smooth" });
+          }}
+        />
+      </section>
 
       <ColumnsConfigModal
         isOpen={columnsOpen}
@@ -1570,7 +1597,7 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
           });
         }}
         onResetColumns={() =>
-          setVisibleColumns(new Set(["rank", "symbol", "company", "signal", "evaluation_date", "exit_price", "return_pct", "pass_count", "primary_failure"]))
+          setVisibleColumns(new Set(["rank", "symbol", "company", "signal", "entry_price", "exit_price", "return_pct", "evaluation_date", "pass_count", "primary_failure"]))
         }
       />
 

@@ -185,6 +185,7 @@ vi.mock("../../api_strategy_tester", () => ({
 
 vi.mock("../../api_indicator_scanner", () => ({
   fetchIndicators: vi.fn(async () => []),
+  fetchIndicatorTemplates: vi.fn(async () => []),
   validateIndicatorSource: vi.fn(),
   createIndicator: vi.fn(),
   updateIndicator: vi.fn(),

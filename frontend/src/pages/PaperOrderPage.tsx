@@ -11,6 +11,7 @@ import {
 } from "../api";
 
 import { toCanonicalSymbol } from "../utils/paperOrderNavigation";
+import { extractStrategyFromNotes, mergeStrategyNote } from "../utils/paperOrderStrategy";
 import { completePaperLevels } from "../utils/paperOrderLevels";
 import {
   extractPaperAvailableCash,
@@ -47,6 +48,7 @@ const DEFAULT_TICKET: PaperOrderTicketState = {
   sourceSignal: null,
   sourceScore: null,
   sourceConfidence: null,
+  sourceStrategy: null,
 };
 
 /**
@@ -181,6 +183,18 @@ export function PaperOrderPage() {
     (searchParams.get("side") === "SELL" ? "SELL" : "BUY");
   const orderIdFromUrl = Number(searchParams.get("orderId") || navState.orderId || 0) || null;
   const returnTo = navState.returnTo || "/scanner";
+  const originStrategyName =
+    (navState.strategyName ||
+      (typeof navState.prefill?.recommendation_meta?.strategy_name === "string"
+        ? String(navState.prefill.recommendation_meta.strategy_name)
+        : "") ||
+      "").trim() || null;
+  const originRunId =
+    (navState.runId ||
+      (typeof navState.prefill?.recommendation_meta?.strategy_id === "string"
+        ? String(navState.prefill.recommendation_meta.strategy_id)
+        : "") ||
+      "").trim() || null;
 
   const seedEntry =
     (navState.prefill?.suggested_entry != null && Number(navState.prefill.suggested_entry) > 0
@@ -219,6 +233,8 @@ export function PaperOrderPage() {
     sourceConfidence:
       navState.confidence ??
       (Number(navState.prefill?.recommendation_meta?.confidence ?? 0) || null),
+    sourceStrategy: originStrategyName,
+    notes: mergeStrategyNote("", originStrategyName, originRunId),
   });
 
   // Hydrate capital from cache immediately so shell is interactive without waiting on network.
@@ -625,6 +641,7 @@ export function PaperOrderPage() {
               sourceSignal: orderResult.source_signal ?? null,
               sourceScore: orderResult.source_score ?? null,
               sourceConfidence: orderResult.source_confidence ?? null,
+              sourceStrategy: extractStrategyFromNotes(orderResult.notes) || originStrategyName,
             });
             setMeta({
               signal: orderResult.source_signal,
@@ -733,10 +750,22 @@ export function PaperOrderPage() {
             stopPrice: null,
             stopLoss: filled.stopLoss,
             target: filled.target,
-            notes: local.note,
+            notes: mergeStrategyNote(
+              local.note,
+              originStrategyName ||
+                (typeof prefill.recommendation_meta?.strategy_name === "string"
+                  ? String(prefill.recommendation_meta.strategy_name)
+                  : null),
+              originRunId,
+            ),
             sourceSignal: String(prefill.recommendation_meta?.signal ?? "BUY"),
             sourceScore: Number(prefill.recommendation_meta?.score ?? 0) || null,
             sourceConfidence: Number(prefill.recommendation_meta?.confidence ?? 0) || null,
+            sourceStrategy:
+              originStrategyName ||
+              (typeof prefill.recommendation_meta?.strategy_name === "string"
+                ? String(prefill.recommendation_meta.strategy_name)
+                : null),
           });
           setMeta({
             signal: String(prefill.recommendation_meta?.signal ?? "BUY"),
@@ -1150,6 +1179,7 @@ export function PaperOrderPage() {
     // Coerce non-positive optional prices to null (backend gt=0 rejects 0)
     const pos = (n: number | null | undefined) =>
       n != null && Number(n) > 0 ? Number(n) : null;
+    const strategyName = ticket.sourceStrategy || originStrategyName;
     const normalized: PaperOrderTicketState = {
       ...ticket,
       symbol: toCanonicalSymbol(ticket.symbol),
@@ -1157,6 +1187,8 @@ export function PaperOrderPage() {
       stopPrice: pos(ticket.stopPrice),
       stopLoss: pos(ticket.stopLoss),
       target: pos(ticket.target),
+      sourceStrategy: strategyName,
+      notes: mergeStrategyNote(ticket.notes, strategyName, originRunId),
     };
     // Freeze idempotency key for this attempt (double-click reuses same key)
     const attemptKey = idempotencyKey;
@@ -1732,6 +1764,16 @@ export function PaperOrderPage() {
                   label="Risk / Reward"
                   value={risk.riskReward ? formatNum(risk.riskReward, 2) : "—"}
                 />
+                <Metric
+                  label="Strategy"
+                  value={
+                    ticket.sourceStrategy ||
+                    originStrategyName ||
+                    extractStrategyFromNotes(ticket.notes) ||
+                    "—"
+                  }
+                  testId="paper-order-strategy"
+                />
               </div>
             )}
             {navState.prefill ? (
@@ -1922,6 +1964,14 @@ export function PaperOrderPage() {
               <dt>Order Type</dt>
               <dd>{ticket.type}</dd>
             </div>
+            {ticket.sourceStrategy || originStrategyName || extractStrategyFromNotes(ticket.notes) ? (
+              <div>
+                <dt>Strategy</dt>
+                <dd data-testid="paper-order-confirm-strategy">
+                  {ticket.sourceStrategy || originStrategyName || extractStrategyFromNotes(ticket.notes)}
+                </dd>
+              </div>
+            ) : null}
             {ticket.stopLoss != null ? (
               <div>
                 <dt>Stop Loss</dt>
@@ -1945,9 +1995,17 @@ export function PaperOrderPage() {
   );
 }
 
-const Metric = memo(function Metric({ label, value }: { label: string; value: string }) {
+const Metric = memo(function Metric({
+  label,
+  value,
+  testId,
+}: {
+  label: string;
+  value: string;
+  testId?: string;
+}) {
   return (
-    <div className="metric-tile">
+    <div className="metric-tile" data-testid={testId}>
       <span>{label}</span>
       <strong>{value}</strong>
     </div>

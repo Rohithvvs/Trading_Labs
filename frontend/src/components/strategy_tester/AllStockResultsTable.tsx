@@ -2,6 +2,7 @@ import React from "react";
 import type { StrategyResultRow } from "../../api_strategy_tester";
 
 interface AllStockResultsTableProps {
+  title?: string;
   results: StrategyResultRow[];
   totalResults: number;
   selectedSymbol: string | null;
@@ -59,6 +60,7 @@ const signalOrderWeight = (sig: string | null | undefined, variant: "strategy" |
 };
 
 export const AllStockResultsTable: React.FC<AllStockResultsTableProps> = ({
+  title,
   results,
   totalResults,
   selectedSymbol,
@@ -195,7 +197,7 @@ export const AllStockResultsTable: React.FC<AllStockResultsTableProps> = ({
       <div className="st-results-header">
         <div className="st-results-title-group">
           <h2 className="st-results-title">
-            {variant === "scanner" ? `All ${totalResults} Scanned Stock Results` : `All ${totalResults} Stock Results`}
+            {title || `All ${totalResults} Stock Results`}
           </h2>
           <p className="st-results-caption" data-testid="scan-semantics-caption">
             {caption ||
@@ -437,11 +439,11 @@ export const AllStockResultsTable: React.FC<AllStockResultsTableProps> = ({
               {isColVisible("symbol") && <th className="sortable" onClick={() => onSortChange("symbol")}>Symbol</th>}
               {isColVisible("company") && <th>Company</th>}
               {isColVisible("signal") && <th className="sortable" onClick={() => onSortChange("signal")}>Signal</th>}
+              {isColVisible("entry_price") && <th className="sortable" style={{ textAlign: "right" }} onClick={() => onSortChange("entry_price")}>{variant === "scanner" ? "Entry" : "Window Start"}</th>}
+              {isColVisible("exit_price") && <th className="sortable" style={{ textAlign: "right" }} onClick={() => onSortChange("exit_price")}>{variant === "scanner" ? "Exit" : "Close"}</th>}
+              {isColVisible("return_pct") && <th className="sortable" style={{ textAlign: "right" }} onClick={() => onSortChange("return_pct")}>{variant === "scanner" ? "Return %" : "Hold Return %"}</th>}
               {isColVisible("evaluation_date") && <th className="sortable" onClick={() => onSortChange("evaluation_date")}>Scan Date</th>}
-              {isColVisible("entry_price") && <th className="sortable" style={{ textAlign: "right" }} onClick={() => onSortChange("entry_price")}>Window Start</th>}
-              {isColVisible("exit_price") && <th className="sortable" style={{ textAlign: "right" }} onClick={() => onSortChange("exit_price")}>Close</th>}
               {isColVisible("high_252") && <th className="sortable" style={{ textAlign: "right" }} onClick={() => onSortChange("high_252")}>Prior 252 High</th>}
-              {isColVisible("return_pct") && <th className="sortable" style={{ textAlign: "right" }} onClick={() => onSortChange("return_pct")}>Hold Return %</th>}
               {isColVisible("rsi") && <th style={{ textAlign: "right" }}>RSI</th>}
               {isColVisible("sma_20") && <th style={{ textAlign: "right" }}>SMA 20</th>}
               {isColVisible("sma_50") && <th style={{ textAlign: "right" }}>SMA 50</th>}
@@ -496,11 +498,6 @@ export const AllStockResultsTable: React.FC<AllStockResultsTableProps> = ({
                         </span>
                       </td>
                     )}
-                    {isColVisible("evaluation_date") && (
-                      <td style={{ color: "#94a3b8", fontVariantNumeric: "tabular-nums" }}>
-                        {row.evaluation_date || row.indicators?.evaluation_date || "—"}
-                      </td>
-                    )}
                     {isColVisible("entry_price") && (
                       <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
                         {formatINR(row.entry_price)}
@@ -509,11 +506,6 @@ export const AllStockResultsTable: React.FC<AllStockResultsTableProps> = ({
                     {isColVisible("exit_price") && (
                       <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
                         {formatINR(row.close ?? row.exit_price)}
-                      </td>
-                    )}
-                    {isColVisible("high_252") && (
-                      <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
-                        {formatINR(row.high_252 ?? row.indicators?.high_252 ?? null)}
                       </td>
                     )}
                     {isColVisible("return_pct") && (
@@ -526,6 +518,16 @@ export const AllStockResultsTable: React.FC<AllStockResultsTableProps> = ({
                         }}
                       >
                         {isPos ? `+${returnPct.toFixed(2)}%` : `${returnPct.toFixed(2)}%`}
+                      </td>
+                    )}
+                    {isColVisible("evaluation_date") && (
+                      <td style={{ color: "#94a3b8", fontVariantNumeric: "tabular-nums" }}>
+                        {row.evaluation_date || row.indicators?.evaluation_date || "—"}
+                      </td>
+                    )}
+                    {isColVisible("high_252") && (
+                      <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
+                        {formatINR(row.high_252 ?? row.indicators?.high_252 ?? null)}
                       </td>
                     )}
                     {isColVisible("rsi") && (

@@ -7,6 +7,7 @@ export type StrategyBuilderRule = {
 };
 
 interface StrategyBuilderCardProps {
+  strategyName?: string;
   rules?: StrategyBuilderRule[];
   logicText?: string;
   universeCount: number;
@@ -26,6 +27,7 @@ const DEFAULT_RULES: StrategyBuilderRule[] = [
 ];
 
 export const StrategyBuilderCard: React.FC<StrategyBuilderCardProps> = ({
+  strategyName,
   rules = DEFAULT_RULES,
   logicText = "ALL conditions must be true",
   universeCount,
@@ -80,6 +82,12 @@ export const StrategyBuilderCard: React.FC<StrategyBuilderCardProps> = ({
 
       {/* Meta key-values */}
       <div className="st-builder-meta">
+        {strategyName ? (
+          <div className="st-builder-meta-row">
+            <span>Strategy Name</span>
+            <span style={{ fontWeight: 600, color: "#f8fafc" }}>{strategyName}</span>
+          </div>
+        ) : null}
         <div className="st-builder-meta-row">
           <span>Source</span>
           <span className={sourceType === "pine" ? "st-tag-pine" : ""}>
@@ -99,12 +107,20 @@ export const StrategyBuilderCard: React.FC<StrategyBuilderCardProps> = ({
           <span className="st-tag-long">{positionSide}</span>
         </div>
         <div className="st-builder-meta-row">
+          <span>Conditions</span>
+          <span>{displayRules.length} conditions</span>
+        </div>
+        <div className="st-builder-meta-row">
+          <span>Logic</span>
+          <span>{logicText.includes("ALL") ? "ALL" : "ANY"}</span>
+        </div>
+        <div className="st-builder-meta-row">
           <span>Exit Rule</span>
           <span>{exitRule}</span>
         </div>
         <div className="st-builder-meta-row">
           <span>Capital</span>
-          <span>₹{capital.toLocaleString("en-IN")}</span>
+          <span>{capital > 0 ? `₹${capital.toLocaleString("en-IN")}` : "—"}</span>
         </div>
       </div>
     </div>

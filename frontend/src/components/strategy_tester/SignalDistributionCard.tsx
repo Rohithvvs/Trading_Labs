@@ -76,44 +76,75 @@ export const SignalDistributionCard: React.FC<SignalDistributionCardProps> = ({
           </div>
         </div>
 
-        {/* Legend in strict BUY -> WATCH -> REJECT -> FAILED order */}
+        {/* Legend */}
         <div className="st-donut-legend">
           <div
             className="st-donut-legend-item"
             onClick={() => onSignalClick?.(labels?.buy ? "MATCH" : "BUY")}
             role="button"
             tabIndex={0}
-            title="Filter by BUY"
+            title={`Filter by ${buyLabel}`}
           >
             <span className="st-legend-sq buy" />
             <span className="st-legend-text">
               {buyLabel}: <strong>{buyCount}</strong> ({buyPct}%)
             </span>
           </div>
-          <div
-            className="st-donut-legend-item"
-            onClick={() => onSignalClick?.(labels?.watch ? "SKIPPED" : "WATCH")}
-            role="button"
-            tabIndex={0}
-            title={`Filter by ${watchLabel}`}
-          >
-            <span className="st-legend-sq watch" />
-            <span className="st-legend-text">
-              {watchLabel}: <strong>{watchCount}</strong> ({watchPct}%)
-            </span>
-          </div>
-          <div
-            className="st-donut-legend-item"
-            onClick={() => onSignalClick?.("REJECT")}
-            role="button"
-            tabIndex={0}
-            title={`Filter by ${rejectLabel}`}
-          >
-            <span className="st-legend-sq reject" />
-            <span className="st-legend-text">
-              {rejectLabel}: <strong>{rejectCount}</strong> ({rejectPct}%)
-            </span>
-          </div>
+          {labels?.buy ? (
+            <>
+              <div
+                className="st-donut-legend-item"
+                onClick={() => onSignalClick?.("REJECT")}
+                role="button"
+                tabIndex={0}
+                title={`Filter by ${rejectLabel}`}
+              >
+                <span className="st-legend-sq reject" />
+                <span className="st-legend-text">
+                  {rejectLabel}: <strong>{rejectCount}</strong> ({rejectPct}%)
+                </span>
+              </div>
+              <div
+                className="st-donut-legend-item"
+                onClick={() => onSignalClick?.("SKIPPED")}
+                role="button"
+                tabIndex={0}
+                title={`Filter by ${watchLabel}`}
+              >
+                <span className="st-legend-sq watch" />
+                <span className="st-legend-text">
+                  {watchLabel}: <strong>{watchCount}</strong> ({watchPct}%)
+                </span>
+              </div>
+            </>
+          ) : (
+            <>
+              <div
+                className="st-donut-legend-item"
+                onClick={() => onSignalClick?.("WATCH")}
+                role="button"
+                tabIndex={0}
+                title={`Filter by ${watchLabel}`}
+              >
+                <span className="st-legend-sq watch" />
+                <span className="st-legend-text">
+                  {watchLabel}: <strong>{watchCount}</strong> ({watchPct}%)
+                </span>
+              </div>
+              <div
+                className="st-donut-legend-item"
+                onClick={() => onSignalClick?.("REJECT")}
+                role="button"
+                tabIndex={0}
+                title={`Filter by ${rejectLabel}`}
+              >
+                <span className="st-legend-sq reject" />
+                <span className="st-legend-text">
+                  {rejectLabel}: <strong>{rejectCount}</strong> ({rejectPct}%)
+                </span>
+              </div>
+            </>
+          )}
           {failedCount > 0 ? (
             <div
               className="st-donut-legend-item"

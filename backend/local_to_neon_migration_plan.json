@@ -1,0 +1,1025 @@
+{
+  "plan_title": "Local to Neon PostgreSQL Operational Migration Plan",
+  "generated_at": "2026-09-20T05:52:34.816500+00:00",
+  "safety_boundaries": [
+    "Source local PostgreSQL is READ-ONLY (no writes, migrations, or DDL).",
+    "Turso is strictly excluded and untouched.",
+    "Target is remote Neon cloud database (neondb on *.neon.tech).",
+    "Target neondb is newly created and 100% empty (0 user tables).",
+    "Zero candle/market-history rows will be copied to Neon.",
+    "Complete DDL/schema for all tables is preserved on Neon."
+  ],
+  "source_endpoint": {
+    "provider": "Local PostgreSQL",
+    "host": "localhost",
+    "port": 5432,
+    "database": "trading_data",
+    "user": "postgres",
+    "password": "[REDACTED]"
+  },
+  "target_endpoint": {
+    "provider": "Neon Cloud PostgreSQL",
+    "host": "ep-patient-bonus-aonma8xh.c-2.ap-southeast-1.aws.neon.tech",
+    "port": 5432,
+    "database": "neondb",
+    "user": "neondb_owner",
+    "password": "[REDACTED]",
+    "connection_mode": "direct (pooling disabled)",
+    "branch": "production"
+  },
+  "target_preflight_status": {
+    "verified_empty": true,
+    "user_tables_count": 0,
+    "non_system_schemas": [
+      "public"
+    ],
+    "database_size_mb": 7.16
+  },
+  "storage_metrics": {
+    "source_total_db_mb": 893.61,
+    "excluded_candle_history_mb": 718.88,
+    "excluded_candle_history_pct": 80.45,
+    "included_operational_mb": 163.03,
+    "included_operational_pct": 18.24,
+    "system_overhead_mb": 11.7,
+    "uncertain_mb": 0.0
+  },
+  "confirmed_excluded_tables_count": 32,
+  "confirmed_excluded_tables": [
+    {
+      "schema": "public",
+      "table": "daily_ohlcv",
+      "full_name": "public.daily_ohlcv",
+      "rows": 2248338,
+      "total_mb": 558.2,
+      "notes": "Standard candle table"
+    },
+    {
+      "schema": "public",
+      "table": "historical_candles",
+      "full_name": "public.historical_candles",
+      "rows": 431159,
+      "total_mb": 151.4,
+      "notes": "Standard candle table"
+    },
+    {
+      "schema": "market_data",
+      "table": "candles_1d_y2025",
+      "full_name": "market_data.candles_1d_y2025",
+      "rows": 26403,
+      "total_mb": 3.69,
+      "notes": "Partition leaf table"
+    },
+    {
+      "schema": "market_data",
+      "table": "candles_1d_y2026",
+      "full_name": "market_data.candles_1d_y2026",
+      "rows": 15710,
+      "total_mb": 2.47,
+      "notes": "Partition leaf table"
+    },
+    {
+      "schema": "market_data",
+      "table": "candles_1d_y2024",
+      "full_name": "market_data.candles_1d_y2024",
+      "rows": 11873,
+      "total_mb": 1.69,
+      "notes": "Partition leaf table"
+    },
+    {
+      "schema": "public",
+      "table": "index_ohlcv",
+      "full_name": "public.index_ohlcv",
+      "rows": 4494,
+      "total_mb": 1.01,
+      "notes": "Standard candle table"
+    },
+    {
+      "schema": "market_data",
+      "table": "ltp_cache",
+      "full_name": "market_data.ltp_cache",
+      "rows": 9,
+      "total_mb": 0.08,
+      "notes": "Standard candle table"
+    },
+    {
+      "schema": "market_data",
+      "table": "empty_gaps",
+      "full_name": "market_data.empty_gaps",
+      "rows": 0,
+      "total_mb": 0.03,
+      "notes": "Standard candle table"
+    },
+    {
+      "schema": "market_data",
+      "table": "candles_15m_y2026_m05",
+      "full_name": "market_data.candles_15m_y2026_m05",
+      "rows": 0,
+      "total_mb": 0.02,
+      "notes": "Partition leaf table"
+    },
+    {
+      "schema": "market_data",
+      "table": "candles_15m_y2026_m04",
+      "full_name": "market_data.candles_15m_y2026_m04",
+      "rows": 0,
+      "total_mb": 0.02,
+      "notes": "Partition leaf table"
+    },
+    {
+      "schema": "market_data",
+      "table": "candles_1d_y2027",
+      "full_name": "market_data.candles_1d_y2027",
+      "rows": 0,
+      "total_mb": 0.02,
+      "notes": "Partition leaf table"
+    },
+    {
+      "schema": "market_data",
+      "table": "candles_15m_y2026_m06",
+      "full_name": "market_data.candles_15m_y2026_m06",
+      "rows": 0,
+      "total_mb": 0.02,
+      "notes": "Partition leaf table"
+    },
+    {
+      "schema": "market_data",
+      "table": "candles_15m_y2026_m07",
+      "full_name": "market_data.candles_15m_y2026_m07",
+      "rows": 0,
+      "total_mb": 0.02,
+      "notes": "Partition leaf table"
+    },
+    {
+      "schema": "market_data",
+      "table": "candles_15m_y2026_m09",
+      "full_name": "market_data.candles_15m_y2026_m09",
+      "rows": 0,
+      "total_mb": 0.02,
+      "notes": "Partition leaf table"
+    },
+    {
+      "schema": "market_data",
+      "table": "candles_1d_y2023",
+      "full_name": "market_data.candles_1d_y2023",
+      "rows": 0,
+      "total_mb": 0.02,
+      "notes": "Partition leaf table"
+    },
+    {
+      "schema": "market_data",
+      "table": "candles_1m_y2026_m02",
+      "full_name": "market_data.candles_1m_y2026_m02",
+      "rows": 0,
+      "total_mb": 0.02,
+      "notes": "Partition leaf table"
+    },
+    {
+      "schema": "market_data",
+      "table": "candles_1m_y2026_m04",
+      "full_name": "market_data.candles_1m_y2026_m04",
+      "rows": 0,
+      "total_mb": 0.02,
+      "notes": "Partition leaf table"
+    },
+    {
+      "schema": "market_data",
+      "table": "candles_1m_y2026_m05",
+      "full_name": "market_data.candles_1m_y2026_m05",
+      "rows": 0,
+      "total_mb": 0.02,
+      "notes": "Partition leaf table"
+    },
+    {
+      "schema": "market_data",
+      "table": "candles_1m_y2026_m06",
+      "full_name": "market_data.candles_1m_y2026_m06",
+      "rows": 0,
+      "total_mb": 0.02,
+      "notes": "Partition leaf table"
+    },
+    {
+      "schema": "market_data",
+      "table": "candles_1m_y2026_m07",
+      "full_name": "market_data.candles_1m_y2026_m07",
+      "rows": 0,
+      "total_mb": 0.02,
+      "notes": "Partition leaf table"
+    },
+    {
+      "schema": "market_data",
+      "table": "candles_1m_y2026_m08",
+      "full_name": "market_data.candles_1m_y2026_m08",
+      "rows": 0,
+      "total_mb": 0.02,
+      "notes": "Partition leaf table"
+    },
+    {
+      "schema": "market_data",
+      "table": "candles_1m_y2026_m09",
+      "full_name": "market_data.candles_1m_y2026_m09",
+      "rows": 0,
+      "total_mb": 0.02,
+      "notes": "Partition leaf table"
+    },
+    {
+      "schema": "market_data",
+      "table": "candles_1m_y2026_m03",
+      "full_name": "market_data.candles_1m_y2026_m03",
+      "rows": 0,
+      "total_mb": 0.02,
+      "notes": "Partition leaf table"
+    },
+    {
+      "schema": "market_data",
+      "table": "candles_15m_y2026_m03",
+      "full_name": "market_data.candles_15m_y2026_m03",
+      "rows": 0,
+      "total_mb": 0.02,
+      "notes": "Partition leaf table"
+    },
+    {
+      "schema": "market_data",
+      "table": "candles_15m_y2026_m02",
+      "full_name": "market_data.candles_15m_y2026_m02",
+      "rows": 0,
+      "total_mb": 0.02,
+      "notes": "Partition leaf table"
+    },
+    {
+      "schema": "market_data",
+      "table": "candles_1m_y2026_m10",
+      "full_name": "market_data.candles_1m_y2026_m10",
+      "rows": 0,
+      "total_mb": 0.02,
+      "notes": "Partition leaf table"
+    },
+    {
+      "schema": "market_data",
+      "table": "candles_15m_y2026_m08",
+      "full_name": "market_data.candles_15m_y2026_m08",
+      "rows": 0,
+      "total_mb": 0.02,
+      "notes": "Partition leaf table"
+    },
+    {
+      "schema": "market_data",
+      "table": "candles_15m_y2026_m10",
+      "full_name": "market_data.candles_15m_y2026_m10",
+      "rows": 0,
+      "total_mb": 0.02,
+      "notes": "Partition leaf table"
+    },
+    {
+      "schema": "market_data",
+      "table": "candles_1m",
+      "full_name": "market_data.candles_1m",
+      "rows": -1,
+      "total_mb": 0.0,
+      "notes": "Partition root table (0 bytes data)"
+    },
+    {
+      "schema": "market_data",
+      "table": "candles",
+      "full_name": "market_data.candles",
+      "rows": -1,
+      "total_mb": 0.0,
+      "notes": "Partition root table (0 bytes data)"
+    },
+    {
+      "schema": "market_data",
+      "table": "candles_15m",
+      "full_name": "market_data.candles_15m",
+      "rows": -1,
+      "total_mb": 0.0,
+      "notes": "Partition root table (0 bytes data)"
+    },
+    {
+      "schema": "market_data",
+      "table": "candles_1d",
+      "full_name": "market_data.candles_1d",
+      "rows": -1,
+      "total_mb": 0.0,
+      "notes": "Partition root table (0 bytes data)"
+    }
+  ],
+  "confirmed_included_tables_count": 85,
+  "confirmed_included_tables": [
+    {
+      "schema": "public",
+      "table": "indicator_scan_results",
+      "full_name": "public.indicator_scan_results",
+      "rows": 94626,
+      "total_mb": 71.96,
+      "purpose": "Screener and strategy scan runs, snapshots, candidate evaluations, results"
+    },
+    {
+      "schema": "public",
+      "table": "strategy_test_results",
+      "full_name": "public.strategy_test_results",
+      "rows": 12835,
+      "total_mb": 28.02,
+      "purpose": "Backtest execution, walk-forward analysis, strategy book state and metrics"
+    },
+    {
+      "schema": "public",
+      "table": "w52_symbol_performance",
+      "full_name": "public.w52_symbol_performance",
+      "rows": 4530,
+      "total_mb": 13.3,
+      "purpose": "Backtest execution, walk-forward analysis, strategy book state and metrics"
+    },
+    {
+      "schema": "public",
+      "table": "strategy_scan_runs",
+      "full_name": "public.strategy_scan_runs",
+      "rows": 88,
+      "total_mb": 12.89,
+      "purpose": "Screener and strategy scan runs, snapshots, candidate evaluations, results"
+    },
+    {
+      "schema": "public",
+      "table": "analysis_history",
+      "full_name": "public.analysis_history",
+      "rows": 10178,
+      "total_mb": 7.53,
+      "purpose": "Technical analysis cache and news deduplication audit"
+    },
+    {
+      "schema": "public",
+      "table": "system_logs",
+      "full_name": "public.system_logs",
+      "rows": 3447,
+      "total_mb": 7.1,
+      "purpose": "System infrastructure, audit logging, job state, lock manager, schema migrations"
+    },
+    {
+      "schema": "public",
+      "table": "scan_snapshot_records",
+      "full_name": "public.scan_snapshot_records",
+      "rows": 17604,
+      "total_mb": 5.51,
+      "purpose": "Screener and strategy scan runs, snapshots, candidate evaluations, results"
+    },
+    {
+      "schema": "public",
+      "table": "backtest_history",
+      "full_name": "public.backtest_history",
+      "rows": 7195,
+      "total_mb": 4.82,
+      "purpose": "Backtest execution, walk-forward analysis, strategy book state and metrics"
+    },
+    {
+      "schema": "public",
+      "table": "scanned_candidates",
+      "full_name": "public.scanned_candidates",
+      "rows": 7951,
+      "total_mb": 1.75,
+      "purpose": "Screener and strategy scan runs, snapshots, candidate evaluations, results"
+    },
+    {
+      "schema": "market_data",
+      "table": "scan_results",
+      "full_name": "market_data.scan_results",
+      "rows": 1,
+      "total_mb": 1.06,
+      "purpose": "Legacy scan result JSON storage used by scan_store.py"
+    },
+    {
+      "schema": "public",
+      "table": "indicator_scan_runs",
+      "full_name": "public.indicator_scan_runs",
+      "rows": 133,
+      "total_mb": 0.91,
+      "purpose": "Screener and strategy scan runs, snapshots, candidate evaluations, results"
+    },
+    {
+      "schema": "public",
+      "table": "strategy_scan_latest",
+      "full_name": "public.strategy_scan_latest",
+      "rows": 2,
+      "total_mb": 0.88,
+      "purpose": "Screener and strategy scan runs, snapshots, candidate evaluations, results"
+    },
+    {
+      "schema": "public",
+      "table": "stocks_master",
+      "full_name": "public.stocks_master",
+      "rows": 755,
+      "total_mb": 0.63,
+      "purpose": "Trading instrument universe, blacklist, indicators, risk configuration"
+    },
+    {
+      "schema": "public",
+      "table": "strategy_test_runs",
+      "full_name": "public.strategy_test_runs",
+      "rows": 24,
+      "total_mb": 0.52,
+      "purpose": "Backtest execution, walk-forward analysis, strategy book state and metrics"
+    },
+    {
+      "schema": "public",
+      "table": "market_replay_sessions",
+      "full_name": "public.market_replay_sessions",
+      "rows": 452,
+      "total_mb": 0.42,
+      "purpose": "Market replay and trading engine execution sessions"
+    },
+    {
+      "schema": "public",
+      "table": "indicator_definitions",
+      "full_name": "public.indicator_definitions",
+      "rows": 54,
+      "total_mb": 0.35,
+      "purpose": "Trading instrument universe, blacklist, indicators, risk configuration"
+    },
+    {
+      "schema": "public",
+      "table": "paper_trading_orders",
+      "full_name": "public.paper_trading_orders",
+      "rows": 46,
+      "total_mb": 0.29,
+      "purpose": "Paper trading simulation orders, positions, transactions, journals, alerts"
+    },
+    {
+      "schema": "public",
+      "table": "paper_trading_execution_events",
+      "full_name": "public.paper_trading_execution_events",
+      "rows": 156,
+      "total_mb": 0.28,
+      "purpose": "Paper trading simulation orders, positions, transactions, journals, alerts"
+    },
+    {
+      "schema": "public",
+      "table": "paper_trading_positions",
+      "full_name": "public.paper_trading_positions",
+      "rows": 5,
+      "total_mb": 0.22,
+      "purpose": "Paper trading simulation orders, positions, transactions, journals, alerts"
+    },
+    {
+      "schema": "public",
+      "table": "paper_trading_notifications",
+      "full_name": "public.paper_trading_notifications",
+      "rows": 309,
+      "total_mb": 0.22,
+      "purpose": "Paper trading simulation orders, positions, transactions, journals, alerts"
+    },
+    {
+      "schema": "public",
+      "table": "watched_stocks",
+      "full_name": "public.watched_stocks",
+      "rows": 413,
+      "total_mb": 0.2,
+      "purpose": "Application operational data"
+    },
+    {
+      "schema": "public",
+      "table": "audit_logs",
+      "full_name": "public.audit_logs",
+      "rows": 257,
+      "total_mb": 0.18,
+      "purpose": "System infrastructure, audit logging, job state, lock manager, schema migrations"
+    },
+    {
+      "schema": "public",
+      "table": "user_sessions",
+      "full_name": "public.user_sessions",
+      "rows": 194,
+      "total_mb": 0.17,
+      "purpose": "User authentication, sessions, profiles, watchlists, UI settings"
+    },
+    {
+      "schema": "public",
+      "table": "event_calendar",
+      "full_name": "public.event_calendar",
+      "rows": 3,
+      "total_mb": 0.16,
+      "purpose": "Economic event calendar and corporate action ingestion records"
+    },
+    {
+      "schema": "public",
+      "table": "paper_trading_trade_history",
+      "full_name": "public.paper_trading_trade_history",
+      "rows": 16,
+      "total_mb": 0.16,
+      "purpose": "Paper trading simulation orders, positions, transactions, journals, alerts"
+    },
+    {
+      "schema": "public",
+      "table": "latest_scan_results",
+      "full_name": "public.latest_scan_results",
+      "rows": 166,
+      "total_mb": 0.15,
+      "purpose": "Screener and strategy scan runs, snapshots, candidate evaluations, results"
+    },
+    {
+      "schema": "public",
+      "table": "market_engine_sessions",
+      "full_name": "public.market_engine_sessions",
+      "rows": 50,
+      "total_mb": 0.15,
+      "purpose": "Market replay and trading engine execution sessions"
+    },
+    {
+      "schema": "public",
+      "table": "scan_snapshots",
+      "full_name": "public.scan_snapshots",
+      "rows": 152,
+      "total_mb": 0.14,
+      "purpose": "Screener and strategy scan runs, snapshots, candidate evaluations, results"
+    },
+    {
+      "schema": "public",
+      "table": "experiments",
+      "full_name": "public.experiments",
+      "rows": 163,
+      "total_mb": 0.12,
+      "purpose": "Research lab ideas, agent decisions, experiment tracking, veto logs"
+    },
+    {
+      "schema": "public",
+      "table": "live_orders",
+      "full_name": "public.live_orders",
+      "rows": -1,
+      "total_mb": 0.12,
+      "purpose": "Live trading execution orders, positions, and broker accounts"
+    },
+    {
+      "schema": "public",
+      "table": "strategy_definitions",
+      "full_name": "public.strategy_definitions",
+      "rows": -1,
+      "total_mb": 0.11,
+      "purpose": "Backtest execution, walk-forward analysis, strategy book state and metrics"
+    },
+    {
+      "schema": "public",
+      "table": "paper_trading_daily_journals",
+      "full_name": "public.paper_trading_daily_journals",
+      "rows": 1,
+      "total_mb": 0.11,
+      "purpose": "Paper trading simulation orders, positions, transactions, journals, alerts"
+    },
+    {
+      "schema": "public",
+      "table": "data_load_log",
+      "full_name": "public.data_load_log",
+      "rows": -1,
+      "total_mb": 0.11,
+      "purpose": "Application operational data"
+    },
+    {
+      "schema": "public",
+      "table": "paper_trading_transactions",
+      "full_name": "public.paper_trading_transactions",
+      "rows": 33,
+      "total_mb": 0.1,
+      "purpose": "Paper trading simulation orders, positions, transactions, journals, alerts"
+    },
+    {
+      "schema": "public",
+      "table": "broker_tokens",
+      "full_name": "public.broker_tokens",
+      "rows": 4,
+      "total_mb": 0.09,
+      "purpose": "Broker API tokens, token refresh logs, execution logs"
+    },
+    {
+      "schema": "public",
+      "table": "fyers_tokens",
+      "full_name": "public.fyers_tokens",
+      "rows": 30,
+      "total_mb": 0.09,
+      "purpose": "Broker API tokens, token refresh logs, execution logs"
+    },
+    {
+      "schema": "public",
+      "table": "event_calendar_coverage",
+      "full_name": "public.event_calendar_coverage",
+      "rows": 1,
+      "total_mb": 0.09,
+      "purpose": "Economic event calendar and corporate action ingestion records"
+    },
+    {
+      "schema": "public",
+      "table": "veto_history",
+      "full_name": "public.veto_history",
+      "rows": 7,
+      "total_mb": 0.09,
+      "purpose": "Research lab ideas, agent decisions, experiment tracking, veto logs"
+    },
+    {
+      "schema": "public",
+      "table": "paper_trading_accounts",
+      "full_name": "public.paper_trading_accounts",
+      "rows": 16,
+      "total_mb": 0.09,
+      "purpose": "Paper trading simulation orders, positions, transactions, journals, alerts"
+    },
+    {
+      "schema": "public",
+      "table": "research_ideas",
+      "full_name": "public.research_ideas",
+      "rows": -1,
+      "total_mb": 0.08,
+      "purpose": "Research lab ideas, agent decisions, experiment tracking, veto logs"
+    },
+    {
+      "schema": "public",
+      "table": "walk_forward_summary",
+      "full_name": "public.walk_forward_summary",
+      "rows": 7,
+      "total_mb": 0.07,
+      "purpose": "Backtest execution, walk-forward analysis, strategy book state and metrics"
+    },
+    {
+      "schema": "public",
+      "table": "strategy_filter_results",
+      "full_name": "public.strategy_filter_results",
+      "rows": -1,
+      "total_mb": 0.07,
+      "purpose": "Screener and strategy scan runs, snapshots, candidate evaluations, results"
+    },
+    {
+      "schema": "public",
+      "table": "workstation_alerts",
+      "full_name": "public.workstation_alerts",
+      "rows": -1,
+      "total_mb": 0.07,
+      "purpose": "Application operational data"
+    },
+    {
+      "schema": "public",
+      "table": "users",
+      "full_name": "public.users",
+      "rows": 11,
+      "total_mb": 0.06,
+      "purpose": "User authentication, sessions, profiles, watchlists, UI settings"
+    },
+    {
+      "schema": "public",
+      "table": "live_positions",
+      "full_name": "public.live_positions",
+      "rows": -1,
+      "total_mb": 0.06,
+      "purpose": "Live trading execution orders, positions, and broker accounts"
+    },
+    {
+      "schema": "public",
+      "table": "fyers_token_history",
+      "full_name": "public.fyers_token_history",
+      "rows": 81,
+      "total_mb": 0.06,
+      "purpose": "Broker API tokens, token refresh logs, execution logs"
+    },
+    {
+      "schema": "public",
+      "table": "research_decisions",
+      "full_name": "public.research_decisions",
+      "rows": -1,
+      "total_mb": 0.06,
+      "purpose": "Research lab ideas, agent decisions, experiment tracking, veto logs"
+    },
+    {
+      "schema": "public",
+      "table": "event_ingestion_run",
+      "full_name": "public.event_ingestion_run",
+      "rows": 1,
+      "total_mb": 0.06,
+      "purpose": "Economic event calendar and corporate action ingestion records"
+    },
+    {
+      "schema": "public",
+      "table": "paper_trading_alerts",
+      "full_name": "public.paper_trading_alerts",
+      "rows": -1,
+      "total_mb": 0.05,
+      "purpose": "Paper trading simulation orders, positions, transactions, journals, alerts"
+    },
+    {
+      "schema": "public",
+      "table": "order_execution_events",
+      "full_name": "public.order_execution_events",
+      "rows": -1,
+      "total_mb": 0.05,
+      "purpose": "Application operational data"
+    },
+    {
+      "schema": "public",
+      "table": "idempotency_records",
+      "full_name": "public.idempotency_records",
+      "rows": -1,
+      "total_mb": 0.05,
+      "purpose": "System infrastructure, audit logging, job state, lock manager, schema migrations"
+    },
+    {
+      "schema": "public",
+      "table": "scan_history_snapshots",
+      "full_name": "public.scan_history_snapshots",
+      "rows": -1,
+      "total_mb": 0.05,
+      "purpose": "Screener and strategy scan runs, snapshots, candidate evaluations, results"
+    },
+    {
+      "schema": "public",
+      "table": "backfill_progress",
+      "full_name": "public.backfill_progress",
+      "rows": 2,
+      "total_mb": 0.05,
+      "purpose": "Market data backfill operator checkpoint tracker"
+    },
+    {
+      "schema": "public",
+      "table": "research_critiques",
+      "full_name": "public.research_critiques",
+      "rows": -1,
+      "total_mb": 0.05,
+      "purpose": "Research lab ideas, agent decisions, experiment tracking, veto logs"
+    },
+    {
+      "schema": "public",
+      "table": "research_sessions",
+      "full_name": "public.research_sessions",
+      "rows": -1,
+      "total_mb": 0.05,
+      "purpose": "Research lab ideas, agent decisions, experiment tracking, veto logs"
+    },
+    {
+      "schema": "public",
+      "table": "research_rollout_states",
+      "full_name": "public.research_rollout_states",
+      "rows": -1,
+      "total_mb": 0.05,
+      "purpose": "Research lab ideas, agent decisions, experiment tracking, veto logs"
+    },
+    {
+      "schema": "public",
+      "table": "saved_scans",
+      "full_name": "public.saved_scans",
+      "rows": -1,
+      "total_mb": 0.05,
+      "purpose": "Screener and strategy scan runs, snapshots, candidate evaluations, results"
+    },
+    {
+      "schema": "public",
+      "table": "user_profiles",
+      "full_name": "public.user_profiles",
+      "rows": 8,
+      "total_mb": 0.05,
+      "purpose": "User authentication, sessions, profiles, watchlists, UI settings"
+    },
+    {
+      "schema": "public",
+      "table": "scanner_symbol_tracking",
+      "full_name": "public.scanner_symbol_tracking",
+      "rows": -1,
+      "total_mb": 0.05,
+      "purpose": "Screener and strategy scan runs, snapshots, candidate evaluations, results"
+    },
+    {
+      "schema": "public",
+      "table": "feature_permissions",
+      "full_name": "public.feature_permissions",
+      "rows": 8,
+      "total_mb": 0.05,
+      "purpose": "Trading instrument universe, blacklist, indicators, risk configuration"
+    },
+    {
+      "schema": "public",
+      "table": "chart_layouts",
+      "full_name": "public.chart_layouts",
+      "rows": -1,
+      "total_mb": 0.04,
+      "purpose": "User authentication, sessions, profiles, watchlists, UI settings"
+    },
+    {
+      "schema": "public",
+      "table": "news_deduplication_audit",
+      "full_name": "public.news_deduplication_audit",
+      "rows": -1,
+      "total_mb": 0.04,
+      "purpose": "Technical analysis cache and news deduplication audit"
+    },
+    {
+      "schema": "public",
+      "table": "risk_settings",
+      "full_name": "public.risk_settings",
+      "rows": 1,
+      "total_mb": 0.04,
+      "purpose": "Trading instrument universe, blacklist, indicators, risk configuration"
+    },
+    {
+      "schema": "public",
+      "table": "research_syntheses",
+      "full_name": "public.research_syntheses",
+      "rows": -1,
+      "total_mb": 0.04,
+      "purpose": "Research lab ideas, agent decisions, experiment tracking, veto logs"
+    },
+    {
+      "schema": "public",
+      "table": "user_notifications",
+      "full_name": "public.user_notifications",
+      "rows": -1,
+      "total_mb": 0.04,
+      "purpose": "User authentication, sessions, profiles, watchlists, UI settings"
+    },
+    {
+      "schema": "public",
+      "table": "watchlist_items",
+      "full_name": "public.watchlist_items",
+      "rows": -1,
+      "total_mb": 0.04,
+      "purpose": "User authentication, sessions, profiles, watchlists, UI settings"
+    },
+    {
+      "schema": "public",
+      "table": "api_request_logs",
+      "full_name": "public.api_request_logs",
+      "rows": -1,
+      "total_mb": 0.03,
+      "purpose": "System infrastructure, audit logging, job state, lock manager, schema migrations"
+    },
+    {
+      "schema": "public",
+      "table": "watchlists",
+      "full_name": "public.watchlists",
+      "rows": -1,
+      "total_mb": 0.03,
+      "purpose": "User authentication, sessions, profiles, watchlists, UI settings"
+    },
+    {
+      "schema": "public",
+      "table": "dead_letter_jobs",
+      "full_name": "public.dead_letter_jobs",
+      "rows": -1,
+      "total_mb": 0.03,
+      "purpose": "System infrastructure, audit logging, job state, lock manager, schema migrations"
+    },
+    {
+      "schema": "public",
+      "table": "ltm_book_state",
+      "full_name": "public.ltm_book_state",
+      "rows": 1,
+      "total_mb": 0.03,
+      "purpose": "Backtest execution, walk-forward analysis, strategy book state and metrics"
+    },
+    {
+      "schema": "public",
+      "table": "strategy_performance_log",
+      "full_name": "public.strategy_performance_log",
+      "rows": -1,
+      "total_mb": 0.03,
+      "purpose": "Backtest execution, walk-forward analysis, strategy book state and metrics"
+    },
+    {
+      "schema": "public",
+      "table": "service_health",
+      "full_name": "public.service_health",
+      "rows": -1,
+      "total_mb": 0.03,
+      "purpose": "System infrastructure, audit logging, job state, lock manager, schema migrations"
+    },
+    {
+      "schema": "public",
+      "table": "live_accounts",
+      "full_name": "public.live_accounts",
+      "rows": -1,
+      "total_mb": 0.03,
+      "purpose": "Live trading execution orders, positions, and broker accounts"
+    },
+    {
+      "schema": "public",
+      "table": "w52_book_state",
+      "full_name": "public.w52_book_state",
+      "rows": 1,
+      "total_mb": 0.03,
+      "purpose": "Backtest execution, walk-forward analysis, strategy book state and metrics"
+    },
+    {
+      "schema": "public",
+      "table": "user_risk_limits",
+      "full_name": "public.user_risk_limits",
+      "rows": -1,
+      "total_mb": 0.02,
+      "purpose": "User authentication, sessions, profiles, watchlists, UI settings"
+    },
+    {
+      "schema": "public",
+      "table": "symbol_search_history",
+      "full_name": "public.symbol_search_history",
+      "rows": -1,
+      "total_mb": 0.02,
+      "purpose": "User authentication, sessions, profiles, watchlists, UI settings"
+    },
+    {
+      "schema": "public",
+      "table": "scanner_sessions",
+      "full_name": "public.scanner_sessions",
+      "rows": -1,
+      "total_mb": 0.02,
+      "purpose": "Screener and strategy scan runs, snapshots, candidate evaluations, results"
+    },
+    {
+      "schema": "public",
+      "table": "migration_checkpoints",
+      "full_name": "public.migration_checkpoints",
+      "rows": -1,
+      "total_mb": 0.02,
+      "purpose": "System infrastructure, audit logging, job state, lock manager, schema migrations"
+    },
+    {
+      "schema": "public",
+      "table": "favorite_symbols",
+      "full_name": "public.favorite_symbols",
+      "rows": -1,
+      "total_mb": 0.02,
+      "purpose": "User authentication, sessions, profiles, watchlists, UI settings"
+    },
+    {
+      "schema": "public",
+      "table": "devices",
+      "full_name": "public.devices",
+      "rows": -1,
+      "total_mb": 0.02,
+      "purpose": "User authentication, sessions, profiles, watchlists, UI settings"
+    },
+    {
+      "schema": "public",
+      "table": "blacklisted_symbols",
+      "full_name": "public.blacklisted_symbols",
+      "rows": -1,
+      "total_mb": 0.02,
+      "purpose": "Trading instrument universe, blacklist, indicators, risk configuration"
+    },
+    {
+      "schema": "public",
+      "table": "alembic_version",
+      "full_name": "public.alembic_version",
+      "rows": 1,
+      "total_mb": 0.02,
+      "purpose": "System infrastructure, audit logging, job state, lock manager, schema migrations"
+    },
+    {
+      "schema": "public",
+      "table": "system_locks",
+      "full_name": "public.system_locks",
+      "rows": -1,
+      "total_mb": 0.02,
+      "purpose": "System infrastructure, audit logging, job state, lock manager, schema migrations"
+    },
+    {
+      "schema": "public",
+      "table": "broker_execution_logs",
+      "full_name": "public.broker_execution_logs",
+      "rows": -1,
+      "total_mb": 0.02,
+      "purpose": "Broker API tokens, token refresh logs, execution logs"
+    },
+    {
+      "schema": "public",
+      "table": "otps",
+      "full_name": "public.otps",
+      "rows": -1,
+      "total_mb": 0.02,
+      "purpose": "User authentication, sessions, profiles, watchlists, UI settings"
+    }
+  ],
+  "uncertain_tables": [],
+  "dump_file_target": "backups/local_operational_migration_<TIMESTAMP>.dump",
+  "phase_1_audit_log": {
+    "neondb_created_empty_in_phase_1": true,
+    "neondb_current_status": "empty (0 user tables, 7.16 MB initial template size)",
+    "local_postgres_status": "strictly read-only, 0 writes/modifications",
+    "turso_status": "strictly excluded, 0 writes/access"
+  },
+  "planned_commands": {
+    "pg_dump": {
+      "format": "custom (-Fc)",
+      "options": [
+        "--no-owner",
+        "--no-privileges"
+      ],
+      "excluded_table_data_count": 32
+    },
+    "pg_restore": {
+      "target_host": "ep-patient-bonus-aonma8xh.c-2.ap-southeast-1.aws.neon.tech",
+      "target_db": "neondb",
+      "options": [
+        "--verbose",
+        "--exit-on-error",
+        "--single-transaction",
+        "--no-owner",
+        "--no-privileges"
+      ],
+      "excluded_destructive_options": [
+        "--clean",
+        "--create",
+        "--if-exists",
+        "--jobs"
+      ]
+    }
+  },
+  "updated_at": "2026-09-20T05:56:23.133081+00:00"
+}

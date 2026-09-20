@@ -444,7 +444,10 @@ flowchart LR
 | `quarantine_mode` | `QUARANTINE_MODE` | False | Bypasses scheduler/engine/alert monitor/gap-replay. |
 | `app_host` / `app_port` | — | `127.0.0.1` / `8000` | |
 | `frontend_url` | `FRONTEND_URL` | `http://localhost:5173` | |
-| `database_url` | `DATABASE_URL` | `postgresql+asyncpg://…` | Normalized `postgres://` / `postgresql://` → `+asyncpg`; `ssl=…` → `sslmode=…`. |
+| `database_url` | `DATABASE_URL` | `postgresql+asyncpg://…` | Sole operational Postgres URL. Normalized `postgres://` / `postgresql://` → `+asyncpg`; `ssl=…` → `sslmode=…`. |
+| `local_postgres_database_url` | `LOCAL_POSTGRES_DATABASE_URL` | `""` | Migrator source only. Live copy refuses if unset (no `DATABASE_URL` fallback). |
+| `turso_database_url` / `turso_auth_token` | `TURSO_*` | `""` | Turso/libSQL v1 daily/index history; required only if `CANDLE_HISTORY_BACKEND=turso`. Never logged. |
+| `candle_history_backend` | `CANDLE_HISTORY_BACKEND` | `postgres` | `postgres` (default) or `turso`. See `docs/TURSO_MARKET_DATA.md`. |
 | `redis_url` | `REDIS_URL` | `redis://localhost:6379/0` | |
 | `cors_origins_raw` | `CORS_ORIGINS` | `http://localhost:5173,…` | |
 | `google_client_id` | `GOOGLE_CLIENT_ID` | `""` | |

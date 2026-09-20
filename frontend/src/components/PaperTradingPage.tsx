@@ -1,9 +1,10 @@
 import { lazy, Suspense, useEffect, useMemo, useState, useRef, memo } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { InfoTooltip } from './InfoTooltip';
 import { TOOLTIPS } from '../constants/tooltips';
 import { apiUrl } from '../config';
 import { navigateToPaperOrder } from "../utils/paperOrderNavigation";
+import { extractStrategyFromNotes, mergeStrategyNote } from "../utils/paperOrderStrategy";
 import { WatchlistTab } from './WatchlistTab';
 import { useFeaturePermissions } from "../hooks/useFeaturePermissions";
 
@@ -190,6 +191,7 @@ const DEFAULT_TICKET: PaperOrderTicketState = {
   sourceSignal: null,
   sourceScore: null,
   sourceConfidence: null,
+  sourceStrategy: null,
 };
 
 function readPaperTabFromUrl(): PaperPanelTab {
@@ -215,12 +217,30 @@ export function PaperTradingPage({
   retailMode = false,
 }: PaperTradingPageProps) {
   const navigate = useNavigate();
+  const location = useLocation();
+  const deskNav = (location.state || {}) as {
+    strategyName?: string | null;
+    runId?: string | null;
+    symbol?: string;
+  };
+  const originStrategyName =
+    (deskNav.strategyName ||
+      (typeof recommendationPrefill?.recommendation_meta?.strategy_name === "string"
+        ? String(recommendationPrefill.recommendation_meta.strategy_name)
+        : "") ||
+      "").trim() || null;
+  const originRunId =
+    (deskNav.runId ||
+      (typeof recommendationPrefill?.recommendation_meta?.strategy_id === "string"
+        ? String(recommendationPrefill.recommendation_meta.strategy_id)
+        : "") ||
+      "").trim() || null;
   // Insert TokenStatus panel in account tab when active
   const urlParams = typeof window !== "undefined" ? new URLSearchParams(window.location.search) : null;
   const urlSymbol = urlParams?.get("symbol");
   const urlSide = urlParams?.get("side");
   const initialSymbol =
-    recommendationPrefill?.symbol ?? urlSymbol ?? scannerCandidates[0]?.symbol ?? DEFAULT_TICKET.symbol;
+    recommendationPrefill?.symbol ?? urlSymbol ?? deskNav.symbol ?? scannerCandidates[0]?.symbol ?? DEFAULT_TICKET.symbol;
   // Instant shell: seed from cache so header/tabs/metrics paint immediately
   const [dashboard, setDashboard] = useState<PaperTradingDashboardResponse | null>(
     () => getCached<PaperTradingDashboardResponse>(CACHE_KEYS.paperDashboard) ?? getCached(CACHE_KEYS.paperDashboardSymbol(initialSymbol)),
@@ -230,6 +250,8 @@ export function PaperTradingPage({
     ...DEFAULT_TICKET,
     symbol: initialSymbol,
     side: urlSide === "SELL" ? "SELL" : "BUY",
+    sourceStrategy: originStrategyName,
+    notes: mergeStrategyNote("", originStrategyName, originRunId),
   });
   const [listTab, setListTab] = useState<PaperPanelTab>(() => readPaperTabFromUrl());
   const { canAccess } = useFeaturePermissions();
@@ -320,7 +342,7 @@ export function PaperTradingPage({
     const handler = (ev: Event) => {
       const detail = (ev as CustomEvent).detail || {};
       const sym = detail.symbol || selectedSymbol;
-      setListTab("positions");
+      setListTab("orders");
       setStatusMessage("✓ Paper Order Placed Successfully");
       if (sym) setSelectedSymbol(sym);
       invalidatePaperCaches();
@@ -867,10 +889,22 @@ export function PaperTradingPage({
         stopPrice: null,
         stopLoss: prefill.stop_loss ?? null,
         target: prefill.target ?? null,
-        notes: prefill.note,
+        notes: mergeStrategyNote(
+          prefill.note,
+          typeof payload.recommendation_meta.strategy_name === "string"
+            ? String(payload.recommendation_meta.strategy_name)
+            : originStrategyName,
+          typeof payload.recommendation_meta.strategy_id === "string"
+            ? String(payload.recommendation_meta.strategy_id)
+            : originRunId,
+        ),
         sourceSignal: String(payload.recommendation_meta.signal ?? "BUY"),
         sourceScore: Number(payload.recommendation_meta.score ?? 0),
         sourceConfidence: Number(payload.recommendation_meta.confidence ?? 0),
+        sourceStrategy:
+          (typeof payload.recommendation_meta.strategy_name === "string"
+            ? String(payload.recommendation_meta.strategy_name)
+            : originStrategyName) || null,
       });
       setStatusMessage(`Imported ${prefill.symbol} from scanner recommendation into Paper Trading.`);
       const response = await fetchPaperTradingDashboard(prefill.symbol);
@@ -907,7 +941,18 @@ export function PaperTradingPage({
         // Background refresh — don't block success UX
         void loadPositions(ticket.symbol);
       } else {
-        const response = await placePaperOrder(ticket, attemptKey);
+        const response = await placePaperOrder(
+          {
+            ...ticket,
+            sourceStrategy: ticket.sourceStrategy || originStrategyName,
+            notes: mergeStrategyNote(
+              ticket.notes,
+              ticket.sourceStrategy || originStrategyName,
+              originRunId,
+            ),
+          },
+          attemptKey,
+        );
         const st = response.order?.status ?? (response as { status?: string }).status;
         if (st === "WAITING_FOR_MARKET" || st === "PENDING_MARKET_OPEN") {
           setStatusMessage(
@@ -1018,6 +1063,7 @@ export function PaperTradingPage({
         side: order.side,
         orderId: order.id,
         returnTo: "/paper",
+        strategyName: extractStrategyFromNotes(order.notes),
       });
       return;
     } catch {
@@ -1034,6 +1080,7 @@ export function PaperTradingPage({
         stopLoss: order.stop_loss ?? null,
         target: order.target ?? null,
         notes: order.notes ?? "",
+        sourceStrategy: extractStrategyFromNotes(order.notes),
       }));
       setSelectedSymbol(order.symbol);
       setListTab("orders");
@@ -1997,6 +2044,11 @@ function OrderTicketCard({
             <p>
               You are {ticket.side === 'BUY' ? 'buying' : 'selling'} {ticket.qty} {ticket.symbol} at ₹{(entryReference ?? 0).toFixed(2)}
             </p>
+            {ticket.sourceStrategy || extractStrategyFromNotes(ticket.notes) ? (
+              <p data-testid="paper-desk-confirm-strategy">
+                Strategy: {ticket.sourceStrategy || extractStrategyFromNotes(ticket.notes)}
+              </p>
+            ) : null}
             <p>Brokerage: ₹0 (paper trade)</p>
             <p>
               STT: ₹0.1% on sell side = ₹{(ticket.side === 'SELL' ? ((entryReference ?? 0) * ticket.qty * 0.001).toFixed(2) : '0.00')}
@@ -2165,6 +2217,7 @@ function OrderCard({ order, selectedSymbol, onSelect, onEdit, onDelete }: {
       <div className="paper-card__body">
         <div className="paper-card__field"><span className="paper-card__field-label">Order ID</span><span className="paper-card__field-value">{order.id}</span></div>
         <div className="paper-card__field"><span className="paper-card__field-label">Signal</span><span className="paper-card__field-value">{order.source_signal ? <span className={`signal-badge signal-${String(order.source_signal).toLowerCase()}`}>{order.source_signal}</span> : order.side}</span></div>
+        <div className="paper-card__field"><span className="paper-card__field-label">Strategy</span><span className="paper-card__field-value" data-testid="order-strategy">{extractStrategyFromNotes(order.notes) || "--"}</span></div>
         <div className="paper-card__field"><span className="paper-card__field-label">Type</span><span className="paper-card__field-value">{order.type}</span></div>
         <div className="paper-card__field"><span className="paper-card__field-label">Qty</span><span className="paper-card__field-value">{order.qty}</span></div>
         <div className="paper-card__field"><span className="paper-card__field-label">Order Price</span><span className="paper-card__field-value">{order.price?.toFixed(2) ?? order.requested_entry_price?.toFixed(2) ?? "--"}</span></div>
@@ -2222,6 +2275,7 @@ const OrdersTable = memo(function OrdersTable({
               <th>Order ID</th>
               <th>Symbol</th>
               <th>Signal</th>
+              <th>Strategy</th>
               <th>Order Type</th>
               <th>Quantity</th>
               <th>Order Price</th>
@@ -2260,6 +2314,7 @@ const OrdersTable = memo(function OrdersTable({
                     ? <span className={`signal-badge signal-${String(order.source_signal).toLowerCase()}`}>{order.source_signal}</span>
                     : order.side}
                 </td>
+                <td data-testid="order-strategy">{extractStrategyFromNotes(order.notes) || "--"}</td>
                 <td>{order.type}</td>
                 <td className="number-cell">{order.qty}</td>
                 <td className="number-cell">{order.price?.toFixed(2) ?? order.requested_entry_price?.toFixed(2) ?? "--"}</td>
@@ -2336,6 +2391,7 @@ const HistoryTable = memo(function HistoryTable({ trades, selectedTrade, setSele
               <th>P&amp;L</th>
               <th>P&amp;L %</th>
               <th>Signal</th>
+              <th>Strategy</th>
               <th>Score</th>
               <th>Opened</th>
               <th>Closed</th>
@@ -2353,6 +2409,7 @@ const HistoryTable = memo(function HistoryTable({ trades, selectedTrade, setSele
                 <td className={`number-cell ${trade.pnl >= 0 ? "text-positive" : "text-negative"}`}>{formatCurrency(trade.pnl)}</td>
                 <td className={`number-cell ${trade.pnl >= 0 ? "text-positive" : "text-negative"}`}>{trade.pnl_percent.toFixed(2)}%</td>
                 <td>{trade.source_signal ? <span className={`signal-badge signal-${trade.source_signal.toLowerCase()}`}>{trade.source_signal}</span> : "--"}</td>
+                <td data-testid="history-strategy">{extractStrategyFromNotes(trade.notes) || "--"}</td>
                 <td className="number-cell">{trade.source_score?.toFixed(1) ?? "--"}</td>
                 <td>{new Date(trade.opened_at).toLocaleString()}</td>
                 <td>{new Date(trade.closed_at).toLocaleString()}</td>

@@ -17,6 +17,7 @@ import type {
 } from "./types";
 import { apiUrl } from "./config";
 import { W52_STRATEGY_ID } from "./utils/strategyIdentity";
+import { mergeStrategyNote } from "./utils/paperOrderStrategy";
 import {
   ApiClientError,
   mapHttpError,
@@ -521,7 +522,7 @@ export async function placePaperOrder(ticket: PaperOrderTicketState, idempotency
     stop_price: posOrOmit(ticket.stopPrice),
     stop_loss: posOrOmit(ticket.stopLoss),
     target: posOrOmit(ticket.target),
-    notes: ticket.notes,
+    notes: mergeStrategyNote(ticket.notes, ticket.sourceStrategy),
     source_signal: ticket.sourceSignal,
     source_score: ticket.sourceScore,
     source_confidence: ticket.sourceConfidence,
@@ -677,6 +678,11 @@ export function prefillPaperTradeLocal(
     .map((t) => pos(t as number))
     .filter((t): t is number => t != null);
   const limit = pos(payload.suggested_entry ?? null);
+  const strategyName =
+    typeof payload.recommendation_meta?.strategy_name === "string"
+      ? payload.recommendation_meta.strategy_name.trim()
+      : "";
+  const origin = strategyName || "system recommendation";
   return {
     symbol,
     side: "BUY",
@@ -685,7 +691,13 @@ export function prefillPaperTradeLocal(
     limit_price: limit,
     stop_loss: pos(payload.suggested_stop ?? null),
     target: targets[0] ?? null,
-    note: `Imported from system recommendation | signal=${payload.recommendation_meta?.signal ?? "BUY"} | score=${payload.recommendation_meta?.score ?? "n/a"} | confidence=${payload.recommendation_meta?.confidence ?? "n/a"}`,
+    note: mergeStrategyNote(
+      `Imported from ${origin} | signal=${payload.recommendation_meta?.signal ?? "BUY"} | score=${payload.recommendation_meta?.score ?? "n/a"} | confidence=${payload.recommendation_meta?.confidence ?? "n/a"}`,
+      strategyName || null,
+      typeof payload.recommendation_meta?.strategy_id === "string"
+        ? payload.recommendation_meta.strategy_id
+        : null,
+    ),
   };
 }
 
