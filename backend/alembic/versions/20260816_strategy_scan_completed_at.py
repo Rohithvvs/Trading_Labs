@@ -16,11 +16,21 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "strategy_scan_latest",
-        sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
-    )
+    conn = op.get_bind()
+    inspector = sa.inspect(conn)
+    if "strategy_scan_latest" in inspector.get_table_names():
+        cols = {c["name"] for c in inspector.get_columns("strategy_scan_latest")}
+        if "completed_at" not in cols:
+            op.add_column(
+                "strategy_scan_latest",
+                sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
+            )
 
 
 def downgrade() -> None:
-    op.drop_column("strategy_scan_latest", "completed_at")
+    conn = op.get_bind()
+    inspector = sa.inspect(conn)
+    if "strategy_scan_latest" in inspector.get_table_names():
+        cols = {c["name"] for c in inspector.get_columns("strategy_scan_latest")}
+        if "completed_at" in cols:
+            op.drop_column("strategy_scan_latest", "completed_at")

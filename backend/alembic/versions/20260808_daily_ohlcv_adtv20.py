@@ -16,10 +16,6 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "daily_ohlcv",
-        sa.Column("adtv_20", sa.Numeric(precision=24, scale=4), nullable=True),
-    )
     conn = op.get_bind()
     inspector = sa.inspect(conn)
     if "daily_ohlcv" in inspector.get_table_names():
@@ -32,7 +28,6 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_column("daily_ohlcv", "adtv_20")
     conn = op.get_bind()
     inspector = sa.inspect(conn)
     if "daily_ohlcv" in inspector.get_table_names():
