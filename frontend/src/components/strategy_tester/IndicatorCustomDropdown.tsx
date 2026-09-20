@@ -254,3 +254,4 @@ export const IndicatorCustomDropdown: React.FC<IndicatorCustomDropdownProps> = (
     </div>
   );
 };
+

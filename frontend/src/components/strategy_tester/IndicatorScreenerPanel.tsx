@@ -1155,6 +1155,7 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
           />
         </label>
         {showScanChrome && (
+          <label className="ind-pill ind-pill-grow">
           <div className="ind-pill-grow" style={{ display: "inline-flex", position: "relative" }}>
             <IndicatorCustomDropdown
               selected={selected}
@@ -1176,6 +1177,7 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
                 </option>
               ))}
             </select>
+          </label>
           </div>
         )}
         {showScanChrome && (
