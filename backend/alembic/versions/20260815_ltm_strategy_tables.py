@@ -12,6 +12,7 @@ from sqlalchemy.dialects import postgresql
 
 revision: str = "20260815_ltm_strategy_tables"
 down_revision: Union[str, Sequence[str], None] = "20260812_remove_recommendation_engines"
+down_revision: Union[str, Sequence[str], None] = "20260812_str005_strategy_execution"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
