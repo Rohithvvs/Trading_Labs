@@ -2,13 +2,13 @@
  * Central API configuration for the Trading System frontend.
  *
  * Production (Vercel): VITE_API_URL must be the HTTPS Render backend.
- *   VITE_API_URL=https://trading-system-2-rl0x.onrender.com
+ *   VITE_API_URL=https://trading-labs.onrender.com
  *
  * There is NO localhost fallback in production builds.
  */
 
 /** Hard safety net if env is missing/mis-set in a production bundle. */
-export const PRODUCTION_API_URL = "https://trading-system-2-rl0x.onrender.com";
+export const PRODUCTION_API_URL = "https://trading-labs.onrender.com";
 
 function normalizeBaseUrl(raw: string | undefined): string {
   if (!raw) return "";
