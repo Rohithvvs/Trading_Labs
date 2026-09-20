@@ -72,8 +72,10 @@ class Settings(BaseSettings):
     app_host: str = Field(default="0.0.0.0", alias="HOST")   # ← critical change
     app_port: int = Field(default=8000, alias="PORT")
     frontend_url: str = Field(default="http://localhost:5173", alias="FRONTEND_URL")
-    # Single operational Postgres URL (local in development, Nova/Neon in deployment).
-    database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/trading_system"
+    database_url: str = Field(
+        default="postgresql+asyncpg://postgres:postgres@localhost:5432/trading_system",
+        alias="DATABASE_URL",
+    )
     # One-time local trading_data source for Turso copy. Never used by app runtime.
     # Live migration must set this explicitly; it does not fall back to DATABASE_URL.
     local_postgres_database_url: str = Field(default="", alias="LOCAL_POSTGRES_DATABASE_URL")

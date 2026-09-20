@@ -39,7 +39,7 @@ _AUTO_ENABLED = os.getenv("AUTO_TOKEN_SCANNER_ON_STARTUP", "true").strip().lower
     "yes",
     "on",
 }
-_AUTO_SCAN_ENABLED = os.getenv("AUTO_SCANNER_AFTER_TOKEN", "true").strip().lower() in {
+_AUTO_SCAN_ENABLED = os.getenv("AUTO_SCANNER_AFTER_TOKEN", "false").strip().lower() in {
     "1",
     "true",
     "yes",

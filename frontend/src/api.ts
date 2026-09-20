@@ -92,7 +92,7 @@ export async function checkBackendHealth(): Promise<{
   message: string;
   latencyMs: number;
 }> {
-  const url = apiUrl("/health");
+  const url = apiUrl("/health/live");
   const startedAt = performance.now();
   try {
     const response = await fetch(url, {

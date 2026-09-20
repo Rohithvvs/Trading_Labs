@@ -17,7 +17,7 @@ logger = logging.getLogger("app.routes.health")
 # Keep health probes bounded so the UI never marks the whole stack OFFLINE
 # solely because Neon is cold-starting or Redis is absent locally.
 # Neon cold connect is often 5–10s; stay under the frontend probe budget (15s).
-_DB_PROBE_TIMEOUT_SEC = 8.0
+_DB_PROBE_TIMEOUT_SEC = 4.0
 _REDIS_PROBE_TIMEOUT_SEC = 1.0
 
 
@@ -85,6 +85,8 @@ async def health_check() -> HealthResponse:
             return "error"
 
     async def _probe_redis() -> str:
+        if not (os.getenv("REDIS_URL") or "").strip():
+            return "not_configured"
         try:
             from ..core.redis import close_redis_client, get_redis
 
