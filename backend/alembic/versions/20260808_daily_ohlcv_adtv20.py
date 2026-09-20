@@ -20,7 +20,22 @@ def upgrade() -> None:
         "daily_ohlcv",
         sa.Column("adtv_20", sa.Numeric(precision=24, scale=4), nullable=True),
     )
+    conn = op.get_bind()
+    inspector = sa.inspect(conn)
+    if "daily_ohlcv" in inspector.get_table_names():
+        existing = {c["name"] for c in inspector.get_columns("daily_ohlcv")}
+        if "adtv_20" not in existing:
+            op.add_column(
+                "daily_ohlcv",
+                sa.Column("adtv_20", sa.Numeric(precision=24, scale=4), nullable=True),
+            )
 
 
 def downgrade() -> None:
     op.drop_column("daily_ohlcv", "adtv_20")
+    conn = op.get_bind()
+    inspector = sa.inspect(conn)
+    if "daily_ohlcv" in inspector.get_table_names():
+        existing = {c["name"] for c in inspector.get_columns("daily_ohlcv")}
+        if "adtv_20" in existing:
+            op.drop_column("daily_ohlcv", "adtv_20")
