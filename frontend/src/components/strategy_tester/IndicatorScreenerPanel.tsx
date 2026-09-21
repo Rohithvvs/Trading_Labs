@@ -223,6 +223,26 @@ function IndicatorRunStatusCard({
         : scan.status === "completed"
           ? "completed"
           : scan.status;
+  const [liveDuration, setLiveDuration] = React.useState<number | null>(null);
+
+  React.useEffect(() => {
+    if (!scanning || !scan?.started_at) {
+      setLiveDuration(null);
+      return;
+    }
+    const startMs = new Date(scan.started_at).getTime();
+    if (Number.isNaN(startMs)) {
+      setLiveDuration(null);
+      return;
+    }
+    const tick = () => {
+      setLiveDuration(Math.max(0, Math.floor((Date.now() - startMs) / 1000)));
+    };
+    tick();
+    const timer = setInterval(tick, 1000);
+    return () => clearInterval(timer);
+  }, [scanning, scan?.started_at]);
+
   return (
     <div className="st-status-row" data-testid="indicator-scan-status">
       <div className="st-card" data-testid="card-run-info">
@@ -263,11 +283,11 @@ function IndicatorRunStatusCard({
           </div>
           <div>
             <span>Completed:</span>
-            <span className="val">{scanning || !scan ? "—" : formatDateTime(scan.completed_at)}</span>
+            <span className="val">{scanning || !scan ? "—" : formatDateTime(scan.completed_at || scan.cancelled_at)}</span>
           </div>
           <div>
             <span>Duration:</span>
-            <span className="val">{scan ? formatDuration(scan.elapsed_seconds) : "00:00:00"}</span>
+            <span className="val">{formatDuration(liveDuration ?? scan?.elapsed_seconds ?? 0)}</span>
           </div>
           <div>
             <span>Scan Date:</span>

@@ -243,7 +243,7 @@ export const StrategyTesterPageInner: React.FC = () => {
   const [isBuilderModalOpen, setIsBuilderModalOpen] = useState<boolean>(false);
   const [isColumnsModalOpen, setIsColumnsModalOpen] = useState<boolean>(false);
   const [workspace, setWorkspace] = useState<"strategy" | "indicator">(
-    savedState?.workspace === "indicator" ? "indicator" : "strategy",
+    savedState?.workspace === "strategy" ? "strategy" : "indicator",
   );
   const [builderTab, setBuilderTab] = useState<"builder" | "pine" | "indicator">("builder");
   const [appliedIndicator, setAppliedIndicator] = useState<SavedIndicator | null>(
@@ -600,6 +600,7 @@ export const StrategyTesterPageInner: React.FC = () => {
   // Preset switch
   const handlePresetChange = (presetId: string) => {
     setSelectedPresetId(presetId);
+    setWorkspace("indicator");
     const p = catalog?.presets?.find((item) => item.preset_id === presetId);
     if (p) {
       setStrategyName(p.name);
