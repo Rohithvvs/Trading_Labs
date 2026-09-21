@@ -401,6 +401,8 @@ async def start_scan_background(
                 "id": str(active.id),
                 "status": active.status,
             }
+        # Only declare orphaned/interrupted if the scan task is NOT running in this server process
+        if active.id not in _active_scans and age > 120:
         # Only declare orphaned/interrupted if the scan has exceeded 10 minutes (600s)
         if active.id not in _active_scans and age > 600:
             request_cancel(active.id)
