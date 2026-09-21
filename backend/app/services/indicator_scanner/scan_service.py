@@ -285,16 +285,35 @@ async def fetch_current_indicator_market_data(
         report["repair"] = {"error": type(exc).__name__}
         logger.warning("INDICATOR_SCAN_REPAIR_FAILED | err=%s", type(exc).__name__)
 
+    # Only attempt live FYERS quote overlay when the token is actually available.
+    # On Render/production the FYERS_ACCESS_TOKEN env-var may be expired or missing,
+    # which would send 755 symbols through 3-retry FYERS API calls and hang the scan
+    # for 30+ minutes. Fall back gracefully to stored EOD data in that case.
+    overlay_live = False
+    try:
+        from ...services.fyers_service import FyersService
+        _svc = FyersService()
+        overlay_live = _svc.is_fyers_sdk_available() and _svc.has_fyers_credentials()
+    except Exception:
+        overlay_live = False
+    if not overlay_live:
+        logger.info(
+            "INDICATOR_SCAN_OVERLAY_SKIPPED | reason=fyers_not_configured | "
+            "falling_back_to_stored_eod"
+        )
+        report["overlay_live"] = "skipped_no_fyers_token"
+
     series_by_symbol, benchmark_series, data_source = await prepare_scan_market_data(
         symbols,
         from_date=from_date,
         to_date=end_date,
         need_benchmark=need_benchmark,
         fill_timeout_s=CURRENT_DATA_FETCH_TIMEOUT_S,
-        overlay_live=True,
+        overlay_live=overlay_live,
     )
     report["data_source"] = data_source
     return series_by_symbol, benchmark_series, data_source, report
+
 
 
 def public_error(exc: Exception) -> str:

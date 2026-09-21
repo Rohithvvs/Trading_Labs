@@ -435,7 +435,7 @@ async def get_scan(scan_id: str, user: User = Depends(require_feature("advanced_
             started = started.replace(tzinfo=timezone.utc)
         now = datetime.now(timezone.utc)
         age = (now - started).total_seconds() if started else 0
-        if run.id not in _active_scans and age > 60:
+        if run.id not in _active_scans and age > 30:
             updated = await persistence.update_scan(
                 run.id,
                 status="failed",
