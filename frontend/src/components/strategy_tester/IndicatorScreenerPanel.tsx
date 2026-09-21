@@ -283,12 +283,10 @@ function IndicatorRunStatusCard({
           </div>
           <div>
             <span>Completed:</span>
-            <span className="val">{scanning || !scan ? "—" : formatDateTime(scan.completed_at)}</span>
             <span className="val">{scanning || !scan ? "—" : formatDateTime(scan.completed_at || scan.cancelled_at)}</span>
           </div>
           <div>
             <span>Duration:</span>
-            <span className="val">{scan ? formatDuration(scan.elapsed_seconds) : "00:00:00"}</span>
             <span className="val">{formatDuration(liveDuration ?? scan?.elapsed_seconds ?? 0)}</span>
           </div>
           <div>
