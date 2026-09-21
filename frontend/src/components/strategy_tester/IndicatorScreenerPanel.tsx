@@ -435,6 +435,7 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
   const pollRef = useRef<number | null>(null);
   const scanIdRef = useRef<string | null>(savedScanner?.scan?.scan_id || null);
   const lastAppliedId = useRef<string | null>(appliedIndicator?.id || null);
+  const resultsRequestIdRef = useRef<number>(0);
   const [scanSlot, setScanSlot] = useState<HTMLElement | null>(null);
 
   useEffect(() => {
@@ -641,6 +642,27 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
       });
       setResults(payload.results);
       setTotal(payload.total);
+      const reqId = ++resultsRequestIdRef.current;
+      try {
+        const payload = await fetchIndicatorScanResults(scanId, {
+          page: nextPage,
+          page_size: pageSize,
+          search: search || undefined,
+          matched_only: false,
+          signal: signalFilter === "ALL" ? undefined : signalFilter,
+          return_bucket: returnFilter === "ALL" ? undefined : returnFilter,
+          sort: signalFilter === "ALL" ? "signal" : sortField,
+          direction: sortDir,
+        });
+        if (reqId === resultsRequestIdRef.current) {
+          setResults(payload.results);
+          setTotal(payload.total);
+        }
+      } catch (err) {
+        if (reqId === resultsRequestIdRef.current) {
+          console.error("Failed to load indicator results:", err);
+        }
+      }
     },
     [page, pageSize, search, signalFilter, returnFilter, sortField, sortDir],
   );
@@ -772,8 +794,12 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
 
   useEffect(() => {
     if (scan?.scan_id && scan.status === "completed") {
+    if (!scan?.scan_id || scan.status !== "completed") return;
+    const timer = window.setTimeout(() => {
       loadResults(scan.scan_id).catch(() => {});
     }
+    }, search ? 250 : 0);
+    return () => window.clearTimeout(timer);
   }, [page, sortField, sortDir, search, signalFilter, returnFilter, scan?.scan_id, scan?.status, loadResults]);
 
   useEffect(() => {
@@ -990,8 +1016,17 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
   const scanned = scan?.status === "completed";
   const scanSummary = (scan?.summary && typeof scan.summary === "object" ? scan.summary : {}) as Record<string, unknown>;
   const tableRows: StrategyResultRow[] = useMemo(() => {
+    const needle = search.trim().toUpperCase();
     if (scanned) {
       return results.map((row, index) => ({
+      const filtered = needle
+        ? results.filter(
+            (row) =>
+              (row.symbol || "").toUpperCase().includes(needle) ||
+              (row.display_name || "").toUpperCase().includes(needle),
+          )
+        : results;
+      return filtered.map((row, index) => ({
         ...mapIndicatorResultToStock(row, scan),
         rank: (row as IndicatorScanRow & { rank?: number }).rank ?? (page - 1) * pageSize + index + 1,
       }));
@@ -1031,6 +1066,7 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
       }));
   }, [scanned, results, scan, universeRows, search, page, pageSize]);
   const listCount = scanned ? total : universeRows.length;
+  const listCount = scanned ? (search.trim() ? tableRows.length : total) : universeRows.length;
   const matchedCount = scan?.matched_count ?? 0;
   const skippedCount = scan?.skipped_count ?? 0;
   const unmatchedCount = Math.max(0, (scan?.success_count ?? 0) - matchedCount) + (scan?.failed_count ?? 0);
@@ -1430,8 +1466,10 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
       <div data-testid="indicator-results-table">
         <AllStockResultsTable
           title={`All ${scanned ? total : listCount} Stock Results`}
+          title={`All ${listCount} Stock Results`}
           results={tableRows}
           totalResults={scanned ? total : listCount}
+          totalResults={listCount}
           selectedSymbol={selectedSymbol}
           searchQuery={search}
           signalFilter={scanned ? signalFilter : "ALL"}

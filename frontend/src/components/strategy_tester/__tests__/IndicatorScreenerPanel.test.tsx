@@ -881,4 +881,68 @@ describe("IndicatorScreenerPanel", () => {
     await waitFor(() => expect(screen.queryByTestId("screener-column-Momentum Pulse")).toBeNull());
     expect(screen.getByTestId("screener-column-Momentum Signal")).toBeTruthy();
   });
+
+  it("filters scanned results by search query and does not revert to all stocks", async () => {
+    saveIndicatorScannerState({
+      selectedId: "ind-1",
+      appliedIndicator: applied,
+      indicators: [applied],
+      timeframe: "1D",
+      scanDate: "2026-08-29",
+      filters: [],
+      scan: {
+        id: "run-search-test",
+        scan_id: "IND-20260829-SEARCH",
+        indicator_name: applied.name,
+        universe: "nse-755",
+        universe_size: 755,
+        timeframe: "1D",
+        status: "completed",
+        stage: "completed",
+        progress_pct: 100,
+        processed_count: 755,
+        total_count: 755,
+        matched_count: 1,
+        started_at: "2026-08-29T05:26:40.000Z",
+        completed_at: "2026-08-29T05:27:10.000Z",
+      },
+      results: [
+        {
+          symbol: "TCS",
+          display_name: "Tata Consultancy Services",
+          status: "ok",
+          matched: true,
+          as_of: "2026-08-28",
+          outputs: { "52W Breakout Signal": 1, Close: 4200, "Prior 252 High": 4150 },
+        },
+        {
+          symbol: "INFY",
+          display_name: "Infosys Ltd",
+          status: "ok",
+          matched: false,
+          as_of: "2026-08-28",
+          outputs: { "52W Breakout Signal": 0, Close: 1800, "Prior 252 High": 1900 },
+        },
+      ],
+      total: 2,
+      page: 1,
+      sortField: "symbol",
+      sortDir: "asc",
+      search: "",
+      matchedOnly: false,
+      diagnostics: null,
+    });
+    renderPanel();
+    const table = screen.getByTestId("indicator-results-table");
+    await waitFor(() => expect(table.textContent).toContain("TCS"));
+    expect(table.textContent).toContain("INFY");
+
+    const searchInput = screen.getByTestId("input-search-stocks") as HTMLInputElement;
+    fireEvent.change(searchInput, { target: { value: "TCS" } });
+
+    await waitFor(() => {
+      expect(table.textContent).toContain("TCS");
+      expect(table.textContent).not.toContain("INFY");
+    });
+  });
 });

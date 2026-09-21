@@ -96,12 +96,30 @@ export const AllStockResultsTable: React.FC<AllStockResultsTableProps> = ({
   const totalPages = Math.max(1, Math.ceil(totalResults / pageSize));
   const from = totalResults > 0 ? (currentPage - 1) * pageSize + 1 : 0;
   const to = Math.min(currentPage * pageSize, totalResults);
+  const filteredResults = React.useMemo(() => {
+    const needle = (searchQuery || "").trim().toUpperCase();
+    if (!needle) return results;
+    return results.filter(
+      (r) =>
+        (r.symbol || "").toUpperCase().includes(needle) ||
+        (r.company || "").toUpperCase().includes(needle),
+    );
+  }, [results, searchQuery]);
+
+  const effectiveTotal = searchQuery.trim()
+    ? (totalResults > filteredResults.length && results.length <= filteredResults.length ? totalResults : filteredResults.length)
+    : totalResults;
+  const totalPages = Math.max(1, Math.ceil(effectiveTotal / pageSize));
+  const from = effectiveTotal > 0 ? (currentPage - 1) * pageSize + 1 : 0;
+  const to = Math.min(currentPage * pageSize, effectiveTotal);
 
   const sortedRows = React.useMemo(() => {
     if (variant !== "scanner" && signalFilter !== "ALL" && signalFilter !== "") {
       return results;
+      return filteredResults;
     }
     return [...results].sort((a, b) => {
+    return [...filteredResults].sort((a, b) => {
       const weightA = signalOrderWeight(a.signal, variant);
       const weightB = signalOrderWeight(b.signal, variant);
       if (weightA !== weightB) {
@@ -135,6 +153,7 @@ export const AllStockResultsTable: React.FC<AllStockResultsTableProps> = ({
       return 0;
     });
   }, [results, signalFilter, sortColumn, sortDirection, variant]);
+  }, [filteredResults, signalFilter, sortColumn, sortDirection, variant]);
 
   // Generate pagination items
   const renderPaginationButtons = () => {
