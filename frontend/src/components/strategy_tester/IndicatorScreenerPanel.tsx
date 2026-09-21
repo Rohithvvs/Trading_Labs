@@ -758,6 +758,9 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
               type: "warning",
             });
           }
+        } catch {
+          stopPoll();
+          setBusy(false);
         } catch (err) {
           pollConsecutiveErrorsRef.current += 1;
           const msg = err instanceof Error ? err.message : String(err || "");
@@ -942,8 +945,14 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
     setBusy(false);
     setScan((prev) => (prev ? { ...prev, status: "cancelled", stage: "cancelled" } : prev));
     try {
+      await cancelIndicatorScan(scan.scan_id);
+      stopPoll();
+      setBusy(false);
+      setScan((prev) => (prev ? { ...prev, status: "cancelled", stage: "cancelled" } : prev));
       await cancelIndicatorScan(currentId);
       notify({ title: "Scan cancelled", type: "info" });
+    } catch (err) {
+      notify({ title: "Unable to cancel scan", message: err instanceof Error ? err.message : "", type: "error" });
     } catch {
       notify({ title: "Scan cancelled", type: "info" });
     }

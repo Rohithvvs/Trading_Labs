@@ -136,6 +136,7 @@ class Settings(BaseSettings):
             object.__setattr__(self, "scanner_unified_latest_enabled", enabled)
             return enabled
         return bool(self.scanner_unified_latest_enabled)
+    cors_origins_raw: str = Field(default="http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000", alias="CORS_ORIGINS")
     cors_origins_raw: str = Field(default="http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,https://trading-labs-silk.vercel.app", alias="CORS_ORIGINS")
     
     fyers_app_id: str = ""
