@@ -1534,6 +1534,12 @@
   margin-top: 10px;
 }
 
+/* Hide Strategy Tester tab - visible false so only Indicator Scanner is shown */
+.ind-workspace-tabs [data-testid="workspace-strategy"],
+.ind-workspace-tabs button:first-child {
+  display: none !important;
+}
+
 .ind-editor {
   display: flex;
   flex-direction: column;

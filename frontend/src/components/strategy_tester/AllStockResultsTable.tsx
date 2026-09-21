@@ -93,9 +93,6 @@ export const AllStockResultsTable: React.FC<AllStockResultsTableProps> = ({
     return visibleColumns.has(colKey);
   };
 
-  const totalPages = Math.max(1, Math.ceil(totalResults / pageSize));
-  const from = totalResults > 0 ? (currentPage - 1) * pageSize + 1 : 0;
-  const to = Math.min(currentPage * pageSize, totalResults);
   const filteredResults = React.useMemo(() => {
     const needle = (searchQuery || "").trim().toUpperCase();
     if (!needle) return results;
@@ -115,10 +112,8 @@ export const AllStockResultsTable: React.FC<AllStockResultsTableProps> = ({
 
   const sortedRows = React.useMemo(() => {
     if (variant !== "scanner" && signalFilter !== "ALL" && signalFilter !== "") {
-      return results;
       return filteredResults;
     }
-    return [...results].sort((a, b) => {
     return [...filteredResults].sort((a, b) => {
       const weightA = signalOrderWeight(a.signal, variant);
       const weightB = signalOrderWeight(b.signal, variant);
@@ -152,7 +147,6 @@ export const AllStockResultsTable: React.FC<AllStockResultsTableProps> = ({
       }
       return 0;
     });
-  }, [results, signalFilter, sortColumn, sortDirection, variant]);
   }, [filteredResults, signalFilter, sortColumn, sortDirection, variant]);
 
   // Generate pagination items

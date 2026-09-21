@@ -630,18 +630,6 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
 
   const loadResults = useCallback(
     async (scanId: string, nextPage = page) => {
-      const payload = await fetchIndicatorScanResults(scanId, {
-        page: nextPage,
-        page_size: pageSize,
-        search: search || undefined,
-        matched_only: false,
-        signal: signalFilter === "ALL" ? undefined : signalFilter,
-        return_bucket: returnFilter === "ALL" ? undefined : returnFilter,
-        sort: signalFilter === "ALL" ? "signal" : sortField,
-        direction: sortDir,
-      });
-      setResults(payload.results);
-      setTotal(payload.total);
       const reqId = ++resultsRequestIdRef.current;
       try {
         const payload = await fetchIndicatorScanResults(scanId, {
@@ -793,11 +781,9 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
   ]);
 
   useEffect(() => {
-    if (scan?.scan_id && scan.status === "completed") {
     if (!scan?.scan_id || scan.status !== "completed") return;
     const timer = window.setTimeout(() => {
       loadResults(scan.scan_id).catch(() => {});
-    }
     }, search ? 250 : 0);
     return () => window.clearTimeout(timer);
   }, [page, sortField, sortDir, search, signalFilter, returnFilter, scan?.scan_id, scan?.status, loadResults]);
@@ -1018,7 +1004,6 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
   const tableRows: StrategyResultRow[] = useMemo(() => {
     const needle = search.trim().toUpperCase();
     if (scanned) {
-      return results.map((row, index) => ({
       const filtered = needle
         ? results.filter(
             (row) =>
@@ -1031,7 +1016,6 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
         rank: (row as IndicatorScanRow & { rank?: number }).rank ?? (page - 1) * pageSize + index + 1,
       }));
     }
-    const needle = search.trim().toUpperCase();
     return universeRows
       .filter(
         (row) =>
@@ -1065,7 +1049,6 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
         primary_failure_reason: null,
       }));
   }, [scanned, results, scan, universeRows, search, page, pageSize]);
-  const listCount = scanned ? total : universeRows.length;
   const listCount = scanned ? (search.trim() ? tableRows.length : total) : universeRows.length;
   const matchedCount = scan?.matched_count ?? 0;
   const skippedCount = scan?.skipped_count ?? 0;
@@ -1465,10 +1448,8 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
       {/* 1. All Stock Results Table (Top) */}
       <div data-testid="indicator-results-table">
         <AllStockResultsTable
-          title={`All ${scanned ? total : listCount} Stock Results`}
           title={`All ${listCount} Stock Results`}
           results={tableRows}
-          totalResults={scanned ? total : listCount}
           totalResults={listCount}
           selectedSymbol={selectedSymbol}
           searchQuery={search}
