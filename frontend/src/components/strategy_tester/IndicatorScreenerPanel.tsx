@@ -187,11 +187,13 @@ function IndicatorRunStatusCard({
   scanning,
   fallbackAsOf,
   universeCount = 755,
+  onCancel,
 }: {
   scan: IndicatorScanStatus | null;
   scanning: boolean;
   fallbackAsOf: string;
   universeCount?: number;
+  onCancel?: () => void;
 }) {
   const processed = scan?.processed_count || (scan?.status === "completed" ? (universeCount || 755) : 0);
   const total = scan?.total_count || scan?.universe_size || universeCount || 755;
@@ -224,19 +226,35 @@ function IndicatorRunStatusCard({
   return (
     <div className="st-status-row" data-testid="indicator-scan-status">
       <div className="st-card" data-testid="card-run-info">
-        <div className="st-card-title">
+        <div className="st-card-title" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <span className="st-run-id-text">RUN ID: {scan?.scan_id || scan?.id || "—"}</span>
-          {status === "running" || status === "queued" || status === "cancelling" ? (
-            <span className="st-status-badge st-status-badge--running">⏳ Running</span>
-          ) : status === "failed" ? (
-            <span className="st-status-badge st-status-badge--failed">✕ Failed</span>
-          ) : status === "cancelled" ? (
-            <span className="st-status-badge st-status-badge--failed">✕ Cancelled</span>
-          ) : status === "completed" ? (
-            <span className="st-status-badge st-status-badge--completed">✓ Completed</span>
-          ) : (
-            <span className="st-status-badge">Ready to scan</span>
-          )}
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            {status === "running" || status === "queued" || status === "cancelling" ? (
+              <>
+                <span className="st-status-badge st-status-badge--running">⏳ Running</span>
+                {onCancel && (
+                  <button
+                    type="button"
+                    onClick={onCancel}
+                    className="st-btn-reset"
+                    style={{ fontSize: "11px", padding: "2px 8px", cursor: "pointer" }}
+                    title="Cancel or stop this scan"
+                    data-testid="btn-card-cancel-scan"
+                  >
+                    Cancel Scan
+                  </button>
+                )}
+              </>
+            ) : status === "failed" ? (
+              <span className="st-status-badge st-status-badge--failed">✕ Failed</span>
+            ) : status === "cancelled" ? (
+              <span className="st-status-badge st-status-badge--failed">✕ Cancelled</span>
+            ) : status === "completed" ? (
+              <span className="st-status-badge st-status-badge--completed">✓ Completed</span>
+            ) : (
+              <span className="st-status-badge">Ready to scan</span>
+            )}
+          </div>
         </div>
         <div className="st-run-meta-list">
           <div>
@@ -1520,6 +1538,7 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
         scanning={scanning}
         fallbackAsOf={scanDate}
         universeCount={universeCount}
+        onCancel={handleCancel}
       />
       {!scan && (
         <p className="ind-scan-strip" data-testid="indicator-scan-ready" style={{ display: "none" }}>
