@@ -401,7 +401,7 @@ async def lifespan(app: FastAPI):
         logger.info("Test environment detected; setting up tables and skipping scheduler/monitors.")
         from .db.session import engine
         from .db.base import Base
-        import app.models  # ensure all models are registered
+        from . import models  # ensure all models are registered
         
         # Patch SQLite JSONB support for testing
         from sqlalchemy.ext.compiler import compiles
@@ -457,6 +457,15 @@ async def lifespan(app: FastAPI):
         ) from db_exc
     app.state.singleton_worker_lease = worker_lease
     app.state.task_supervisor = TaskSupervisor()
+
+    # Clean up any orphaned scans left over from a previous crash/restart
+    try:
+        from .services.indicator_scanner.persistence import reap_orphaned_scans
+        reaped = await reap_orphaned_scans()
+        if reaped:
+            logger.warning("REAPED_ORPHANED_SCANS | count=%s", reaped)
+    except Exception as _reap_exc:
+        logger.warning("Failed to reap orphaned scans on startup: %s", _reap_exc)
 
     # JWT secret hardening (production/staging fail-closed).
     try:

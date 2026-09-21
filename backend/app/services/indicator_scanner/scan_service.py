@@ -225,7 +225,7 @@ def bars_from_series(series: BarSeries | None) -> BarData | None:
 
 CURRENT_DATA_FETCH_TIMEOUT_S = 45.0
 ENSURE_TIMEOUT_S = 20.0
-REPAIR_TIMEOUT_S = 40.0
+REPAIR_TIMEOUT_S = 10.0
 
 
 def _ensure_target_date(end_date: date) -> date:
@@ -394,15 +394,10 @@ async def start_scan_background(
         if started is not None and started.tzinfo is None:
             started = started.replace(tzinfo=timezone.utc)
         age = (_utc() - started).total_seconds() if started else 0
-        if active.id in _active_scans:
-            return {
-                "error_code": "INDICATOR_SCAN_IN_PROGRESS",
-                "scan_id": active.public_scan_id,
-                "id": str(active.id),
-                "status": active.status,
-            }
-        # Only declare orphaned/interrupted if the scan has exceeded 10 minutes (600s)
-        if active.id not in _active_scans and age > 600:
+        processed = int(getattr(active, "processed_count", 0) or 0)
+        orphaned = active.id not in _active_scans and age > 20
+        idle_hung = processed == 0 and age > 30
+        if orphaned or idle_hung:
             request_cancel(active.id)
             await persistence.update_scan(
                 active.id,

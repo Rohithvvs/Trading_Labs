@@ -105,20 +105,53 @@ def upsert_index_rows(client: TursoClient, rows: list[dict[str, Any]]) -> int:
     )
 
 
-def _equity_dict(row: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "trade_date": _parse_date(row["trade_date"]),
-        "symbol": row["symbol"],
-        "open": float(row["open"]),
-        "high": float(row["high"]),
-        "low": float(row["low"]),
-        "close": float(row["close"]),
-        "volume": int(row.get("volume") or 0),
-        "delivery_qty": row.get("delivery_qty"),
-        "delivery_pct": None if row.get("delivery_pct") is None else float(row["delivery_pct"]),
-        "turnover": None if row.get("turnover") is None else float(row["turnover"]),
-        "adtv_20": None if row.get("adtv_20") is None else float(row["adtv_20"]),
-    }
+ALLOWED_DAILY_COLUMNS = frozenset({
+    "trade_date",
+    "symbol",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "delivery_qty",
+    "delivery_pct",
+    "turnover",
+    "adtv_20",
+})
+
+
+def _equity_dict(row: dict[str, Any], columns: Sequence[str] | None = None) -> dict[str, Any]:
+    if columns is None:
+        return {
+            "trade_date": _parse_date(row["trade_date"]),
+            "symbol": row["symbol"],
+            "open": float(row["open"]),
+            "high": float(row["high"]),
+            "low": float(row["low"]),
+            "close": float(row["close"]),
+            "volume": int(row.get("volume") or 0),
+            "delivery_qty": row.get("delivery_qty"),
+            "delivery_pct": None if row.get("delivery_pct") is None else float(row["delivery_pct"]),
+            "turnover": None if row.get("turnover") is None else float(row["turnover"]),
+            "adtv_20": None if row.get("adtv_20") is None else float(row["adtv_20"]),
+        }
+    out: dict[str, Any] = {}
+    for c in columns:
+        if c == "trade_date":
+            out["trade_date"] = _parse_date(row["trade_date"])
+        elif c == "symbol":
+            out["symbol"] = row["symbol"]
+        elif c in ("open", "high", "low", "close"):
+            out[c] = float(row[c])
+        elif c == "volume":
+            out["volume"] = int(row.get("volume") or 0)
+        elif c in ("delivery_pct", "turnover", "adtv_20"):
+            out[c] = None if row.get(c) is None else float(row[c])
+        elif c == "delivery_qty":
+            out["delivery_qty"] = row.get("delivery_qty")
+        else:
+            out[c] = row.get(c)
+    return out
 
 
 def select_equity_history(
@@ -209,15 +242,17 @@ def select_daily_ohlcv_for_symbols(
     lookback: int | None = None,
     from_date: date | None = None,
     to_date: date | None = None,
+    columns: Sequence[str] | None = None,
 ) -> list[dict[str, Any]]:
     if not symbols:
         return []
     placeholders = ",".join("?" for _ in symbols)
-    sql = (
-        "SELECT trade_date, symbol, open, high, low, close, volume, "
-        "delivery_qty, delivery_pct, turnover, adtv_20 "
-        f"FROM daily_ohlcv WHERE symbol IN ({placeholders})"
+    cols_to_fetch = [c for c in columns if c in ALLOWED_DAILY_COLUMNS] if columns else None
+    col_str = ", ".join(cols_to_fetch) if cols_to_fetch else (
+        "trade_date, symbol, open, high, low, close, volume, "
+        "delivery_qty, delivery_pct, turnover, adtv_20"
     )
+    sql = f"SELECT {col_str} FROM daily_ohlcv WHERE symbol IN ({placeholders})"
     params: list[Any] = list(symbols)
     if from_date is not None:
         sql += " AND trade_date >= ?"
@@ -226,7 +261,7 @@ def select_daily_ohlcv_for_symbols(
         sql += " AND trade_date <= ?"
         params.append(_iso_date(to_date))
     sql += " ORDER BY symbol ASC, trade_date ASC"
-    rows = [_equity_dict(r) for r in client.execute(sql, params)]
+    rows = [_equity_dict(r, cols_to_fetch) for r in client.execute(sql, params)]
     if lookback is not None and from_date is None:
         by_sym: dict[str, list[dict[str, Any]]] = {}
         for row in rows:
@@ -244,6 +279,7 @@ async def fetch_daily_ohlcv_for_symbols(
     lookback: int | None = None,
     from_date: date | None = None,
     to_date: date | None = None,
+    columns: Sequence[str] | None = None,
 ) -> list[dict[str, Any]]:
     return await asyncio.to_thread(
         select_daily_ohlcv_for_symbols,
@@ -252,6 +288,7 @@ async def fetch_daily_ohlcv_for_symbols(
         lookback=lookback,
         from_date=from_date,
         to_date=to_date,
+        columns=columns,
     )
 
 

@@ -317,3 +317,23 @@ async def get_result(run_id: uuid.UUID, symbol: str) -> IndicatorScanResult | No
             IndicatorScanResult.symbol.in_(candidates),
         )
         return (await db.execute(stmt)).scalars().first()
+
+
+async def reap_orphaned_scans() -> int:
+    """Mark any running/queued indicator scans as failed on server startup."""
+    async with AsyncSessionLocal() as db:
+        now = _utc()
+        stmt = (
+            select(IndicatorScanRun)
+            .where(IndicatorScanRun.status.in_(("queued", "running", "preparing")))
+        )
+        runs = (await db.execute(stmt)).scalars().all()
+        for r in runs:
+            r.status = "failed"
+            r.stage = "failed"
+            r.error_code = "SCAN_INTERRUPTED"
+            r.error_detail = "Server restarted while scan was in progress. Please click Scan to restart."
+            r.completed_at = now
+        if runs:
+            await db.commit()
+        return len(runs)

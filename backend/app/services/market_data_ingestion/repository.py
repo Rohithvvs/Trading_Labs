@@ -892,10 +892,10 @@ async def fetch_daily_ohlcv_for_symbols(
         from collections import namedtuple
         from . import turso_repository as turso
 
-        dict_rows = await turso.fetch_daily_ohlcv_for_symbols(
-            unique, lookback=lookback, from_date=from_date, to_date=to_date
-        )
         col_names = _ohlcv_column_names(columns)
+        dict_rows = await turso.fetch_daily_ohlcv_for_symbols(
+            unique, lookback=lookback, from_date=from_date, to_date=to_date, columns=col_names
+        )
         RowCls = namedtuple("DailyOhlcvRow", col_names)
         return [RowCls(*(r.get(c) for c in col_names)) for r in dict_rows]
     col_names = _ohlcv_column_names(columns)

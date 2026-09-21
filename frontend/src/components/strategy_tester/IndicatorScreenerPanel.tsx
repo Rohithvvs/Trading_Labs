@@ -730,6 +730,7 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
     (scanId: string) => {
       stopPoll();
       scanIdRef.current = scanId;
+      const pollStart = Date.now();
       const tick = async () => {
         try {
           const status = await fetchIndicatorScan(scanId);
@@ -737,6 +738,22 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
           setScan(status);
           if (status.status === "completed" || status.status === "failed" || status.status === "cancelled") {
             await handleTerminalScan(status);
+            return;
+          }
+          // Watchdog: If scan is stuck fetching market data for > 180s without progress
+          if (Date.now() - pollStart > 180_000 && isFetchingCurrentData(status) && (status.progress_pct ?? 0) <= 2) {
+            stopPoll();
+            setBusy(false);
+            setScan({
+              ...status,
+              status: "failed",
+              error_detail: "Market data fetch timed out. Please click Scan to restart.",
+            });
+            notify({
+              title: "Scan timed out",
+              message: "Market data fetch took too long. Please click Scan to retry.",
+              type: "warning",
+            });
           }
         } catch {
           stopPoll();
@@ -748,7 +765,7 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
         void tick();
       }, 1000);
     },
-    [handleTerminalScan, stopPoll],
+    [handleTerminalScan, notify, stopPoll],
   );
 
   useEffect(() => () => stopPoll(), [stopPoll]);
@@ -894,7 +911,10 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
     if (!scan?.scan_id) return;
     try {
       await cancelIndicatorScan(scan.scan_id);
-      setScan((prev) => (prev ? { ...prev, status: "cancelling", stage: "cancelling" } : prev));
+      stopPoll();
+      setBusy(false);
+      setScan((prev) => (prev ? { ...prev, status: "cancelled", stage: "cancelled" } : prev));
+      notify({ title: "Scan cancelled", type: "info" });
     } catch (err) {
       notify({ title: "Unable to cancel scan", message: err instanceof Error ? err.message : "", type: "error" });
     }

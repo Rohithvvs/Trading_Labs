@@ -376,6 +376,7 @@ async def load_bar_series(
     from_date: date,
     to_date: date,
     session_dates: set[date] | None = None,
+    chunk_size: int = 100,
 ) -> dict[str, BarSeries]:
     if not symbols:
         return {}
@@ -386,28 +387,42 @@ async def load_bar_series(
             if variant not in seen_query:
                 seen_query.add(variant)
                 query_symbols.append(variant)
-    rows = await fetch_daily_ohlcv_for_symbols(
-        query_symbols,
-        columns=(
-            DailyOhlcv.trade_date,
-            DailyOhlcv.symbol,
-            DailyOhlcv.open,
-            DailyOhlcv.high,
-            DailyOhlcv.low,
-            DailyOhlcv.close,
-            DailyOhlcv.volume,
-        ),
-        from_date=from_date,
-        to_date=to_date,
-    )
+
     buckets: dict[str, list[tuple]] = defaultdict(list)
-    for trade_date, symbol, open_px, high, low, close, volume in rows:
-        canon = canonical_symbol(symbol) or symbol
-        buckets[canon].append((trade_date, open_px, high, low, close, volume))
+    cols = (
+        DailyOhlcv.trade_date,
+        DailyOhlcv.symbol,
+        DailyOhlcv.open,
+        DailyOhlcv.high,
+        DailyOhlcv.low,
+        DailyOhlcv.close,
+        DailyOhlcv.volume,
+    )
+    for i in range(0, len(query_symbols), chunk_size):
+        chunk = query_symbols[i : i + chunk_size]
+        rows = await fetch_daily_ohlcv_for_symbols(
+            chunk,
+            columns=cols,
+            from_date=from_date,
+            to_date=to_date,
+        )
+        for r in rows:
+            symbol = getattr(r, "symbol", None) or (r[1] if isinstance(r, (tuple, list)) else None)
+            trade_date = getattr(r, "trade_date", None) or (r[0] if isinstance(r, (tuple, list)) else None)
+            open_px = getattr(r, "open", None) or (r[2] if isinstance(r, (tuple, list)) else None)
+            high = getattr(r, "high", None) or (r[3] if isinstance(r, (tuple, list)) else None)
+            low = getattr(r, "low", None) or (r[4] if isinstance(r, (tuple, list)) else None)
+            close = getattr(r, "close", None) or (r[5] if isinstance(r, (tuple, list)) else None)
+            volume = getattr(r, "volume", None) or (r[6] if isinstance(r, (tuple, list)) else 0)
+            canon = canonical_symbol(symbol) or symbol
+            buckets[canon].append((trade_date, open_px, high, low, close, volume))
+        del rows
+
     out: dict[str, BarSeries] = {}
     for symbol, items in buckets.items():
         items.sort(key=lambda row: row[0])
         out[symbol] = _series_from_rows(items, session_dates=session_dates)
+    del buckets
     return out
 
 
