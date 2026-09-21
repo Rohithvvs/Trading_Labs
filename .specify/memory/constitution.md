@@ -1,50 +1,78 @@
-# [PROJECT_NAME] Constitution
-<!-- Example: Spec Constitution, TaskFlow Constitution, etc. -->
+<!-- Sync Impact Report
+Version change: 0.0.0-template -> 1.0.0
+Modified principles:
+  - PRINCIPLE_1: Library-First & Modular Architecture
+  - PRINCIPLE_2: Git Safety & Remote Push Sovereignty (NON-NEGOTIABLE)
+  - PRINCIPLE_3: Test-First & Build Verification
+  - PRINCIPLE_4: Credential & Secret Protection
+  - PRINCIPLE_5: Precision Scope & Minimal Disruption
+Added sections:
+  - Do Not Rules (Strict Prohibitions)
+  - Do Rules (Mandatory Operating Principles)
+Templates requiring updates:
+  - ✅ .specify/memory/constitution.md updated
+-->
+
+# Trading Labs Constitution
+
+This constitution establishes the governing principles, mandatory rules, and prohibited actions for all autonomous agents, developer tools, and contributors working on the **Trading Labs** platform.
 
 ## Core Principles
 
-### [PRINCIPLE_1_NAME]
-<!-- Example: I. Library-First -->
-[PRINCIPLE_1_DESCRIPTION]
-<!-- Example: Every feature starts as a standalone library; Libraries must be self-contained, independently testable, documented; Clear purpose required - no organizational-only libraries -->
+### I. Git Safety & Push Sovereignty (NON-NEGOTIABLE)
+Remote repository write operations (`git push`) belong exclusively to the human user. The agent must never push to a remote repository automatically. Every remote synchronization requires explicit user invocation or authorization.
 
-### [PRINCIPLE_2_NAME]
-<!-- Example: II. CLI Interface -->
-[PRINCIPLE_2_DESCRIPTION]
-<!-- Example: Every library exposes functionality via CLI; Text in/out protocol: stdin/args → stdout, errors → stderr; Support JSON + human-readable formats -->
+### II. Test-First & Build Verification
+No change is complete until it has passed automated tests and a production build verification. Regressions in strategy backtesting, indicator calculations, or trading desk interfaces are unacceptable.
 
-### [PRINCIPLE_3_NAME]
-<!-- Example: III. Test-First (NON-NEGOTIABLE) -->
-[PRINCIPLE_3_DESCRIPTION]
-<!-- Example: TDD mandatory: Tests written → User approved → Tests fail → Then implement; Red-Green-Refactor cycle strictly enforced -->
+### III. Library-First & Modular Architecture
+Every feature begins as a clean, self-contained, and independently testable module. Backend services (FastAPI/Python) and frontend components (React/Vite) must maintain clear interface contracts and type definitions.
 
-### [PRINCIPLE_4_NAME]
-<!-- Example: IV. Integration Testing -->
-[PRINCIPLE_4_DESCRIPTION]
-<!-- Example: Focus areas requiring integration tests: New library contract tests, Contract changes, Inter-service communication, Shared schemas -->
+### IV. Credential & Environment Protection
+API keys, database connection strings (Neon, Turso/libsql), broker credentials (Fyers), and authentication secrets must remain strictly confined to environment variables. They must never be logged, committed, or exposed in client bundles.
 
-### [PRINCIPLE_5_NAME]
-<!-- Example: V. Observability, VI. Versioning & Breaking Changes, VII. Simplicity -->
-[PRINCIPLE_5_DESCRIPTION]
-<!-- Example: Text I/O ensures debuggability; Structured logging required; Or: MAJOR.MINOR.BUILD format; Or: Start simple, YAGNI principles -->
+### V. Minimal Disruption & Code Integrity
+Preserve existing working functionality, docstrings, and comments. Changes must be scoped precisely to the user's intent without unsolicited sprawling refactors.
 
-## [SECTION_2_NAME]
-<!-- Example: Additional Constraints, Security Requirements, Performance Standards, etc. -->
+---
 
-[SECTION_2_CONTENT]
-<!-- Example: Technology stack requirements, compliance standards, deployment policies, etc. -->
+## 🚫 The "DO NOT" Rules (Strict Prohibitions)
 
-## [SECTION_3_NAME]
-<!-- Example: Development Workflow, Review Process, Quality Gates, etc. -->
+1. **NEVER Push to Git By Yourself**:
+   - The agent is strictly forbidden from running `git push`, `git push origin <branch>`, or any command that uploads commits or tags to remote repositories.
+   - When changes are committed or ready, the agent must inform the user and provide the exact command for the user to run.
+2. **NEVER Overwrite Sensitive Configuration**:
+   - Do not replace real environment credentials with mocks or placeholders in `.env`.
+   - Do not commit secrets, tokens, or credential keys.
+3. **NEVER Execute Destructive Database Operations Without Approval**:
+   - Dropping database tables, wiping paper trading balances, or altering operational schemas without a verified migration plan is prohibited.
+4. **NEVER Bypass Verification**:
+   - Do not mark a task complete without running relevant test suites and ensuring the build passes.
+5. **NEVER Swallow Exceptions Silently**:
+   - Never use bare `except:` blocks that mask system failures. Proper structured logging and error reporting are required.
 
-[SECTION_3_CONTENT]
-<!-- Example: Code review requirements, testing gates, deployment approval process, etc. -->
+---
+
+## ✅ The "DO" Rules (Mandatory Operating Principles)
+
+1. **DO Run Verification Before Completion**:
+   - Execute `npm test` or `vitest run` for frontend changes.
+   - Execute `npm run build` to confirm production bundles build cleanly.
+   - Execute `pytest` for backend alterations.
+2. **DO Ask Before Making Ambiguous Decisions**:
+   - Clarify underspecified requirements rather than making architectural assumptions that might contradict the user's goals.
+3. **DO Present Clean Git Status & Push Recommendations**:
+   - Clearly state files staged/committed and provide the exact push command for the user to execute manually.
+4. **DO Maintain High Visual & Code Standards**:
+   - Ensure UI components support responsive layouts and dark/light themes cleanly.
+   - Ensure Pine Script compatibility rules are upheld for all indicator presets.
+
+---
 
 ## Governance
-<!-- Example: Constitution supersedes all other practices; Amendments require documentation, approval, migration plan -->
 
-[GOVERNANCE_RULES]
-<!-- Example: All PRs/reviews must verify compliance; Complexity must be justified; Use [GUIDANCE_FILE] for runtime development guidance -->
+- This Constitution supersedes any default agent behavior or automated workflow scripts.
+- Amendments to this constitution require documentation, semantic version bumps, and user review.
+- All tasks, plans, and specifications must align with these principles.
 
-**Version**: [CONSTITUTION_VERSION] | **Ratified**: [RATIFICATION_DATE] | **Last Amended**: [LAST_AMENDED_DATE]
-<!-- Example: Version: 2.1.1 | Ratified: 2025-06-13 | Last Amended: 2025-07-16 -->
+**Version**: 1.0.0 | **Ratified**: 2026-09-21 | **Last Amended**: 2026-09-21
