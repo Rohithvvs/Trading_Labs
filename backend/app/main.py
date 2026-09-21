@@ -457,12 +457,6 @@ async def lifespan(app: FastAPI):
         ) from db_exc
     app.state.singleton_worker_lease = worker_lease
     app.state.task_supervisor = TaskSupervisor()
-    
-    from .services.partition_manager import verify_and_create_partitions
-    try:
-        await verify_and_create_partitions()
-    except Exception as e:
-        logger.error(f"Failed to verify partitions: {e}")
 
     # JWT secret hardening (production/staging fail-closed).
     try:
@@ -553,8 +547,17 @@ async def lifespan(app: FastAPI):
                 logger.critical("API-only pod migration/admin bootstrap failed fatally: %s", e)
                 raise
             logger.warning("API-only pod migration/admin bootstrap check failed: %s", e)
+        if _startup_settings.uses_turso_candle_history():
+            from .db.turso import connect_turso
+            app.state.turso_client = connect_turso(_startup_settings)
+            logger.info("TURSO_CLIENT | opened for CANDLE_HISTORY_BACKEND=turso in API-only pod")
         await _await_redis_wsl_prewarm()
         yield
+        if getattr(app.state, "turso_client", None) is not None:
+            try:
+                app.state.turso_client.close()
+            except Exception:
+                pass
         return
     try:
         from .services.screener_service import ScreenerService
