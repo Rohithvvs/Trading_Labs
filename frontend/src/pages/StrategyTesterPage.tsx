@@ -243,6 +243,7 @@ export const StrategyTesterPageInner: React.FC = () => {
   const [isBuilderModalOpen, setIsBuilderModalOpen] = useState<boolean>(false);
   const [isColumnsModalOpen, setIsColumnsModalOpen] = useState<boolean>(false);
   const [workspace, setWorkspace] = useState<"strategy" | "indicator">(
+    savedState?.workspace === "indicator" ? "indicator" : "strategy",
     savedState?.workspace === "strategy" ? "strategy" : "indicator",
   );
   const [builderTab, setBuilderTab] = useState<"builder" | "pine" | "indicator">("builder");
