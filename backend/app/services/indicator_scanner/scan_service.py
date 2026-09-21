@@ -538,7 +538,7 @@ async def execute_scan(
     # session_on_or_before must not rewind today's live cash session to yesterday.
     if not is_nse_cash_session(end_date):
         end_date = session_on_or_before(end_date)
-    needed = max(int(compiled.required_bars or 1), HISTORY_BUFFER_BARS)
+    needed = max(int(compiled.required_bars or 1) + 30, HISTORY_BUFFER_BARS)
     from_date = nth_session_ending(end_date, needed)
     instruments = [
         item

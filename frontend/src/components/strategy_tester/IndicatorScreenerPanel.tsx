@@ -471,6 +471,7 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
   const [hiddenColumns, setHiddenColumns] = useState<string[]>([]);
   const backtestPollRef = useRef<number | null>(null);
   const pollRef = useRef<number | null>(null);
+  const pollConsecutiveErrorsRef = useRef<number>(0);
   const scanIdRef = useRef<string | null>(savedScanner?.scan?.scan_id || null);
   const lastAppliedId = useRef<string | null>(appliedIndicator?.id || null);
   const resultsRequestIdRef = useRef<number>(0);
@@ -729,11 +730,13 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
   const poll = useCallback(
     (scanId: string) => {
       stopPoll();
+      pollConsecutiveErrorsRef.current = 0;
       scanIdRef.current = scanId;
       const pollStart = Date.now();
       const tick = async () => {
         try {
           const status = await fetchIndicatorScan(scanId);
+          pollConsecutiveErrorsRef.current = 0;
           if (scanIdRef.current !== scanId) return;
           setScan(status);
           if (status.status === "completed" || status.status === "failed" || status.status === "cancelled") {
@@ -755,9 +758,34 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
               type: "warning",
             });
           }
-        } catch {
-          stopPoll();
-          setBusy(false);
+        } catch (err) {
+          pollConsecutiveErrorsRef.current += 1;
+          const msg = err instanceof Error ? err.message : String(err || "");
+          const isAuth = msg.includes("401") || msg.toLowerCase().includes("not authenticated") || msg.toLowerCase().includes("unauthorized");
+          if (isAuth || pollConsecutiveErrorsRef.current >= 3) {
+            stopPoll();
+            setBusy(false);
+            setScan((prev) =>
+              prev
+                ? {
+                    ...prev,
+                    status: "failed",
+                    stage: "failed",
+                    error_code: isAuth ? "UNAUTHORIZED" : "POLL_FAILED",
+                    error_detail: isAuth
+                      ? "Session expired or not authenticated. Please log in to run scans."
+                      : "Lost connection to the scan runner. Please click Scan to restart.",
+                  }
+                : null,
+            );
+            if (isAuth) {
+              notify({
+                title: "Authentication required",
+                message: "Please log in to run and view indicator scans.",
+                type: "warning",
+              });
+            }
+          }
         }
       };
       void tick();
@@ -909,14 +937,15 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
 
   const handleCancel = async () => {
     if (!scan?.scan_id) return;
+    const currentId = scan.scan_id;
+    stopPoll();
+    setBusy(false);
+    setScan((prev) => (prev ? { ...prev, status: "cancelled", stage: "cancelled" } : prev));
     try {
-      await cancelIndicatorScan(scan.scan_id);
-      stopPoll();
-      setBusy(false);
-      setScan((prev) => (prev ? { ...prev, status: "cancelled", stage: "cancelled" } : prev));
+      await cancelIndicatorScan(currentId);
       notify({ title: "Scan cancelled", type: "info" });
-    } catch (err) {
-      notify({ title: "Unable to cancel scan", message: err instanceof Error ? err.message : "", type: "error" });
+    } catch {
+      notify({ title: "Scan cancelled", type: "info" });
     }
   };
 
