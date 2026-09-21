@@ -426,26 +426,7 @@ def _scan_owned(run, user: User):
 
 @scan_router.get("/{scan_id}")
 async def get_scan(scan_id: str, user: User = Depends(require_feature("advanced_scanner"))):
-    from datetime import datetime, timezone
     run = _scan_owned(await _load_scan(scan_id), user)
-    if run.status in ("running", "preparing", "cancelling"):
-        from ..services.indicator_scanner.scan_service import _active_scans
-        started = run.started_at
-        if started is not None and started.tzinfo is None:
-            started = started.replace(tzinfo=timezone.utc)
-        now = datetime.now(timezone.utc)
-        age = (now - started).total_seconds() if started else 0
-        if run.id not in _active_scans and age > 120:
-            updated = await persistence.update_scan(
-                run.id,
-                status="failed",
-                stage="failed",
-                error_code="SCAN_INTERRUPTED",
-                error_detail="Scan process was interrupted or timed out. Please click Scan to restart.",
-                completed_at=now,
-            )
-            if updated:
-                run = updated
     run = await ensure_summary_analytics(run)
     return scan_status_payload(run)
 
