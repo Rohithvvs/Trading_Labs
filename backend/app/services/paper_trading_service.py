@@ -1259,6 +1259,62 @@ class PaperTradingService:
             updated_at=datetime.now(timezone.utc),
         )
 
+    @staticmethod
+    def _adjust_long_position_levels(
+        fill_price: Decimal,
+        order_price: Decimal | None,
+        order_stop_loss: Decimal | None,
+        order_target: Decimal | None,
+    ) -> tuple[Decimal | None, Decimal | None]:
+        """
+        Adjust stop loss and target dynamically to the actual fill price.
+        Preserves the user's exact stop loss and target whenever they are valid
+        relative to the fill price (stop_loss < fill_price and target > fill_price).
+        If inverted (stop_loss >= fill_price or target <= fill_price) or if there
+        is a severe cross-symbol price mismatch (>15% difference), scales proportionally.
+        """
+        adjusted_stop: Decimal | None = None
+        adjusted_target: Decimal | None = None
+
+        has_order_price = order_price is not None and dec(order_price) > 0
+        order_price_dec = dec(order_price) if has_order_price else None
+
+        # Severe price mismatch indicates a stale quote or cross-symbol leak (e.g. OFSS -> INFY)
+        has_severe_mismatch = (
+            order_price_dec is not None
+            and abs(fill_price - order_price_dec) / order_price_dec > Decimal("0.15")
+        )
+
+        if order_stop_loss is not None:
+            stop_dec = dec(order_stop_loss)
+            if not has_severe_mismatch and stop_dec < fill_price:
+                # Normal case: explicit stop loss is safely below fill price
+                adjusted_stop = stop_dec
+            elif order_price_dec is not None and stop_dec < order_price_dec:
+                ratio = stop_dec / order_price_dec
+                scaled_stop = q_price(fill_price * ratio)
+                adjusted_stop = scaled_stop if scaled_stop < fill_price else q_price(fill_price * Decimal("0.98"))
+            elif stop_dec < fill_price:
+                adjusted_stop = stop_dec
+            else:
+                adjusted_stop = q_price(fill_price * Decimal("0.98"))
+
+        if order_target is not None:
+            target_dec = dec(order_target)
+            if not has_severe_mismatch and target_dec > fill_price:
+                # Normal case: explicit target is safely above fill price
+                adjusted_target = target_dec
+            elif order_price_dec is not None and target_dec > order_price_dec:
+                ratio = target_dec / order_price_dec
+                scaled_target = q_price(fill_price * ratio)
+                adjusted_target = scaled_target if scaled_target > fill_price else q_price(fill_price * Decimal("1.04"))
+            elif target_dec > fill_price:
+                adjusted_target = target_dec
+            else:
+                adjusted_target = q_price(fill_price * Decimal("1.04"))
+
+        return adjusted_stop, adjusted_target
+
     def _find_open_position(
         self, account_id: int, symbol: str
     ) -> PaperPosition | None:
@@ -1696,14 +1752,20 @@ class PaperTradingService:
             # Deduct funds and create/update OPEN position for THIS engine only
             prior_cash = account.cash_balance
             account.cash_balance = q_pnl(dec(account.cash_balance) - estimated_cost)
+            pos_stop, pos_target = self._adjust_long_position_levels(
+                fill_price=fill_price,
+                order_price=order.order_price,
+                order_stop_loss=order.stop_loss,
+                order_target=order.target,
+            )
             position = self._find_open_position(account.id, order.symbol)
             if position:
                 total_cost = (dec(position.avg_entry_price) * dec(position.qty)) + estimated_cost
                 position.qty = q_qty(dec(position.qty) + order_qty)
                 position.avg_entry_price = q_price(total_cost / dec(position.qty))
                 position.current_price = fill_price
-                position.stop_loss = order.stop_loss
-                position.target = order.target
+                position.stop_loss = pos_stop or position.stop_loss
+                position.target = pos_target or position.target
                 position.updated_at = datetime.now(timezone.utc)
             else:
                 position = PaperPosition(
@@ -1714,8 +1776,8 @@ class PaperTradingService:
                     qty=order.qty,
                     avg_entry_price=fill_price,
                     current_price=fill_price,
-                    stop_loss=order.stop_loss,
-                    target=order.target,
+                    stop_loss=pos_stop,
+                    target=pos_target,
                     notes=order.notes,
                     source_signal=order.source_signal,
                     source_score=order.source_score,
@@ -3399,18 +3461,31 @@ class PaperTradingService:
     async def get_engine_status(self) -> dict:
         from app.services.market_engine_service import market_engine
         
-        # Count open positions
-        open_positions = self.db.scalar(
-            select(func.count(PaperPosition.id))
-            .where(PaperPosition.status == "OPEN")
-        ) or 0
+        try:
+            open_positions = self.db.scalar(
+                select(func.count(PaperPosition.id))
+                .where(PaperPosition.status == "OPEN")
+            ) or 0
+        except Exception:
+            open_positions = 0
         
-        # Max last_reconciled_at
-        last_reconciliation_at = self.db.scalar(
-            select(func.max(PaperPosition.last_reconciled_at))
-        )
+        try:
+            last_reconciliation_at = self.db.scalar(
+                select(func.max(PaperPosition.last_reconciled_at))
+            )
+        except Exception:
+            last_reconciliation_at = None
         
-        engine_status = await market_engine.get_status()
+        try:
+            if hasattr(market_engine, "get_status"):
+                engine_status = await market_engine.get_status()
+            elif hasattr(market_engine, "status"):
+                engine_status = await market_engine.status()
+            else:
+                engine_status = {}
+        except Exception as exc:
+            self.logger.warning("Failed to retrieve market engine status: %s", exc)
+            engine_status = {"status": "STOPPED", "error": str(exc)}
         
         return {
             "status": engine_status.get("status", "STOPPED"),

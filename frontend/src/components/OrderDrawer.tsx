@@ -374,6 +374,41 @@ export function OrderDrawer({
       });
       return;
     }
+    if (ticket.type === "STOP_LIMIT" && (!ticket.stopPrice || !ticket.limitPrice)) {
+      const msg = "Both Stop trigger and Limit price are required for Stop-Limit orders.";
+      setError(msg);
+      toast.error("Invalid order", msg);
+      return;
+    }
+    if (entryReference && entryReference > 0) {
+      if (ticket.side === "BUY") {
+        if (ticket.stopLoss != null && ticket.stopLoss >= entryReference) {
+          const msg = `Stop loss (₹${ticket.stopLoss}) must be below entry price (₹${entryReference.toFixed(2)}) for BUY orders.`;
+          setError(msg);
+          toast.error("Invalid Stop Loss", msg);
+          return;
+        }
+        if (ticket.target != null && ticket.target <= entryReference) {
+          const msg = `Target (₹${ticket.target}) must be above entry price (₹${entryReference.toFixed(2)}) for BUY orders.`;
+          setError(msg);
+          toast.error("Invalid Target", msg);
+          return;
+        }
+      } else if (ticket.side === "SELL") {
+        if (ticket.stopLoss != null && ticket.stopLoss <= entryReference) {
+          const msg = `Stop loss (₹${ticket.stopLoss}) must be above entry price (₹${entryReference.toFixed(2)}) for SELL orders.`;
+          setError(msg);
+          toast.error("Invalid Stop Loss", msg);
+          return;
+        }
+        if (ticket.target != null && ticket.target >= entryReference) {
+          const msg = `Target (₹${ticket.target}) must be below entry price (₹${entryReference.toFixed(2)}) for SELL orders.`;
+          setError(msg);
+          toast.error("Invalid Target", msg);
+          return;
+        }
+      }
+    }
 
     setIsBusy(true);
     setError(null);
@@ -598,13 +633,44 @@ export function OrderDrawer({
               />
             </label>
 
-            {ticket.type !== "MARKET" ? (
+            {ticket.type === "STOP_LIMIT" ? (
+              <>
+                <label className="filter-field">
+                  <span>
+                    Stop trigger
+                    <InfoTooltip content={TOOLTIPS.PAPER_TRADING.STOP_LOSS_FIELD} />
+                  </span>
+                  <input
+                    type="number"
+                    min={0.01}
+                    step="0.05"
+                    placeholder="Stop trigger price"
+                    value={ticket.stopPrice ?? ""}
+                    onChange={(e) => setTicket({ ...ticket, stopPrice: Number(e.target.value) || null })}
+                  />
+                </label>
+                <label className="filter-field">
+                  <span>
+                    Limit price
+                    <InfoTooltip content={TOOLTIPS.PAPER_TRADING.LIMIT_PRICE} />
+                  </span>
+                  <input
+                    type="number"
+                    min={0.01}
+                    step="0.05"
+                    placeholder="Limit price"
+                    value={ticket.limitPrice ?? ""}
+                    onChange={(e) => setTicket({ ...ticket, limitPrice: Number(e.target.value) || null })}
+                  />
+                </label>
+              </>
+            ) : ticket.type !== "MARKET" ? (
               <label className="filter-field">
                 <span>
-                  {ticket.type === "STOP" || ticket.type === "STOP_LIMIT" ? "Stop trigger" : "Limit price"}
+                  {ticket.type === "STOP" ? "Stop trigger" : "Limit price"}
                   <InfoTooltip
                     content={
-                      ticket.type === "STOP" || ticket.type === "STOP_LIMIT"
+                      ticket.type === "STOP"
                         ? TOOLTIPS.PAPER_TRADING.STOP_LOSS_FIELD
                         : TOOLTIPS.PAPER_TRADING.LIMIT_PRICE
                     }
@@ -615,17 +681,13 @@ export function OrderDrawer({
                   min={0.01}
                   step="0.05"
                   placeholder={ticket.type === "LIMIT" ? "Current price" : ""}
-                  value={
-                    ticket.type === "LIMIT" || ticket.type === "GTT" || ticket.type === "STOP_LIMIT"
-                      ? ticket.limitPrice ?? ""
-                      : ticket.stopPrice ?? ""
-                  }
+                  value={ticket.type === "STOP" ? ticket.stopPrice ?? "" : ticket.limitPrice ?? ""}
                   onChange={(e) =>
                     setTicket({
                       ...ticket,
-                      ...(ticket.type === "LIMIT" || ticket.type === "GTT" || ticket.type === "STOP_LIMIT"
-                        ? { limitPrice: Number(e.target.value) || null }
-                        : { stopPrice: Number(e.target.value) || null }),
+                      ...(ticket.type === "STOP"
+                        ? { stopPrice: Number(e.target.value) || null }
+                        : { limitPrice: Number(e.target.value) || null }),
                     })
                   }
                 />
@@ -641,7 +703,7 @@ export function OrderDrawer({
                 type="number"
                 min={0.01}
                 step="0.05"
-                placeholder="Auto-calculated"
+                placeholder="Optional"
                 value={ticket.stopLoss ?? ""}
                 onChange={(e) => setTicket({ ...ticket, stopLoss: Number(e.target.value) || null })}
               />
@@ -656,7 +718,7 @@ export function OrderDrawer({
                 type="number"
                 min={0.01}
                 step="0.05"
-                placeholder="Auto-calculated"
+                placeholder="Optional"
                 value={ticket.target ?? ""}
                 onChange={(e) => setTicket({ ...ticket, target: Number(e.target.value) || null })}
               />
@@ -695,9 +757,13 @@ export function OrderDrawer({
                     );
                     if (entryReference && pct > 0) {
                       const direction = ticket.side === "BUY" ? -1 : 1;
+                      const sl = Math.round(entryReference * (1 + (direction * pct) / 100) * 20) / 20;
+                      const risk = Math.abs(entryReference - sl);
+                      const target = Math.round((entryReference + (ticket.side === "BUY" ? 1 : -1) * risk * 2) * 20) / 20;
                       setTicket({
                         ...ticket,
-                        stopLoss: Math.round(entryReference * (1 + (direction * pct) / 100) * 20) / 20,
+                        stopLoss: sl,
+                        target: ticket.target ?? target,
                       });
                     }
                   }}

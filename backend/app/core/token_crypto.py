@@ -18,12 +18,20 @@ _PREFIX = "enc:v1:"
 _fernet = None
 
 
+def _make_single_fernet(secret: str):
+    from cryptography.fernet import Fernet
+    digest = hashlib.sha256(secret.encode("utf-8")).digest()
+    key = base64.urlsafe_b64encode(digest)
+    return Fernet(key)
+
+
 def _get_fernet():
     global _fernet
     if _fernet is not None:
         return _fernet
     try:
         from cryptography.fernet import Fernet
+        from cryptography.fernet import MultiFernet
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError("cryptography package is required for token encryption") from exc
 
@@ -36,6 +44,28 @@ def _get_fernet():
     digest = hashlib.sha256(secret.encode("utf-8")).digest()
     key = base64.urlsafe_b64encode(digest)
     _fernet = Fernet(key)
+    primary_secret = os.getenv("TOKEN_ENCRYPTION_KEY") or os.getenv("JWT_SECRET")
+    if not primary_secret:
+        try:
+            from pathlib import Path
+            from dotenv import load_dotenv
+            root_env = Path(__file__).resolve().parents[3] / ".env"
+            if root_env.exists():
+                load_dotenv(root_env, override=False)
+                primary_secret = os.getenv("TOKEN_ENCRYPTION_KEY") or os.getenv("JWT_SECRET")
+        except Exception:
+            pass
+
+    primary = (primary_secret or "").strip()
+    fallback = "yoursecretkey_must_be_changed_in_prod"
+
+    fernets = []
+    if primary:
+        fernets.append(_make_single_fernet(primary))
+    if fallback != primary:
+        fernets.append(_make_single_fernet(fallback))
+
+    _fernet = MultiFernet(fernets)
     return _fernet
 
 

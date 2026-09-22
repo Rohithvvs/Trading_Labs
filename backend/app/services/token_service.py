@@ -20,6 +20,8 @@ _CACHED_TOKEN: str | None = None
 _TOKEN_EXPIRY: datetime | None = None
 _TOKEN_SAVED_AT: datetime | None = None
 _TOKEN_CACHE_TTL = timedelta(minutes=int(os.getenv("FYERS_TOKEN_CACHE_MINUTES", "60")))
+_NEGATIVE_CACHE_TTL = timedelta(seconds=15)
+_NEGATIVE_CACHE_UNTIL: datetime | None = None
 
 import threading
 _TOKEN_LOCK = threading.Lock()
@@ -44,11 +46,20 @@ def _decode_jwt_expiry(token: str) -> datetime | None:
     except Exception:
         return None
 
+def _clear_negative_cache() -> None:
+    global _NEGATIVE_CACHE_UNTIL
+    _NEGATIVE_CACHE_UNTIL = None
+
+def _set_negative_cache() -> None:
+    global _NEGATIVE_CACHE_UNTIL
+    _NEGATIVE_CACHE_UNTIL = utc_now() + _NEGATIVE_CACHE_TTL
+
 def _clear_token_cache() -> None:
     global _CACHED_TOKEN, _TOKEN_EXPIRY, _TOKEN_SAVED_AT
     _CACHED_TOKEN = None
     _TOKEN_EXPIRY = None
     _TOKEN_SAVED_AT = None
+    _clear_negative_cache()
     try:
         from ..core.response_cache import cache_invalidate
         cache_invalidate("token_status")
@@ -65,6 +76,7 @@ def has_cached_token() -> bool:
 
 def _set_token_cache(access_token: str, saved_at: datetime | None = None) -> None:
     global _CACHED_TOKEN, _TOKEN_EXPIRY, _TOKEN_SAVED_AT
+    _clear_negative_cache()
     _CACHED_TOKEN = access_token
     _TOKEN_EXPIRY = utc_now() + _TOKEN_CACHE_TTL
     if saved_at is not None:
@@ -425,31 +437,39 @@ async def get_current_access_token(db: AsyncSession) -> str | None:
         )
         return _CACHED_TOKEN
 
+    if _NEGATIVE_CACHE_UNTIL and now < _NEGATIVE_CACHE_UNTIL and not _CACHED_TOKEN:
+        return None
+
     logger.info("TOKEN_CACHE_MISS | source=database | reason=cache_miss_or_expired")
     row = await get_fyers_token_row(db)
     if row is None:
         logger.warning("TOKEN_NOT_FOUND | No FyersToken row found in database")
         _clear_token_cache()
+        _set_negative_cache()
         return None
     if not row.is_active or (getattr(row, "status", "") or "").lower() == "failed":
         logger.warning("TOKEN_NOT_ACTIVE | DB token has status=%s, is_active=%s", getattr(row, "status", None), row.is_active)
         _clear_token_cache()
+        _set_negative_cache()
         return None
     if not row.access_token:
         logger.warning("TOKEN_NOT_FOUND | FyersToken row exists but access_token is empty")
         _clear_token_cache()
+        _set_negative_cache()
         return None
 
     plain = _decrypt_from_storage(row.access_token)
     if not plain:
         logger.warning("TOKEN_NOT_FOUND | Stored token could not be decrypted")
         _clear_token_cache()
+        _set_negative_cache()
         return None
 
     jwt_exp = _decode_jwt_expiry(plain)
     if jwt_exp and _ensure_utc(jwt_exp) <= now:
         logger.warning("TOKEN_EXPIRED | Stored DB token expired at %s", jwt_exp.isoformat())
         _clear_token_cache()
+        _set_negative_cache()
         return None
 
     saved_at = _ensure_utc(row.access_token_saved_at)
@@ -478,12 +498,18 @@ def get_current_access_token_sync() -> tuple[str | None, str]:
         )
         return _CACHED_TOKEN, "cache"
 
+    if _NEGATIVE_CACHE_UNTIL and now < _NEGATIVE_CACHE_UNTIL and not _CACHED_TOKEN:
+        return None, "cache_cooldown"
+
     with _TOKEN_LOCK:
         now = utc_now()
         expiry = _ensure_utc(_TOKEN_EXPIRY)
         if _CACHED_TOKEN and expiry and now < expiry:
             logger.info("TOKEN_CACHE_HIT | source=memory_cache | reason=double_check")
             return _CACHED_TOKEN, "cache"
+
+        if _NEGATIVE_CACHE_UNTIL and now < _NEGATIVE_CACHE_UNTIL and not _CACHED_TOKEN:
+            return None, "cache_cooldown"
 
         logger.info("TOKEN_CACHE_MISS | source=database | reason=cache_miss_or_expired")
         from ..db.session import SessionLocal
@@ -498,16 +524,19 @@ def get_current_access_token_sync() -> tuple[str | None, str]:
                 if row is None:
                     logger.warning("TOKEN_NOT_FOUND | No FyersToken row found in database")
                     _clear_token_cache()
+                    _set_negative_cache()
                     return None, "database"
                 if not row.is_active or (getattr(row, "status", "") or "").lower() == "failed":
                     logger.warning("TOKEN_NOT_ACTIVE | DB token has status=%s, is_active=%s", getattr(row, "status", None), row.is_active)
                     _clear_token_cache()
+                    _set_negative_cache()
                     return None, "database"
                 if not row.access_token:
                     logger.warning(
                         "TOKEN_NOT_FOUND | FyersToken row exists but access_token is empty"
                     )
                     _clear_token_cache()
+                    _set_negative_cache()
                     return None, "database"
                 plain = _decrypt_from_storage(row.access_token)
                 if not plain:
@@ -515,12 +544,14 @@ def get_current_access_token_sync() -> tuple[str | None, str]:
                         "TOKEN_NOT_FOUND | Stored token could not be decrypted"
                     )
                     _clear_token_cache()
+                    _set_negative_cache()
                     return None, "database"
 
                 jwt_exp = _decode_jwt_expiry(plain)
                 if jwt_exp and _ensure_utc(jwt_exp) <= now:
                     logger.warning("TOKEN_EXPIRED | Stored DB token expired at %s", jwt_exp.isoformat())
                     _clear_token_cache()
+                    _set_negative_cache()
                     return None, "database"
 
                 saved_at = _ensure_utc(getattr(row, "access_token_saved_at", None))

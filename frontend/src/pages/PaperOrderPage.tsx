@@ -277,6 +277,8 @@ export function PaperOrderPage() {
   const [cashAllocPct, setCashAllocPct] = useState<string>("10");
   const derivedStopRef = useRef(seedLevels.derivedStop);
   const derivedTargetRef = useRef(seedLevels.derivedTarget);
+  const userClearedStopRef = useRef(false);
+  const userClearedTargetRef = useRef(false);
   /** Bumps on remount / retry so stale async work is ignored (Strict Mode safe). */
   const loadGenRef = useRef(0);
   const pollAbortRef = useRef<AbortController | null>(null);
@@ -294,21 +296,39 @@ export function PaperOrderPage() {
   useEffect(() => {
     const entry = entryReference != null && entryReference > 0 ? entryReference : null;
     if (entry == null) return;
+
+    const effectiveStop = userClearedStopRef.current
+      ? null
+      : derivedStopRef.current
+        ? null
+        : ticket.stopLoss;
+
+    const effectiveTarget = userClearedTargetRef.current
+      ? null
+      : derivedTargetRef.current
+        ? null
+        : ticket.target;
+
     const next = completePaperLevels({
       entry,
       side: ticket.side,
-      stop: derivedStopRef.current ? null : ticket.stopLoss,
-      target: derivedTargetRef.current ? null : ticket.target,
+      stop: effectiveStop,
+      target: effectiveTarget,
     });
-    if (next.derivedStop) derivedStopRef.current = true;
-    if (next.derivedTarget) derivedTargetRef.current = true;
-    if (next.stopLoss === ticket.stopLoss && next.target === ticket.target) return;
+
+    const finalStop = userClearedStopRef.current ? null : next.stopLoss;
+    const finalTarget = userClearedTargetRef.current ? null : next.target;
+
+    if (next.derivedStop && !userClearedStopRef.current) derivedStopRef.current = true;
+    if (next.derivedTarget && !userClearedTargetRef.current) derivedTargetRef.current = true;
+
+    if (finalStop === ticket.stopLoss && finalTarget === ticket.target) return;
     setTicket((prev) => ({
       ...prev,
-      stopLoss: next.stopLoss,
-      target: next.target,
+      stopLoss: finalStop,
+      target: finalTarget,
     }));
-  }, [entryReference, ticket.side]);
+  }, [entryReference, ticket.side, ticket.stopLoss]);
 
   const risk = useMemo(() => {
     const qty = Math.max(0, Number(ticket.qty) || 0);
@@ -374,13 +394,23 @@ export function PaperOrderPage() {
   const applyQuote = useCallback((quote: any | null, gen: number, symbol: string) => {
     if (gen !== loadGenRef.current) return;
     if (quote?.current_price != null && Number(quote.current_price) > 0) {
-      setCurrentPrice(Number(quote.current_price));
+      const priceNum = Number(quote.current_price);
+      setCurrentPrice(priceNum);
       setQuoteStatus(quote.is_stale ? "degraded" : "live");
       setQuoteLane("ready");
+      setTicket((prev) => {
+        if (prev.symbol === symbol && (prev.limitPrice == null || prev.limitPrice <= 0)) {
+          return {
+            ...prev,
+            limitPrice: prev.type === "LIMIT" ? priceNum : null,
+          };
+        }
+        return prev;
+      });
       logPaperOrder("api_response", {
         kind: "quote",
         symbol,
-        price: Number(quote.current_price),
+        price: priceNum,
         status: quote.is_stale ? "degraded" : "live",
       });
     } else {
@@ -968,10 +998,22 @@ export function PaperOrderPage() {
     }
 
     // Limit / stop trigger price
-    if (ticket.type !== "MARKET") {
+    if (ticket.type === "STOP_LIMIT") {
+      if (ticket.stopPrice == null || ticket.stopPrice <= 0) {
+        errors.stopPrice = "Stop Trigger is required and must be greater than 0.";
+        results.push({ rule: "Stop Trigger", status: "FAIL", detail: errors.stopPrice });
+      } else {
+        results.push({ rule: "Stop Trigger", status: "PASS", detail: formatInr(ticket.stopPrice) });
+      }
+      if (ticket.limitPrice == null || ticket.limitPrice <= 0) {
+        errors.price = "Limit Price is required and must be greater than 0.";
+        results.push({ rule: "Limit Price", status: "FAIL", detail: errors.price });
+      } else {
+        results.push({ rule: "Limit Price", status: "PASS", detail: formatInr(ticket.limitPrice) });
+      }
+    } else if (ticket.type !== "MARKET") {
       const priceField = ticket.type === "STOP" ? ticket.stopPrice : ticket.limitPrice;
-      const priceName =
-        ticket.type === "STOP" || ticket.type === "STOP_LIMIT" ? "Stop Trigger" : "Limit Price";
+      const priceName = ticket.type === "STOP" ? "Stop Trigger" : "Limit Price";
       if (priceField == null || priceField <= 0) {
         errors.price = `${priceName} is required and must be greater than 0.`;
         results.push({ rule: priceName, status: "FAIL", detail: errors.price });
@@ -1302,12 +1344,16 @@ export function PaperOrderPage() {
       stopPct: pct,
     });
     derivedStopRef.current = true;
-    if (next.derivedTarget) derivedTargetRef.current = true;
-    setTicket({
-      ...ticket,
+    userClearedStopRef.current = false;
+    if (next.derivedTarget) {
+      derivedTargetRef.current = true;
+      userClearedTargetRef.current = false;
+    }
+    setTicket((prev) => ({
+      ...prev,
       stopLoss: next.stopLoss,
       target: next.target,
-    });
+    }));
   }
 
   function applyCashAllocation() {
@@ -1478,7 +1524,20 @@ export function PaperOrderPage() {
                   value={ticket.symbol}
                   onChange={(e) => {
                     const sym = toCanonicalSymbol(e.target.value) || e.target.value.toUpperCase();
-                    setTicket({ ...ticket, symbol: sym });
+                    const isChanged = sym !== ticket.symbol;
+                    setTicket((prev) => ({
+                      ...prev,
+                      symbol: sym,
+                      limitPrice: isChanged ? null : prev.limitPrice,
+                      stopLoss: isChanged ? null : prev.stopLoss,
+                      target: isChanged ? null : prev.target,
+                    }));
+                    if (isChanged) {
+                      derivedStopRef.current = true;
+                      derivedTargetRef.current = true;
+                      userClearedStopRef.current = false;
+                      userClearedTargetRef.current = false;
+                    }
                   }}
                   onBlur={() => {
                     // Quote only on symbol change — account is cached and stable
@@ -1553,10 +1612,51 @@ export function PaperOrderPage() {
                 {fieldErrors.qty ? <span className="field-error">{fieldErrors.qty}</span> : null}
               </label>
 
-              {ticket.type !== "MARKET" ? (
+              {ticket.type === "STOP_LIMIT" ? (
+                <>
+                  <label className="filter-field">
+                    <span>
+                      Stop Trigger
+                      <InfoTooltip content={TOOLTIPS.PAPER_TRADING.STOP_LOSS_FIELD} />
+                    </span>
+                    <input
+                      data-testid="paper-order-stop-trigger"
+                      type="number"
+                      min={0.01}
+                      step="0.05"
+                      placeholder="Stop trigger price"
+                      value={ticket.stopPrice ?? ""}
+                      onChange={(e) => {
+                        const v = Number(e.target.value) || null;
+                        setTicket({ ...ticket, stopPrice: v });
+                      }}
+                    />
+                    {fieldErrors.stopPrice ? <span className="field-error">{fieldErrors.stopPrice}</span> : null}
+                  </label>
+                  <label className="filter-field">
+                    <span>
+                      Limit Price
+                      <InfoTooltip content={TOOLTIPS.PAPER_TRADING.LIMIT_PRICE} />
+                    </span>
+                    <input
+                      data-testid="paper-order-price"
+                      type="number"
+                      min={0.01}
+                      step="0.05"
+                      placeholder="Limit price"
+                      value={ticket.limitPrice ?? ""}
+                      onChange={(e) => {
+                        const v = Number(e.target.value) || null;
+                        setTicket({ ...ticket, limitPrice: v });
+                      }}
+                    />
+                    {fieldErrors.price ? <span className="field-error">{fieldErrors.price}</span> : null}
+                  </label>
+                </>
+              ) : ticket.type !== "MARKET" ? (
                 <label className="filter-field">
                   <span>
-                    {ticket.type === "STOP" || ticket.type === "STOP_LIMIT" ? "Stop Trigger" : "Limit Price"}
+                    {ticket.type === "STOP" ? "Stop Trigger" : "Limit Price"}
                     <InfoTooltip content={TOOLTIPS.PAPER_TRADING.LIMIT_PRICE} />
                   </span>
                   <input
@@ -1597,8 +1697,11 @@ export function PaperOrderPage() {
                   placeholder="Not available"
                   value={ticket.stopLoss ?? ""}
                   onChange={(e) => {
+                    const raw = e.target.value.trim();
+                    const val = raw === "" ? null : Number(raw);
                     derivedStopRef.current = false;
-                    setTicket({ ...ticket, stopLoss: Number(e.target.value) || null });
+                    userClearedStopRef.current = val === null;
+                    setTicket((prev) => ({ ...prev, stopLoss: val }));
                     setFieldErrors((prev) => {
                       if (!prev.stopLoss) return prev;
                       const next = { ...prev };
@@ -1614,10 +1717,10 @@ export function PaperOrderPage() {
                       ? "Auto-filled from limit price (2% stop)"
                       : navState.prefill?.recommendation_meta?.stop_source === "strategy"
                         ? "Auto-filled from strategy"
-                        : "Auto-filled"}
+                        : "Custom stop loss"}
                   </span>
                 ) : (
-                  <span className="helper-text">Not available — enter a limit price to auto-fill</span>
+                  <span className="helper-text">Optional — enter a stop loss or limit price to auto-fill</span>
                 )}
                 {fieldErrors.stopLoss ? (
                   <span className="field-error" data-testid="paper-order-sl-error">
@@ -1639,8 +1742,11 @@ export function PaperOrderPage() {
                   placeholder="Not available"
                   value={ticket.target ?? ""}
                   onChange={(e) => {
+                    const raw = e.target.value.trim();
+                    const val = raw === "" ? null : Number(raw);
                     derivedTargetRef.current = false;
-                    setTicket({ ...ticket, target: Number(e.target.value) || null });
+                    userClearedTargetRef.current = val === null;
+                    setTicket((prev) => ({ ...prev, target: val }));
                     setFieldErrors((prev) => {
                       if (!prev.target) return prev;
                       const next = { ...prev };
@@ -1656,10 +1762,10 @@ export function PaperOrderPage() {
                       ? "Auto-filled from limit price (1:2 vs stop)"
                       : navState.prefill?.recommendation_meta?.target_source === "strategy"
                         ? "Auto-filled from strategy"
-                        : "Auto-filled"}
+                        : "Custom target"}
                   </span>
                 ) : (
-                  <span className="helper-text">Not available — enter a limit price to auto-fill</span>
+                  <span className="helper-text">Optional — enter a target or limit price to auto-fill</span>
                 )}
                 {fieldErrors.target ? (
                   <span className="field-error" data-testid="paper-order-target-error">

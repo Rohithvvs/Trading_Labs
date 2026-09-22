@@ -829,4 +829,11 @@ async def get_engine_status(service: PaperTradingService = Depends(get_service))
         return JSONResponse(content=sanitize_for_json(status))
     except Exception as e:
         logger.error("ENGINE_STATUS_FAILED | timestamp=%s | error=%s", datetime.datetime.now(timezone.utc).isoformat(), str(e))
-        raise HTTPException(status_code=500, detail="Internal Server Error") from e
+        return JSONResponse(content={
+            "status": "STOPPED",
+            "last_tick_at": None,
+            "last_reconciliation_at": None,
+            "open_positions": 0,
+            "tracked_symbols": 0,
+            "error": str(e),
+        })

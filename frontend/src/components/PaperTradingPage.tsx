@@ -919,6 +919,48 @@ export function PaperTradingPage({
 
   async function handlePlaceOrder() {
     if (placeInFlightRef.current || isBusy) return;
+
+    if (ticket.type === "STOP_LIMIT" && (!ticket.stopPrice || !ticket.limitPrice)) {
+      setError("Both Stop trigger and Limit price are required for STOP_LIMIT orders.");
+      return;
+    }
+    const entryPx =
+      ticket.type === "LIMIT" || ticket.type === "GTT" || ticket.type === "STOP_LIMIT"
+        ? ticket.limitPrice ?? workspace?.current_price
+        : ticket.type === "STOP"
+          ? ticket.stopPrice ?? workspace?.current_price
+          : workspace?.current_price;
+
+    if (entryPx && entryPx > 0) {
+      if (ticket.side === "BUY") {
+        if (ticket.stopLoss != null && ticket.stopLoss >= entryPx) {
+          setError(
+            `Stop loss (₹${ticket.stopLoss}) must be below entry price (₹${Number(entryPx).toFixed(2)}) for BUY orders.`,
+          );
+          return;
+        }
+        if (ticket.target != null && ticket.target <= entryPx) {
+          setError(
+            `Target (₹${ticket.target}) must be above entry price (₹${Number(entryPx).toFixed(2)}) for BUY orders.`,
+          );
+          return;
+        }
+      } else if (ticket.side === "SELL") {
+        if (ticket.stopLoss != null && ticket.stopLoss <= entryPx) {
+          setError(
+            `Stop loss (₹${ticket.stopLoss}) must be above entry price (₹${Number(entryPx).toFixed(2)}) for SELL orders.`,
+          );
+          return;
+        }
+        if (ticket.target != null && ticket.target >= entryPx) {
+          setError(
+            `Target (₹${ticket.target}) must be below entry price (₹${Number(entryPx).toFixed(2)}) for SELL orders.`,
+          );
+          return;
+        }
+      }
+    }
+
     placeInFlightRef.current = true;
     setIsBusy(true);
     setError(null);
@@ -1020,7 +1062,9 @@ export function PaperTradingPage({
         : {
             ...current,
             symbol: normalizedSymbol,
-            limitPrice: workspace?.current_price ?? current.limitPrice ?? null,
+            limitPrice: workspace?.current_price ?? null,
+            stopLoss: null,
+            target: null,
           },
     );
     void loadDashboard(normalizedSymbol);
@@ -1815,9 +1859,13 @@ function OrderTicketCard({
       return;
     }
     const direction = ticket.side === "BUY" ? -1 : 1;
+    const computedStop = roundPrice(entryReference * (1 + (direction * trailingStopPercent) / 100));
+    const risk = Math.abs(entryReference - computedStop);
+    const computedTarget = roundPrice(entryReference + (ticket.side === "BUY" ? 1 : -1) * risk * 2);
     onChange({
       ...ticket,
-      stopLoss: roundPrice(entryReference * (1 + direction * trailingStopPercent / 100)),
+      stopLoss: computedStop,
+      target: ticket.target ?? computedTarget,
       notes: appendTicketNote(ticket.notes, `Trailing stop helper: ${trailingStopPercent}% from entry reference.`),
     });
   }
@@ -1921,13 +1969,68 @@ function OrderTicketCard({
           <input data-testid="paper-qty-input" type="number" min={1} placeholder="1" value={ticket.qty} onChange={(event) => onChange({ ...ticket, qty: Number(event.target.value) })} />
         </label>
 
-        {ticket.type !== "MARKET" ? (
+        {ticket.type === "STOP_LIMIT" ? (
+          <>
+            <label className="filter-field">
+              <span>
+                Stop trigger
+                <InfoTooltip content={TOOLTIPS.PAPER_TRADING.STOP_LOSS_FIELD} />
+              </span>
+              <input
+                type="number"
+                min={0.01}
+                step="0.05"
+                placeholder="Trigger price"
+                value={ticket.stopPrice ?? ""}
+                onChange={(event) =>
+                  onChange({ ...ticket, stopPrice: Number(event.target.value) || null })
+                }
+              />
+            </label>
+            <label className="filter-field">
+              <span>
+                Limit price
+                <InfoTooltip content={TOOLTIPS.PAPER_TRADING.LIMIT_PRICE} />
+              </span>
+              <input
+                type="number"
+                min={0.01}
+                step="0.05"
+                placeholder="Limit price"
+                value={ticket.limitPrice ?? ""}
+                onChange={(event) =>
+                  onChange({ ...ticket, limitPrice: Number(event.target.value) || null })
+                }
+              />
+            </label>
+          </>
+        ) : ticket.type !== "MARKET" ? (
           <label className="filter-field">
             <span>
-              {ticket.type === "STOP" || ticket.type === "STOP_LIMIT" ? "Stop trigger" : "Limit price"}
-              <InfoTooltip content={ticket.type === "STOP" || ticket.type === "STOP_LIMIT" ? TOOLTIPS.PAPER_TRADING.STOP_LOSS_FIELD : TOOLTIPS.PAPER_TRADING.LIMIT_PRICE} />
+              {ticket.type === "STOP" ? "Stop trigger" : "Limit price"}
+              <InfoTooltip
+                content={
+                  ticket.type === "STOP"
+                    ? TOOLTIPS.PAPER_TRADING.STOP_LOSS_FIELD
+                    : TOOLTIPS.PAPER_TRADING.LIMIT_PRICE
+                }
+              />
             </span>
-            <input type="number" min={0.01} step="0.05" placeholder={ticket.type === "LIMIT" ? "Current price" : ""} value={ticket.type === "LIMIT" || ticket.type === "GTT" || ticket.type === "STOP_LIMIT" ? ticket.limitPrice ?? "" : ticket.stopPrice ?? ""} onChange={(event) => onChange({ ...ticket, ...(ticket.type === "LIMIT" || ticket.type === "GTT" || ticket.type === "STOP_LIMIT" ? { limitPrice: Number(event.target.value) || null } : { stopPrice: Number(event.target.value) || null }) })} />
+            <input
+              type="number"
+              min={0.01}
+              step="0.05"
+              placeholder={ticket.type === "LIMIT" ? "Current price" : ""}
+              value={ticket.type === "STOP" ? ticket.stopPrice ?? "" : ticket.limitPrice ?? ""}
+              onChange={(event) =>
+                onChange({
+                  ...ticket,
+                  ...(ticket.type === "STOP"
+                    ? { stopPrice: Number(event.target.value) || null }
+                    : { limitPrice: Number(event.target.value) || null }),
+                })
+              }
+            />
           </label>
         ) : null}
 
@@ -1936,7 +2039,16 @@ function OrderTicketCard({
             Stop-loss
             <InfoTooltip content={TOOLTIPS.PAPER_TRADING.STOP_LOSS_FIELD} />
           </span>
-          <input type="number" min={0.01} step="0.05" placeholder="Auto-calculated" value={ticket.stopLoss ?? ""} onChange={(event) => onChange({ ...ticket, stopLoss: Number(event.target.value) || null })} />
+          <input
+            type="number"
+            min={0.01}
+            step="0.05"
+            placeholder="Optional"
+            value={ticket.stopLoss ?? ""}
+            onChange={(event) =>
+              onChange({ ...ticket, stopLoss: Number(event.target.value) || null })
+            }
+          />
         </label>
 
         <label className="filter-field">
@@ -1944,7 +2056,16 @@ function OrderTicketCard({
             Target
             <InfoTooltip content={TOOLTIPS.PAPER_TRADING.TARGET_FIELD} />
           </span>
-          <input type="number" min={0.01} step="0.05" placeholder="Auto-calculated" value={ticket.target ?? ""} onChange={(event) => onChange({ ...ticket, target: Number(event.target.value) || null })} />
+          <input
+            type="number"
+            min={0.01}
+            step="0.05"
+            placeholder="Optional"
+            value={ticket.target ?? ""}
+            onChange={(event) =>
+              onChange({ ...ticket, target: Number(event.target.value) || null })
+            }
+          />
         </label>
       </div>
 

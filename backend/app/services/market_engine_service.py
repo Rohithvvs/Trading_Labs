@@ -214,6 +214,10 @@ class MarketEngineService:
                     "market_hours_active": self.is_market_hours(),
                 }
 
+    async def get_status(self) -> dict:
+        """Alias for status() to satisfy callers expecting get_status()."""
+        return await self.status()
+
     async def _run_loop(self) -> None:
         """Main loop: short-lived sessions only — never hold a txn during poll/IO.
 
