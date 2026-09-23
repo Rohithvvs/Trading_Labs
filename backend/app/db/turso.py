@@ -117,12 +117,23 @@ class _LibsqlClientAdapter:
             try:
                 batch([(sql, p) for p in params_list])
                 return len(params_list)
-            except Exception:
+            except Exception as exc:
+                msg = str(exc).lower()
+                if "blocked" in msg or "writes are blocked" in msg:
+                    _logger.error("TURSO_WRITES_BLOCKED | %s", exc)
+                    raise
                 pass
         count = 0
         for p in params_list:
-            self._inner.execute(sql, p)
-            count += 1
+            try:
+                self._inner.execute(sql, p)
+                count += 1
+            except Exception as exc:
+                msg = str(exc).lower()
+                if "blocked" in msg or "writes are blocked" in msg:
+                    _logger.error("TURSO_WRITES_BLOCKED | %s", exc)
+                    raise
+                raise
         return count
 
     def close(self) -> None:
@@ -176,8 +187,41 @@ def _turso_http_url(url: str) -> str:
     return raw
 
 
+_libsql_patched = False
+
+
+def _patch_libsql_http_client() -> None:
+    """Fix upstream bug in libsql_client.http where error responses without 'result' raise KeyError."""
+    global _libsql_patched
+    if _libsql_patched:
+        return
+    try:
+        import libsql_client.http as libsql_http
+        from libsql_client.client import LibsqlError
+
+        orig_send = libsql_http.HttpClient._send
+
+        async def _patched_send(self: Any, method: str, path: str, request_body: Any) -> Any:
+            data = await orig_send(self, method, path, request_body)
+            if isinstance(data, dict) and "result" not in data:
+                if "error" in data:
+                    err = data["error"]
+                    msg = err.get("message") if isinstance(err, dict) else str(err)
+                    code = err.get("code", "ERROR") if isinstance(err, dict) else "ERROR"
+                    raise LibsqlError(msg, code)
+                if "message" in data:
+                    raise LibsqlError(data["message"], data.get("code") or "ERROR")
+            return data
+
+        libsql_http.HttpClient._send = _patched_send
+        _libsql_patched = True
+    except Exception:
+        pass
+
+
 def _create_libsql_inner(url: str, token: str) -> Any:
     http_url = _turso_http_url(url)
+    _patch_libsql_http_client()
     try:
         import libsql_client  # type: ignore[import-not-found]
 

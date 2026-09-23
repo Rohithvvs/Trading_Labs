@@ -52,6 +52,7 @@ import { IndicatorLeanBacktestView } from "./IndicatorLeanBacktestView";
 import { mapIndicatorResultToStock } from "../../utils/indicatorScanDetail";
 import { ScreenerColumnChip } from "./signalSetup/ScreenerColumnChip";
 import { IndicatorCustomDropdown } from "./IndicatorCustomDropdown";
+import { IndicatorCustomDropdown, getTop5Rank } from "./IndicatorCustomDropdown";
 import type { FilterStat, FunnelStep, RankedReturn, StrategyResultRow } from "../../api_strategy_tester";
 import type { NavigateFunction } from "react-router-dom";
 
@@ -560,6 +561,8 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
       let rows = await fetchIndicators();
       const hasLab = rows.some((row) => /^\d{2}\s/.test(row.name) && row.name.includes("[SCAN]"));
       if (!hasLab) {
+      const hasTop5 = rows.some((row) => getTop5Rank(row.name) !== null);
+      if (!hasLab || !hasTop5) {
         try {
           const seeded = await seedLabIndicators();
           if (Array.isArray(seeded.indicators) && seeded.indicators.length) {
@@ -596,6 +599,8 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
             return appliedIndicator.id;
           }
           return incoming[0]?.id || current || "";
+          const top1 = incoming.find((row) => getTop5Rank(row.name) === 1);
+          return top1?.id || incoming[0]?.id || current || "";
         });
       })
       .catch((err) => {

@@ -25,6 +25,56 @@ class LabStrategy:
 
 
 LAB_STRATEGIES: tuple[LabStrategy, ...] = (
+TOP_5_STRATEGIES: tuple[LabStrategy, ...] = (
+    LabStrategy(
+        "top_01_momentum",
+        "TOP1",
+        "App Preset: Momentum",
+        "Top 1: App Preset Momentum [SCAN]",
+        "Research Rank #1 (+24.40% CAGR, 0.60 Sharpe, 3.21 PF): Close > SMA50 > SMA200, RSI > 55, Volume > SMA20.",
+        "mom200",
+        "vector",
+    ),
+    LabStrategy(
+        "top_02_12_1_mom",
+        "TOP2",
+        "12-1 Cross-Sectional Momentum",
+        "Top 2: 12-1 Cross-Sectional Momentum [SCAN]",
+        "Research Rank #2 (+22.86% CAGR, 18.88% Max DD, 2.60 PF): Jegadeesh & Titman 12-1 Momentum > 0, Volume > SMA20.",
+        "mom252",
+        "vector",
+    ),
+    LabStrategy(
+        "top_03_52w_breakout",
+        "TOP3",
+        "52-Week High Breakout",
+        "Top 3: 52-Week High Breakout [SCAN]",
+        "Research Rank #3 (+20.41% CAGR, 11.08% Max DD, 2.83 PF): 52W High Breakout, Nifty > SMA50, 3-ATR Trailing Stop.",
+        "mom60",
+        "vector",
+    ),
+    LabStrategy(
+        "top_04_52w_atr",
+        "TOP4",
+        "52-Week Breakout ATR Sizing",
+        "Top 4: 52-Week Breakout ATR Sizing [SCAN]",
+        "Research Rank #4 (+18.14% CAGR, 26.38% Max DD, 2.32 PF): 52-Week High Breakout with ATR volatility sizing and Nifty > SMA50.",
+        "mom60",
+        "vector",
+    ),
+    LabStrategy(
+        "top_05_minervini_vcp",
+        "TOP5",
+        "Minervini Stage-2 VCP",
+        "Top 5: Minervini Stage-2 VCP [SCAN]",
+        "Research Rank #5 (+16.96% CAGR, 23.91% Max DD, 1.74 PF): Stage-2 Trend Template + 20d/126d VCP Contraction (<=40%) + 15d Pivot Breakout.",
+        "mom252",
+        "vector",
+    ),
+)
+
+
+LAB_STRATEGIES: tuple[LabStrategy, ...] = TOP_5_STRATEGIES + (
     LabStrategy(
         "01_darvas_classic",
         "01",

@@ -6,6 +6,7 @@ client, or rely on connect_turso() only when CANDLE_HISTORY_BACKEND=turso.
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import date, datetime, timezone
 from typing import Any
 
@@ -17,6 +18,7 @@ from ...db.turso import (
 )
 from ...config.settings import settings
 
+_logger = logging.getLogger("app.db.turso")
 _thread_client: TursoClient | None = None
 
 
@@ -84,9 +86,19 @@ def upsert_daily_rows(client: TursoClient, rows: list[dict[str, Any]]) -> int:
     if not accepted:
         return 0
     loaded_at = _loaded_at_now()
-    return client.executemany(
-        DAILY_UPSERT_SQL, [daily_row_params(r, loaded_at=loaded_at) for r in accepted]
-    )
+    try:
+        return client.executemany(
+            DAILY_UPSERT_SQL, [daily_row_params(r, loaded_at=loaded_at) for r in accepted]
+        )
+    except Exception as exc:
+        msg = str(exc).lower()
+        if "blocked" in msg or "writes are blocked" in msg:
+            _logger.error(
+                "TURSO_WRITES_BLOCKED | Turso write operations are blocked (plan quota reached): %s",
+                exc,
+            )
+            return 0
+        raise
 
 
 def upsert_index_rows(client: TursoClient, rows: list[dict[str, Any]]) -> int:
@@ -100,9 +112,19 @@ def upsert_index_rows(client: TursoClient, rows: list[dict[str, Any]]) -> int:
     if not accepted:
         return 0
     loaded_at = _loaded_at_now()
-    return client.executemany(
-        INDEX_UPSERT_SQL, [index_row_params(r, loaded_at=loaded_at) for r in accepted]
-    )
+    try:
+        return client.executemany(
+            INDEX_UPSERT_SQL, [index_row_params(r, loaded_at=loaded_at) for r in accepted]
+        )
+    except Exception as exc:
+        msg = str(exc).lower()
+        if "blocked" in msg or "writes are blocked" in msg:
+            _logger.error(
+                "TURSO_WRITES_BLOCKED | Turso write operations are blocked (plan quota reached): %s",
+                exc,
+            )
+            return 0
+        raise
 
 
 ALLOWED_DAILY_COLUMNS = frozenset({

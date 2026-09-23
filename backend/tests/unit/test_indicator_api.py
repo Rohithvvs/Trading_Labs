@@ -38,22 +38,28 @@ def test_lab_templates_and_seed(api):
     assert listed.status_code == 200, listed.text
     body = listed.json()
     assert body["count"] == 21
+    assert body["count"] == 26
     names = [row["name"] for row in body["templates"]]
     assert names[0].startswith("01 ")
+    assert names[0].startswith("Top 1:")
     assert any("09 52-Week High Breakout" in n for n in names)
     seeded = api.post("/indicators/seed-lab", headers=headers)
     assert seeded.status_code == 200, seeded.text
     payload = seeded.json()
     assert payload["count"] == 21
     assert len(payload["created"]) == 21
+    assert payload["count"] == 26
+    assert len(payload["created"]) == 26
     again = api.post("/indicators/seed-lab", headers=headers)
     assert again.status_code == 200
     assert again.json()["created"] == []
     assert len(again.json()["skipped"]) == 21
+    assert len(again.json()["skipped"]) == 26
     library = api.get("/indicators", headers=headers)
     assert library.status_code == 200
     saved_names = [row["name"] for row in library.json()["indicators"]]
     assert len(saved_names) == 21
+    assert len(saved_names) == 26
 
 
 def test_validate_success_extracts_outputs_and_required_bars(api):

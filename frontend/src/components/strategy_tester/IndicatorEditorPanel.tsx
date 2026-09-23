@@ -78,6 +78,7 @@ export const IndicatorEditorPanel: React.FC<IndicatorEditorPanelProps> = ({
       await seedLabIndicators();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to save the 21 research-lab strategies.");
+      setError(err instanceof Error ? err.message : "Unable to save the research-lab strategies.");
     } finally {
       setBusy(null);
     }

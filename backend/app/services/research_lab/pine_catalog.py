@@ -93,6 +93,61 @@ def _ob_low_chain() -> str:
 def pine_source_for(spec: LabStrategy) -> str:
     sid = spec.strategy_id
     title = spec.scan_title
+    if sid == "top_01_momentum":
+        return _script(
+            title,
+            _MA
+            + _RSI_SMA
+            + "scanSignal = close > sma50 and sma50 > sma200 and rsiSma > 55 and volume > volSma20 and not na(close) and close > 0\n",
+            'plot(sma50, "SMA 50")\nplot(sma200, "SMA 200")\nplot(rsiSma, "RSI 14")\nplot(volSma20, "Volume SMA 20")\n',
+        )
+    if sid == "top_02_12_1_mom":
+        return _script(
+            title,
+            _MA
+            + """pSkip = close[21]
+pStart = close[252]
+mom12_1 = not na(pStart) and pStart > 0 ? (pSkip / pStart - 1.0) * 100.0 : na
+scanSignal = not na(mom12_1) and mom12_1 > 0 and volume > volSma20 and not na(close) and close > 0
+""",
+            'plot(mom12_1, "12-1 Momentum %")\nplot(volSma20, "Volume SMA 20")\n',
+        )
+    if sid == "top_03_52w_breakout":
+        return BREAKOUT_SCAN_SOURCE.replace(
+            'indicator("52-Week High Breakout [SCAN]"',
+            f'indicator("{title}"',
+        )
+    if sid == "top_04_52w_atr":
+        return _script(
+            title,
+            _BENCH
+            + _ATR_SMA
+            + _MA
+            + """high252Prior = ta.highest(high, 252)[1]
+scanSignal = marketOk50 and not na(high252Prior) and close >= high252Prior and volume > volSma20 and not na(close) and close > 0
+""",
+            'plot(high252Prior, "Prior 252 High")\nplot(atrSma14, "ATR 14")\nplot(volSma20, "Volume SMA 20")\nplot(niftyClose, "NIFTY 500 Close")\nplot(niftySma50, "NIFTY 500 SMA 50")\n',
+        )
+    if sid == "top_05_minervini_vcp":
+        return _script(
+            title,
+            _MA
+            + """sma150 = ta.sma(close, 150)
+sma200Prior = sma200[20]
+high52w = ta.highest(high, 252)[1]
+low52w = ta.lowest(low, 252)[1]
+
+templateOk = not na(sma200) and not na(sma200Prior) and close > sma150 and close > sma200 and sma150 > sma200 and sma200 > sma200Prior and sma50 > sma150 and sma50 > sma200 and close >= (1.25 * low52w) and close >= (0.75 * high52w)
+
+range20d = ta.highest(high, 20) - ta.lowest(low, 20)
+range126d = ta.highest(high, 126) - ta.lowest(low, 126)
+vcpContracted = not na(range126d) and range126d > 0 and (range20d / range126d) <= 0.40
+
+pivotHigh = ta.highest(high, 15)[1]
+scanSignal = templateOk and vcpContracted and not na(pivotHigh) and close > pivotHigh and volume > volSma20 and not na(close) and close > 0
+""",
+            'plot(sma50, "SMA 50")\nplot(sma150, "SMA 150")\nplot(sma200, "SMA 200")\nplot(pivotHigh, "Pivot High 15")\nplot(volSma20, "Volume SMA 20")\n',
+        )
     if sid == "01_darvas_classic":
         return _script(
             title,

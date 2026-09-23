@@ -15,8 +15,45 @@ interface StrategyGroup {
 }
 
 const TOP_5_PREFIXES = ["09", "17", "03", "19", "13"];
+export function getTop5Rank(name: string): number | null {
+  const clean = name.trim().toLowerCase();
+  const topMatch = clean.match(/^top\s*0?([1-5])[:\s]/);
+  if (topMatch) {
+    return parseInt(topMatch[1], 10);
+  }
+  // Fallbacks for named research strategies
+  if (
+    clean.includes("app preset: momentum") ||
+    clean.includes("app preset momentum") ||
+    clean.includes("preset momentum")
+  ) {
+    return 1;
+  }
+  if (
+    clean.includes("12-1 cross-sectional") ||
+    clean.includes("12-1 momentum") ||
+    clean.includes("cross-sectional momentum")
+  ) {
+    return 2;
+  }
+  if (
+    clean.includes("52-week") && (clean.includes("atr sizing") || clean.includes("atr"))
+  ) {
+    return 4;
+  }
+  if (
+    clean.includes("minervini") ||
+    clean.includes("stage-2 vcp")
+  ) {
+    return 5;
+  }
+  return null;
+}
 
 function getCategory(name: string): "top5" | "trend" | "darvas" | "reversion" | "custom" {
+  if (getTop5Rank(name) !== null) {
+    return "top5";
+  }
   const clean = name.trim();
   const numMatch = clean.match(/^(\d{2})\s/);
   const num = numMatch ? numMatch[1] : null;
@@ -43,9 +80,14 @@ function getCategory(name: string): "top5" | "trend" | "darvas" | "reversion" | 
   }
   if (
     (num && ["08", "10", "12", "14", "15", "16", "18", "20", "21"].includes(num)) ||
+    (num && ["03", "08", "09", "10", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21"].includes(num)) ||
     clean.toLowerCase().includes("momentum") ||
     clean.toLowerCase().includes("golden") ||
     clean.toLowerCase().includes("trend")
+    clean.toLowerCase().includes("trend") ||
+    clean.toLowerCase().includes("pullback") ||
+    clean.toLowerCase().includes("breakout") ||
+    clean.toLowerCase().includes("drawdown")
   ) {
     return "trend";
   }
@@ -116,6 +158,12 @@ export const IndicatorCustomDropdown: React.FC<IndicatorCustomDropdownProps> = (
       else if (cat === "darvas") darvas.push(item);
       else if (cat === "reversion") reversion.push(item);
       else custom.push(item);
+    });
+
+    top5.sort((a, b) => {
+      const rankA = getTop5Rank(a.name) ?? 99;
+      const rankB = getTop5Rank(b.name) ?? 99;
+      return rankA - rankB;
     });
 
     const result: StrategyGroup[] = [];
@@ -218,6 +266,7 @@ export const IndicatorCustomDropdown: React.FC<IndicatorCustomDropdownProps> = (
                   </div>
                   {group.items.map((item) => {
                     const isSelected = selected?.id === item.id;
+                    const rank = getTop5Rank(item.name);
                     return (
                       <button
                         key={item.id}
@@ -229,6 +278,47 @@ export const IndicatorCustomDropdown: React.FC<IndicatorCustomDropdownProps> = (
                       >
                         <div className="ind-custom-dd-item-text">
                           <span className="ind-custom-dd-item-title">{item.name}</span>
+                          <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                            <span className="ind-custom-dd-item-title">{item.name}</span>
+                            {group.id === "top5" && rank !== null && (
+                              <span
+                                className="ind-top5-badge"
+                                style={{
+                                  fontSize: "10px",
+                                  fontWeight: 700,
+                                  padding: "1px 6px",
+                                  borderRadius: "4px",
+                                  background:
+                                    rank === 1
+                                      ? "rgba(234, 179, 8, 0.15)"
+                                      : rank === 2
+                                      ? "rgba(148, 163, 184, 0.15)"
+                                      : rank === 3
+                                      ? "rgba(249, 115, 22, 0.15)"
+                                      : "rgba(59, 130, 246, 0.15)",
+                                  color:
+                                    rank === 1
+                                      ? "#eab308"
+                                      : rank === 2
+                                      ? "#94a3b8"
+                                      : rank === 3
+                                      ? "#f97316"
+                                      : "#60a5fa",
+                                  border: `1px solid ${
+                                    rank === 1
+                                      ? "rgba(234, 179, 8, 0.3)"
+                                      : rank === 2
+                                      ? "rgba(148, 163, 184, 0.3)"
+                                      : rank === 3
+                                      ? "rgba(249, 115, 22, 0.3)"
+                                      : "rgba(59, 130, 246, 0.3)"
+                                  }`,
+                                }}
+                              >
+                                {rank === 1 ? "🥇 #1" : rank === 2 ? "🥈 #2" : rank === 3 ? "🥉 #3" : `#${rank}`}
+                              </span>
+                            )}
+                          </div>
                           {item.description && (
                             <span className="ind-custom-dd-item-desc">
                               {item.description}
