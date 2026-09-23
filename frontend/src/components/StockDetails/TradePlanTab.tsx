@@ -1,6 +1,7 @@
 import React from "react";
 import type { StrategyResultRow, StrategyRunStatus } from "../../api_strategy_tester";
 import type { SymbolDetail } from "../../types";
+import { resolveTradePlanDetails } from "../../utils/indicatorScanDetail";
 import { formatINRVal, formatPctVal } from "./StockHeader";
 import type { FilterEvalItem } from "./types";
 
@@ -61,32 +62,54 @@ export const TradePlanTab: React.FC<TradePlanTabProps> = ({
     );
   }
 
-  const signal = (stock?.signal || "WATCH").toUpperCase();
-  const isIndicatorScan = (stock as any)?.source === "indicator_scanner" || String(runId || "").startsWith("IND-");
+  const plan = resolveTradePlanDetails({
+    stock,
+    symbolDetail,
+    runStatus,
+    runId,
+  });
+
+  const signal = plan.signal;
+  const isIndicatorScan = plan.isIndicatorScan;
   const positionRules = (runStatus?.strategy_snapshot as any)?.position_rules || {};
-  const position = (positionRules.side || (runStatus?.strategy_snapshot as any)?.side || "LONG").toUpperCase();
-  const entryPrice = stock?.entry_price ?? null;
-  const exitPrice = stock?.exit_price ?? null;
+  const position = plan.position;
+  const entryPrice = plan.entryPrice;
+  const exitPrice = plan.exitPrice;
   const returnPct = stock?.return_pct ?? null;
   const resolvedRun = runId || runStatus?.run_id || (stock as any)?.run_id || "STR-20260826-001";
 
-  // Real risk & target values if provided, otherwise "—"
-  const stopLoss =
-    (stock as any)?.stop_loss ??
-    ((symbolDetail as any)?.recommendation?.trade_plans?.[0] as any)?.stop_loss ??
-    null;
+  const closePrice =
+    stock?.close ??
+    (stock as any)?.ohlcv?.close ??
+    (stock as any)?.candidate_entry_price ??
+    (isIndicatorScan ? exitPrice : null) ??
+    entryPrice;
+  const closeT252 =
+    (stock?.indicators as any)?.["Close t-252"] ??
+    (stock as any)?.close_t252 ??
+    (isIndicatorScan && entryPrice != null && entryPrice !== closePrice ? entryPrice : null) ??
+    (closePrice != null && returnPct != null && returnPct !== 0 ? Math.round((closePrice / (1 + returnPct / 100)) * 100) / 100 : null);
 
-  const target =
-    (stock as any)?.target ??
-    ((symbolDetail as any)?.recommendation?.trade_plans?.[0] as any)?.target_1 ??
-    ((symbolDetail as any)?.recommendation?.trade_plans?.[0] as any)?.target ??
-    null;
+  const displayEntryPrice = plan.displayEntryPrice;
+  const displayExitPrice = plan.displayExitPrice;
+  const stopLoss = plan.stopLoss;
+  const target = plan.target;
+  const riskAmount = plan.riskAmount;
+  const riskPct = plan.riskPct;
+  const rewardAmount = plan.rewardAmount;
+  const rewardPct = plan.rewardPct;
 
-  const riskReward =
-    (stock as any)?.risk_reward ??
-    ((symbolDetail as any)?.recommendation?.trade_plans?.[0] as any)?.risk_reward_ratio ??
-    ((symbolDetail as any)?.recommendation?.trade_plans?.[0] as any)?.risk_reward ??
-    null;
+  const formatRiskText = () => {
+    if (riskAmount == null) return "—";
+    const inr = formatINRVal(riskAmount);
+    return riskPct != null ? `${inr} (${riskPct.toFixed(1)}%)` : inr;
+  };
+
+  const formatRewardText = () => {
+    if (rewardAmount == null) return "—";
+    const inr = formatINRVal(rewardAmount);
+    return rewardPct != null ? `${inr} (${rewardPct.toFixed(1)}%)` : inr;
+  };
 
   const exitRule =
     positionRules.exit_rule ||
@@ -100,8 +123,11 @@ export const TradePlanTab: React.FC<TradePlanTabProps> = ({
   const calcFormula = isIndicatorScan
     ? "(Close / Close t-252 − 1) × 100"
     : `((Exit - Entry) / Entry) × 100`;
-  const calcExact =
-    entryPrice != null && exitPrice != null
+  const calcExact = isIndicatorScan
+    ? closePrice != null && closeT252 != null
+      ? `((${closePrice.toFixed(2)} / ${closeT252.toFixed(2)} − 1) × 100)`
+      : "—"
+    : entryPrice != null && exitPrice != null
       ? `((${exitPrice.toFixed(2)} - ${entryPrice.toFixed(2)}) / ${entryPrice.toFixed(2)}) × 100`
       : "—";
 
@@ -127,11 +153,7 @@ export const TradePlanTab: React.FC<TradePlanTabProps> = ({
           </div>
           <div className="st-detail-kv-row">
             <span>Entry Price</span>
-            <span style={{ fontWeight: 600 }}>{formatINRVal(entryPrice)}</span>
-          </div>
-          <div className="st-detail-kv-row">
-            <span>Exit Price</span>
-            <span style={{ fontWeight: 600 }}>{formatINRVal(exitPrice)}</span>
+            <span style={{ fontWeight: 600 }}>{displayEntryPrice != null ? formatINRVal(displayEntryPrice) : "—"}</span>
           </div>
           <div className="st-detail-kv-row">
             <span>Strategy</span>
@@ -159,14 +181,12 @@ export const TradePlanTab: React.FC<TradePlanTabProps> = ({
             <span>{target != null ? formatINRVal(target) : "—"}</span>
           </div>
           <div className="st-detail-kv-row">
-            <span>Risk / Reward</span>
-            <span>
-              {riskReward != null
-                ? typeof riskReward === "number"
-                  ? riskReward.toFixed(2)
-                  : String(riskReward)
-                : "—"}
-            </span>
+            <span>Risk</span>
+            <span style={{ color: "#f87171", fontWeight: 600 }}>{formatRiskText()}</span>
+          </div>
+          <div className="st-detail-kv-row">
+            <span>Reward</span>
+            <span style={{ color: "#4ade80", fontWeight: 600 }}>{formatRewardText()}</span>
           </div>
           <div className="st-detail-kv-row">
             <span>Exit Rule</span>

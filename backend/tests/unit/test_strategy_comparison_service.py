@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from app.services.strategy_comparison.comparison_service import (
+    SOURCE_INDICATOR,
     _apply_equity_averages,
+    _detect_source,
     config_mismatches,
+    extract_indicator_logic,
     extract_logic,
     metrics_from_lean,
     metrics_from_strategy_run,
@@ -298,3 +301,28 @@ def test_lean_metrics_keep_calmar_and_equity_averages():
     )
     assert filled["avg_cash"] == 80000.0
     assert filled["avg_exposure_pct"] == 20.0
+
+
+def test_extract_indicator_logic():
+    class DummyIndicator:
+        source_code = "//@version=6\nindicator('52W')\nbuy = close > ta.highest(high, 252)"
+        parsed_definition = {
+            "entry_conditions": ["close > ta.highest(high, 252)"],
+            "inputs": [{"name": "lookback", "type": "int"}],
+            "outputs": [{"name": "signal", "type": "bool"}],
+        }
+
+    logic = extract_indicator_logic(DummyIndicator())
+    assert logic["source_type"] == "pine"
+    assert logic["entry_conditions"] == ["close > ta.highest(high, 252)"]
+    assert "lookback" in logic["indicators"]
+    assert "signal" in logic["indicators"]
+    assert logic["position_type"] == "LONG"
+
+
+def test_detect_source_for_indicator_scan():
+    assert _detect_source("IND-20260922-001", None) == SOURCE_INDICATOR
+    assert _detect_source("STR-20260922-001", None) == "strategy_tester"
+    assert _detect_source("LEAN-12345", None) == "lean"
+    assert _detect_source("custom-1", SOURCE_INDICATOR) == SOURCE_INDICATOR
+

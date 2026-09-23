@@ -509,6 +509,8 @@ export const StockDetailsPage: React.FC = () => {
           strategyName={strategyName}
           runId={resolvedRunId}
           stock={stock}
+          symbolDetail={symbolDetail}
+          runStatus={runStatus}
         />
       </nav>
 
@@ -518,6 +520,8 @@ export const StockDetailsPage: React.FC = () => {
         companyName={company}
         runId={resolvedRunId}
         stock={stock}
+        symbolDetail={symbolDetail}
+        runStatus={runStatus}
       />
 
       {/* 3. Section Tabs: Overview | Chart | History | News | Backtest | Research */}

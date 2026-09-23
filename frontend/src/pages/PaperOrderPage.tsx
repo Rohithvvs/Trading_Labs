@@ -203,18 +203,20 @@ export function PaperOrderPage() {
     (navState.currentPrice != null && Number(navState.currentPrice) > 0
       ? Number(navState.currentPrice)
       : null);
+  const seedStop =
+    navState.prefill?.suggested_stop != null && Number(navState.prefill.suggested_stop) > 0
+      ? Number(navState.prefill.suggested_stop)
+      : null;
+  const seedTarget =
+    navState.prefill?.suggested_targets?.[0] != null &&
+    Number(navState.prefill.suggested_targets[0]) > 0
+      ? Number(navState.prefill.suggested_targets[0])
+      : null;
   const seedLevels = completePaperLevels({
     entry: seedEntry,
     side: initialSide,
-    stop:
-      navState.prefill?.suggested_stop != null && Number(navState.prefill.suggested_stop) > 0
-        ? Number(navState.prefill.suggested_stop)
-        : null,
-    target:
-      navState.prefill?.suggested_targets?.[0] != null &&
-      Number(navState.prefill.suggested_targets[0]) > 0
-        ? Number(navState.prefill.suggested_targets[0])
-        : null,
+    stop: seedStop,
+    target: seedTarget,
   });
 
   const [ticket, setTicket] = useState<PaperOrderTicketState>({
@@ -275,8 +277,8 @@ export function PaperOrderPage() {
   const [idempotencyKey, setIdempotencyKey] = useState(() => crypto.randomUUID());
   const [trailingStopPct, setTrailingStopPct] = useState<string>("2");
   const [cashAllocPct, setCashAllocPct] = useState<string>("10");
-  const derivedStopRef = useRef(seedLevels.derivedStop);
-  const derivedTargetRef = useRef(seedLevels.derivedTarget);
+  const derivedStopRef = useRef(seedStop == null && seedLevels.derivedStop);
+  const derivedTargetRef = useRef(seedTarget == null && seedLevels.derivedTarget);
   const userClearedStopRef = useRef(false);
   const userClearedTargetRef = useRef(false);
   /** Bumps on remount / retry so stale async work is ignored (Strict Mode safe). */
@@ -297,17 +299,30 @@ export function PaperOrderPage() {
     const entry = entryReference != null && entryReference > 0 ? entryReference : null;
     if (entry == null) return;
 
+    const isStrategyStop =
+      seedStop != null ||
+      navState.prefill?.suggested_stop != null ||
+      navState.prefill?.recommendation_meta?.stop_source === "strategy";
+    const isStrategyTarget =
+      seedTarget != null ||
+      navState.prefill?.suggested_targets?.[0] != null ||
+      navState.prefill?.recommendation_meta?.target_source === "strategy";
+
     const effectiveStop = userClearedStopRef.current
       ? null
-      : derivedStopRef.current
-        ? null
-        : ticket.stopLoss;
+      : isStrategyStop
+        ? ticket.stopLoss
+        : derivedStopRef.current
+          ? null
+          : ticket.stopLoss;
 
     const effectiveTarget = userClearedTargetRef.current
       ? null
-      : derivedTargetRef.current
-        ? null
-        : ticket.target;
+      : isStrategyTarget
+        ? ticket.target
+        : derivedTargetRef.current
+          ? null
+          : ticket.target;
 
     const next = completePaperLevels({
       entry,
@@ -762,14 +777,16 @@ export function PaperOrderPage() {
           const posOrNull = (n: number | null | undefined) =>
             n != null && Number(n) > 0 ? Number(n) : null;
           const limit = posOrNull(local.limit_price) ?? posOrNull(prefill.suggested_entry);
+          const stopVal = posOrNull(local.stop_loss) ?? posOrNull(prefill.suggested_stop);
+          const targetVal = posOrNull(local.target) ?? posOrNull(prefill.suggested_targets?.[0]);
           const filled = completePaperLevels({
             entry: limit,
             side: local.side,
-            stop: posOrNull(local.stop_loss) ?? posOrNull(prefill.suggested_stop),
-            target: posOrNull(local.target) ?? posOrNull(prefill.suggested_targets?.[0]),
+            stop: stopVal,
+            target: targetVal,
           });
-          derivedStopRef.current = filled.derivedStop || derivedStopRef.current;
-          derivedTargetRef.current = filled.derivedTarget || derivedTargetRef.current;
+          derivedStopRef.current = stopVal == null && filled.derivedStop;
+          derivedTargetRef.current = targetVal == null && filled.derivedTarget;
           setTicket({
             symbol: toCanonicalSymbol(local.symbol) || symbolForLoad,
             side: local.side,

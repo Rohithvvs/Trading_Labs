@@ -23,7 +23,7 @@ async function parseError(response: Response, fallback: string): Promise<string>
   return body?.message || fallback;
 }
 
-export type ComparisonSource = "strategy_tester" | "lean";
+export type ComparisonSource = "strategy_tester" | "lean" | "indicator_scan";
 
 export type ComparisonCatalogStrategy = {
   id: string;

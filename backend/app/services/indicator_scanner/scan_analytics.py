@@ -27,6 +27,10 @@ def row_return_pct(outputs: dict[str, Any] | None, ohlcv: dict[str, Any] | None)
     if isinstance(stored, (int, float)):
         return float(stored)
     momentum = data.get("Momentum 252")
+    if momentum is None:
+        momentum = data.get("Mom 252")
+    if momentum is None:
+        momentum = data.get("First-Year Return")
     if isinstance(momentum, (int, float)):
         return float(momentum) * 100.0
     close = data.get("Close")

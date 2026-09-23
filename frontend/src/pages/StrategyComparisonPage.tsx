@@ -425,7 +425,9 @@ export function StrategyComparisonPage() {
       const strategy = catalog.find((item) => item.id === id);
       const latest = strategy?.latest_run;
       const source: ComparisonSource | "" =
-        latest?.source === "lean" || latest?.source === "strategy_tester" ? latest.source : "";
+        latest?.source === "lean" || latest?.source === "strategy_tester" || latest?.source === "indicator_scan"
+          ? latest.source
+          : "";
       return {
         ...EMPTY_SLOT(),
         strategyId: id,
@@ -708,7 +710,11 @@ function SummarySection({ comparison }: { comparison: ComparisonPayload }) {
         {comparison.slots.map((slot) => (
           <p key={slot.slot_id}>
             <strong>{slot.strategy_name}</strong>
-            {slot.source === "lean" ? " (LEAN backtest)" : " (Strategy Tester scan)"}: win rate{" "}
+            {slot.source === "lean"
+              ? " (LEAN backtest)"
+              : slot.source === "indicator_scan"
+              ? " (Indicator scan)"
+              : " (Strategy Tester scan)"}: win rate{" "}
             {fmtPct(slot.metrics.win_rate)}, total return {fmtPct(slot.metrics.total_return_pct)}, trades{" "}
             {fmtNum(slot.metrics.total_trades, 0)}
             {slot.metrics.sharpe_ratio != null ? `, Sharpe ${fmtNum(slot.metrics.sharpe_ratio, 3)}` : ""}

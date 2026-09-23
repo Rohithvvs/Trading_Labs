@@ -24,7 +24,7 @@ router = APIRouter(prefix="/strategy-comparison", tags=["strategy-comparison"])
 class CompareSlotBody(BaseModel):
     strategy_id: str
     run_id: str
-    source: Literal["strategy_tester", "lean"] | None = None
+    source: Literal["strategy_tester", "lean", "indicator_scan"] | None = None
 
 
 class CompareBody(BaseModel):

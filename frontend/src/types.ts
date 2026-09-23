@@ -624,6 +624,32 @@ export type SymbolDetail = {
   ohlcv?: OHLCVPoint[] | null;
   /** AI Swing Trading Research dashboard payload from /analysis/symbol/{symbol}/detail */
   research?: Record<string, unknown> | null;
+  /** Full technical analysis results from /analysis/symbol/{symbol}/detail */
+  technical?: Array<{
+    mode?: string;
+    signal?: string;
+    score?: number;
+    indicators?: Record<string, any>;
+    summary?: string;
+  }> | null;
+  /** Recommendation and trade plans from /analysis/symbol/{symbol}/detail */
+  recommendation?: {
+    action?: string;
+    confidence?: number;
+    score?: number;
+    trade_plans?: Array<{
+      mode?: string;
+      strategy_name?: string;
+      stop_loss?: number;
+      target_1?: number;
+      target_2?: number;
+      target_3?: number;
+      risk_reward_ratio?: number;
+      entry_low?: number;
+      entry_high?: number;
+    }>;
+    summary?: string;
+  } | null;
 };
 
 export type PaperQuoteResponse = {

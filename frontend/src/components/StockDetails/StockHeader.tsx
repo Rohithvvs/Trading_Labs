@@ -1,5 +1,7 @@
 import React from "react";
-import type { StrategyResultRow } from "../../api_strategy_tester";
+import type { StrategyResultRow, StrategyRunStatus } from "../../api_strategy_tester";
+import type { SymbolDetail } from "../../types";
+import { resolveTradePlanDetails } from "../../utils/indicatorScanDetail";
 
 export function formatINRVal(val: number | null | undefined): string {
   if (val == null || Number.isNaN(val)) return "—";
@@ -27,6 +29,8 @@ interface StockHeaderProps {
   companyName: string;
   runId: string;
   stock: StrategyResultRow | null;
+  symbolDetail?: SymbolDetail | null;
+  runStatus?: StrategyRunStatus | null;
 }
 
 export const StockHeader: React.FC<StockHeaderProps> = ({
@@ -34,13 +38,36 @@ export const StockHeader: React.FC<StockHeaderProps> = ({
   companyName,
   runId,
   stock,
+  symbolDetail,
+  runStatus,
 }) => {
-  const signal = (stock?.signal || "WATCH").toUpperCase();
+  const plan = resolveTradePlanDetails({
+    stock,
+    symbolDetail,
+    runStatus,
+    runId,
+  });
+
+  const signal = (stock?.signal || plan.signal || "WATCH").toUpperCase();
   const returnPct = stock?.return_pct ?? 0;
   const isPos = returnPct > 0;
   const isNeg = returnPct < 0;
-  const entryPrice = stock?.entry_price ?? null;
+
+  const isIndicatorScan = plan.isIndicatorScan;
+  const entryPrice = isIndicatorScan ? plan.displayEntryPrice : (stock?.entry_price ?? null);
   const exitPrice = stock?.exit_price ?? null;
+
+  const closePrice = plan.displayEntryPrice;
+  const closeT252 =
+    (stock?.indicators as any)?.["Close t-252"] ??
+    (stock as any)?.close_t252 ??
+    (isIndicatorScan && stock?.entry_price != null && stock.entry_price !== closePrice ? stock.entry_price : null) ??
+    (closePrice != null && returnPct != null && returnPct !== 0
+      ? Math.round((closePrice / (1 + returnPct / 100)) * 100) / 100
+      : null);
+
+  const fourthBoxLabel = isIndicatorScan ? "Close (1Y Ago)" : "Exit Price";
+  const fourthBoxVal = isIndicatorScan ? closeT252 : exitPrice;
 
   return (
     <section className="st-stock-hero-card" aria-label="Stock overview header">
@@ -69,7 +96,7 @@ export const StockHeader: React.FC<StockHeaderProps> = ({
         </div>
 
         <div className="st-hero-metric-box">
-          <span className="st-hero-metric-label">Return</span>
+          <span className="st-hero-metric-label">{isIndicatorScan ? "1Y Return" : "Return"}</span>
           <span
             className={`st-hero-metric-val ${isPos ? "green" : isNeg ? "red" : ""}`}
             data-testid="stock-detail-return"
@@ -86,9 +113,9 @@ export const StockHeader: React.FC<StockHeaderProps> = ({
         </div>
 
         <div className="st-hero-metric-box">
-          <span className="st-hero-metric-label">Exit Price</span>
+          <span className="st-hero-metric-label">{fourthBoxLabel}</span>
           <span className="st-hero-metric-val" data-testid="stock-detail-exit-price">
-            {formatINRVal(exitPrice)}
+            {formatINRVal(fourthBoxVal)}
           </span>
         </div>
       </div>

@@ -17,7 +17,9 @@ from sqlalchemy import func, or_, select
 from ...db.session import AsyncSessionLocal
 from ...lean.models import LeanJobRecord, LeanJobStatus
 from ...lean.services.lean_service import LeanBacktestService
+from ...models.indicator_scanner import IndicatorDefinition, IndicatorScanResult, IndicatorScanRun
 from ...models.strategy_tester import StrategyDefinition, StrategyTestResult, StrategyTestRun
+from ..indicator_scanner import persistence as indicator_persistence
 from ..strategy_tester import persistence
 from ..strategy_tester.schema import StrategyConfigError, parse_strategy_config
 
@@ -25,6 +27,7 @@ MIN_SLOTS = 2
 MAX_SLOTS = 4
 SOURCE_TESTER = "strategy_tester"
 SOURCE_LEAN = "lean"
+SOURCE_INDICATOR = "indicator_scan"
 
 _RETURN_BUCKETS = (
     ("lt_neg10", "< -10%", None, -10.0),
@@ -152,6 +155,51 @@ def extract_logic(snapshot: dict[str, Any] | None) -> dict[str, Any]:
         "trailing_stop": trailing_stop,
         "position_type": position_type if position_type in {"LONG", "SHORT"} else "LONG",
         "time_exit_bars": time_exit,
+    }
+
+
+def extract_indicator_logic(indicator: Any) -> dict[str, Any]:
+    """Extract entry rules and indicators from an IndicatorDefinition or snapshot."""
+    source_code = getattr(indicator, "source_code", None)
+    if not source_code and isinstance(indicator, dict):
+        source_code = indicator.get("source_code") or indicator.get("source", {}).get("pine_code")
+    pine_code = str(source_code).strip() if isinstance(source_code, str) and source_code.strip() else None
+
+    parsed = getattr(indicator, "parsed_definition", None)
+    if not isinstance(parsed, dict) and isinstance(indicator, dict):
+        parsed = indicator.get("parsed_definition")
+    parsed_dict = parsed if isinstance(parsed, dict) else {}
+
+    entry = parsed_dict.get("entry_conditions") or []
+    if not isinstance(entry, list):
+        entry = []
+
+    seen_ind: list[str] = []
+    for inp in parsed_dict.get("inputs") or []:
+        if isinstance(inp, dict) and inp.get("name"):
+            name = str(inp["name"])
+            if name not in seen_ind:
+                seen_ind.append(name)
+    for out in parsed_dict.get("outputs") or []:
+        if isinstance(out, dict) and out.get("name"):
+            name = str(out["name"])
+            if name not in seen_ind:
+                seen_ind.append(name)
+
+    entry_labels = [str(c.get("expression") if isinstance(c, dict) and c.get("expression") else c) for c in entry]
+
+    return {
+        "source_type": "pine",
+        "pine_code": pine_code,
+        "entry_conditions": entry_labels,
+        "exit_conditions": [],
+        "indicators": seen_ind,
+        "filters": entry_labels,
+        "stop_loss": None,
+        "take_profit": None,
+        "trailing_stop": None,
+        "position_type": "LONG",
+        "time_exit_bars": None,
     }
 
 
@@ -631,10 +679,12 @@ def radar_profile(slots: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _detect_source(run_id: str, source: str | None) -> str:
-    if source in {SOURCE_TESTER, SOURCE_LEAN}:
+    if source in {SOURCE_TESTER, SOURCE_LEAN, SOURCE_INDICATOR}:
         return source
     if str(run_id).upper().startswith("LEAN-"):
         return SOURCE_LEAN
+    if str(run_id).upper().startswith("IND-"):
+        return SOURCE_INDICATOR
     return SOURCE_TESTER
 
 
@@ -764,9 +814,69 @@ async def _completed_tester_runs(
         return list((await db.scalars(stmt)).all())
 
 
+def _indicator_preview(run: IndicatorScanRun) -> dict[str, Any]:
+    matched = run.matched_count if run.matched_count is not None else 0
+    univ = run.universe_size if run.universe_size else 755
+    reject = max(0, univ - matched)
+    return {
+        "run_id": run.public_scan_id,
+        "internal_id": str(run.id),
+        "source": SOURCE_INDICATOR,
+        "status": run.status,
+        "strategy_name": run.indicator_name,
+        "start_date": _iso(run.scan_date or run.started_at),
+        "end_date": _iso(run.scan_date or run.completed_at),
+        "universe": run.universe,
+        "universe_size": univ,
+        "timeframe": run.timeframe,
+        "initial_capital": None,
+        "completed_at": _iso(run.completed_at or run.started_at),
+        "buy": matched,
+        "watch": 0,
+        "reject": reject,
+        "top_return": None,
+        "average_return": None,
+        "label": _run_label(
+            SOURCE_INDICATOR,
+            run.public_scan_id,
+            run.scan_date or run.started_at,
+            run.scan_date or run.completed_at,
+            run.universe,
+            run.timeframe,
+        ),
+    }
+
+
+async def _completed_indicator_runs(
+    user_id: uuid.UUID,
+    *,
+    indicator_id: uuid.UUID | None = None,
+    indicator_name: str | None = None,
+    limit: int = 300,
+) -> list[IndicatorScanRun]:
+    async with AsyncSessionLocal() as db:
+        stmt = (
+            select(IndicatorScanRun)
+            .where(or_(IndicatorScanRun.user_id == user_id, IndicatorScanRun.user_id.is_(None)))
+            .where(func.lower(IndicatorScanRun.status) == "completed")
+            .order_by(IndicatorScanRun.completed_at.desc(), IndicatorScanRun.started_at.desc())
+            .limit(limit)
+        )
+        clauses = []
+        if indicator_id is not None:
+            clauses.append(IndicatorScanRun.indicator_id == indicator_id)
+        if indicator_name:
+            clauses.append(func.lower(IndicatorScanRun.indicator_name) == indicator_name.strip().lower())
+        if clauses:
+            stmt = stmt.where(or_(*clauses))
+        return list((await db.scalars(stmt)).all())
+
+
 async def catalog(user_id: uuid.UUID) -> dict[str, Any]:
     rows = await persistence.list_definitions(user_id)
+    indicator_rows = await indicator_persistence.list_definitions(user_id)
     runs = await _completed_tester_runs(user_id, limit=200)
+    indicator_runs = await _completed_indicator_runs(user_id, limit=300)
     jobs = [j for j in _lean_jobs(user_id) if j.status == LeanJobStatus.COMPLETED and j.result]
 
     by_def: dict[str, int] = defaultdict(int)
@@ -777,6 +887,17 @@ async def catalog(user_id: uuid.UUID) -> dict[str, Any]:
         key = str(run.strategy_definition_id) if run.strategy_definition_id else ""
         name_key = (run.strategy_name or "").strip().lower()
         preview = _run_preview(run)
+        if key:
+            by_def[key] += 1
+            latest.setdefault(key, preview)
+        if name_key:
+            by_name[name_key] += 1
+            latest_by_name.setdefault(name_key, preview)
+
+    for run in indicator_runs:
+        key = str(run.indicator_id) if run.indicator_id else ""
+        name_key = (run.indicator_name or "").strip().lower()
+        preview = _indicator_preview(run)
         if key:
             by_def[key] += 1
             latest.setdefault(key, preview)
@@ -819,6 +940,31 @@ async def catalog(user_id: uuid.UUID) -> dict[str, Any]:
                 ),
             }
         )
+
+    for row in indicator_rows:
+        if getattr(row, "is_archived", False):
+            continue
+        name_key = (row.name or "").strip().lower()
+        if not name_key or name_key in seen:
+            continue
+        seen.add(name_key)
+        sid = str(row.id)
+        run_count = by_def.get(sid, 0) or by_name.get(name_key, 0)
+        lean_count = lean_by_id.get(sid, 0) or lean_by_name.get(name_key, 0)
+        strategies.append(
+            {
+                "id": sid,
+                "name": row.name,
+                "description": row.description,
+                "version": row.script_version,
+                "updated_at": _iso(row.updated_at),
+                "completed_run_count": run_count,
+                "completed_lean_count": lean_count,
+                "latest_run": latest.get(sid) or latest_by_name.get(name_key),
+                "has_pine": bool(row.source_code and row.source_code.strip()),
+            }
+        )
+
     suggestions: list[dict[str, Any]] = []
     with_runs = [s for s in strategies if (s["completed_run_count"] or s["completed_lean_count"])]
     for index in range(len(with_runs) - 1):
@@ -826,12 +972,12 @@ async def catalog(user_id: uuid.UUID) -> dict[str, Any]:
         suggestions.append(
             {
                 "title": f"{left['name']} vs {right['name']}",
-                "subtitle": "Completed Strategy Tester / LEAN runs",
+                "subtitle": "Completed Strategy Tester / scan runs",
                 "strategy_ids": [left["id"], right["id"]],
                 "names": [left["name"], right["name"]],
             }
         )
-        if len(suggestions) >= 4:
+        if len(suggestions) >= 6:
             break
     return {
         "strategies": strategies,
@@ -843,25 +989,51 @@ async def catalog(user_id: uuid.UUID) -> dict[str, Any]:
 
 
 async def list_runs_for_strategy(user_id: uuid.UUID, strategy_id: str) -> dict[str, Any]:
-    definition = await persistence.get_definition(uuid.UUID(str(strategy_id)))
-    if definition is None or (definition.user_id is not None and definition.user_id != user_id):
-        raise CompareError("Strategy not found", 404)
-    runs = await _completed_tester_runs(
-        user_id,
-        strategy_id=definition.id,
-        strategy_name=definition.name,
-        limit=100,
-    )
-    items = [_run_preview(run) for run in runs]
+    try:
+        def_uuid = uuid.UUID(str(strategy_id))
+    except (ValueError, TypeError) as exc:
+        raise CompareError("Invalid strategy_id", 400) from exc
+
+    definition = await persistence.get_definition(def_uuid)
+    indicator_def = None
+    if definition is None or (definition.user_id is not None and definition.user_id != user_id and getattr(user_id, "role", None) != "admin"):
+        indicator_def = await indicator_persistence.get_definition(def_uuid)
+        if indicator_def is None or (indicator_def.user_id is not None and indicator_def.user_id != user_id and getattr(user_id, "role", None) != "admin"):
+            raise CompareError("Strategy not found", 404)
+
+    items: list[dict[str, Any]] = []
+    strat_id = str(def_uuid)
+    strat_name = ""
+    if definition is not None:
+        strat_id = str(definition.id)
+        strat_name = definition.name
+        runs = await _completed_tester_runs(
+            user_id,
+            strategy_id=definition.id,
+            strategy_name=definition.name,
+            limit=100,
+        )
+        items.extend([_run_preview(run) for run in runs])
+    else:
+        strat_id = str(indicator_def.id)
+        strat_name = indicator_def.name
+        ind_runs = await _completed_indicator_runs(
+            user_id,
+            indicator_id=indicator_def.id,
+            indicator_name=indicator_def.name,
+            limit=100,
+        )
+        items.extend([_indicator_preview(run) for run in ind_runs])
+
     for job in _lean_jobs(user_id):
         if job.status != LeanJobStatus.COMPLETED or not job.result:
             continue
-        if _lean_matches_strategy(job, str(definition.id), definition.name):
+        if _lean_matches_strategy(job, strat_id, strat_name):
             items.append(_lean_preview(job))
     items.sort(key=lambda r: r.get("completed_at") or "", reverse=True)
     return {
-        "strategy_id": str(definition.id),
-        "strategy_name": definition.name,
+        "strategy_id": strat_id,
+        "strategy_name": strat_name,
         "runs": items,
     }
 
@@ -1048,12 +1220,15 @@ async def _load_tester_slot(
     }
 
 
-def _load_lean_slot(strategy: StrategyDefinition, run_id: str, slot_id: str) -> dict[str, Any]:
+def _load_lean_slot(strategy: Any, run_id: str, slot_id: str) -> dict[str, Any]:
     job = LeanBacktestService.get_job(run_id)
     if job is None or job.status != LeanJobStatus.COMPLETED or not job.result:
         raise CompareError(f"LEAN backtest {run_id} was not found or is not completed", 404)
-    snapshot = strategy.config if isinstance(strategy.config, dict) else {}
-    logic = extract_logic(snapshot)
+    if hasattr(strategy, "config") and isinstance(strategy.config, dict):
+        snapshot = strategy.config
+        logic = extract_logic(snapshot)
+    else:
+        logic = extract_indicator_logic(strategy)
     trades = _trades_from_lean(job)
     equity = _equity_from_lean(job)
     periods = monthly_yearly_from_equity(equity)
@@ -1077,11 +1252,14 @@ def _load_lean_slot(strategy: StrategyDefinition, run_id: str, slot_id: str) -> 
         position_type=logic.get("position_type"),
         source=SOURCE_LEAN,
     )
+    strat_name = getattr(strategy, "name", None) or job.strategy_name or "Strategy"
+    strat_desc = getattr(strategy, "description", None) or ""
+    strat_id = str(getattr(strategy, "id", job.strategy_id or ""))
     return {
         "slot_id": slot_id,
-        "strategy_id": str(strategy.id),
-        "strategy_name": job.strategy_name or strategy.name,
-        "description": strategy.description,
+        "strategy_id": strat_id,
+        "strategy_name": job.strategy_name or strat_name,
+        "description": strat_desc,
         "run_id": job.job_id,
         "source": SOURCE_LEAN,
         "status": str(job.status.value if hasattr(job.status, "value") else job.status),
@@ -1099,6 +1277,136 @@ def _load_lean_slot(strategy: StrategyDefinition, run_id: str, slot_id: str) -> 
         "yearly_returns": periods["yearly"],
         "trade_distribution": trade_distribution([t.get("return_pct") for t in trades]),
         "scan_summary": None,
+    }
+
+
+async def _load_indicator_slot(
+    user_id: uuid.UUID,
+    indicator: Any,
+    run_id: str,
+    slot_id: str,
+) -> dict[str, Any]:
+    run = await indicator_persistence.get_scan_by_public_id(run_id)
+    if run is None:
+        try:
+            run = await indicator_persistence.get_scan(uuid.UUID(run_id))
+        except (ValueError, TypeError):
+            run = None
+    if run is None:
+        raise CompareError(f"Indicator scan {run_id} was not found", 404)
+    if run.user_id is not None and run.user_id != user_id and getattr(user_id, "role", None) != "admin":
+        raise CompareError(f"Indicator scan {run_id} was not found", 404)
+
+    results = await indicator_persistence.list_results(run.id)
+    logic = extract_indicator_logic(indicator)
+
+    signals = []
+    trades = []
+    for r in results:
+        sig = "BUY" if r.matched else "REJECT"
+        close_px = _num((r.ohlcv or {}).get("close"))
+        open_px = _num((r.ohlcv or {}).get("open"))
+        px = close_px if close_px is not None else open_px
+        signals.append(
+            {
+                "symbol": r.symbol,
+                "signal": sig,
+                "return_pct": None,
+                "entry_price": px,
+                "exit_price": px,
+                "pass_count": 1 if r.matched else 0,
+                "fail_count": 0 if r.matched else 1,
+            }
+        )
+        if r.matched:
+            trades.append(
+                {
+                    "symbol": r.symbol,
+                    "entry_date": _iso(run.scan_date or run.started_at),
+                    "exit_date": _iso(run.scan_date or run.completed_at),
+                    "entry_price": px,
+                    "exit_price": px,
+                    "quantity": None,
+                    "direction": "LONG",
+                    "net_pnl": None,
+                    "return_pct": None,
+                    "holding_period": None,
+                    "holding_window": _iso(run.scan_date or run.completed_at),
+                    "exit_reason": None,
+                    "entry_reason": "BUY",
+                }
+            )
+
+    matched_count = int(run.matched_count if run.matched_count is not None else sum(1 for r in results if r.matched))
+    univ_size = int(run.universe_size if run.universe_size else (len(results) or 755))
+    reject_count = max(0, univ_size - matched_count)
+
+    config = extract_config(
+        universe=run.universe,
+        universe_size=univ_size,
+        timeframe=run.timeframe,
+        start_date=run.scan_date or run.started_at,
+        end_date=run.scan_date or run.completed_at,
+        initial_capital=None,
+        commission=None,
+        slippage=None,
+        position_type="LONG",
+        source=SOURCE_INDICATOR,
+    )
+    strat_name = getattr(indicator, "name", None) or run.indicator_name
+    strat_desc = getattr(indicator, "description", None) or ""
+    strat_id = str(getattr(indicator, "id", run.indicator_id or ""))
+
+    metrics = {
+        "net_profit": None,
+        "total_return_pct": None,
+        "cagr": None,
+        "win_rate": None,
+        "total_trades": matched_count,
+        "profit_factor": None,
+        "average_trade": None,
+        "average_trade_unit": "pct",
+        "max_drawdown": None,
+        "max_drawdown_pct": None,
+        "sharpe_ratio": None,
+        "sortino_ratio": None,
+        "calmar_ratio": None,
+        "avg_cash": None,
+        "avg_exposure_pct": None,
+        "long_trades": matched_count,
+        "short_trades": 0,
+        "best_trade": None,
+        "worst_trade": None,
+        "final_equity": None,
+        "initial_capital": None,
+        "metrics_source": SOURCE_INDICATOR,
+        "metrics_note": f"Indicator Scanner run ({_iso(run.scan_date or run.completed_at)}). Matched {matched_count} of {univ_size} stocks.",
+    }
+    return {
+        "slot_id": slot_id,
+        "strategy_id": strat_id,
+        "strategy_name": run.indicator_name or strat_name,
+        "description": strat_desc,
+        "run_id": run.public_scan_id,
+        "source": SOURCE_INDICATOR,
+        "status": run.status,
+        "logic": logic,
+        "metrics": metrics,
+        "config": config,
+        "signals": signals,
+        "trades": trades,
+        "equity_curve": [],
+        "drawdown_curve": [],
+        "monthly_returns": [],
+        "yearly_returns": [],
+        "trade_distribution": [],
+        "scan_summary": {
+            "buy": matched_count,
+            "watch": 0,
+            "reject": reject_count,
+            "universe_size": univ_size,
+            "average_return": None,
+        },
     }
 
 
@@ -1121,14 +1429,22 @@ async def compare_slots(user_id: uuid.UUID, slots_in: list[dict[str, Any]]) -> d
             raise CompareError("Each selected run can only appear once")
         seen_runs.add(key)
         try:
-            definition = await persistence.get_definition(uuid.UUID(strategy_id))
+            def_uuid = uuid.UUID(strategy_id)
         except (ValueError, TypeError) as exc:
             raise CompareError("Invalid strategy_id") from exc
-        if definition is None or (definition.user_id is not None and definition.user_id != user_id):
-            raise CompareError("Strategy not found", 404)
+
+        definition = await persistence.get_definition(def_uuid)
+        indicator_def = None
+        if definition is None or (definition.user_id is not None and definition.user_id != user_id and getattr(user_id, "role", None) != "admin"):
+            indicator_def = await indicator_persistence.get_definition(def_uuid)
+            if indicator_def is None or (indicator_def.user_id is not None and indicator_def.user_id != user_id and getattr(user_id, "role", None) != "admin"):
+                raise CompareError("Strategy not found", 404)
+
         slot_id = f"s{index}"
         if source == SOURCE_LEAN:
-            loaded.append(_load_lean_slot(definition, run_id, slot_id))
+            loaded.append(_load_lean_slot(definition or indicator_def, run_id, slot_id))
+        elif source == SOURCE_INDICATOR or indicator_def is not None:
+            loaded.append(await _load_indicator_slot(user_id, indicator_def or definition, run_id, slot_id))
         else:
             loaded.append(await _load_tester_slot(user_id, definition, run_id, slot_id))
 
@@ -1141,7 +1457,7 @@ async def compare_slots(user_id: uuid.UUID, slots_in: list[dict[str, Any]]) -> d
                 "field": "source",
                 "label": "Run type",
                 "values": [s.get("source") for s in loaded],
-                "message": "Selected runs mix Strategy Tester scans and LEAN backtests. Metrics are not like-for-like.",
+                "message": "Selected runs mix different execution engines. Metrics are not like-for-like.",
                 "missing_on_some": False,
             },
         )

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isIndicatorScanContext, isIndicatorScanId, mapIndicatorResultToStock } from "../indicatorScanDetail";
+import { isIndicatorScanContext, isIndicatorScanId, mapIndicatorResultToStock, resolveTradePlanDetails } from "../indicatorScanDetail";
 
 describe("indicatorScanDetail", () => {
   it("treats IND- public ids as indicator scans", () => {
@@ -66,5 +66,77 @@ describe("indicatorScanDetail", () => {
     );
     expect(stock.filter_results?.map((item) => item.name)).toEqual(["Momentum 252 > 0.5"]);
     expect(stock.filter_results?.some((item) => item.name === "LTM Eligible Signal = 1")).toBe(false);
+  });
+
+  it("maps 13 Trend Pullback [SCAN] with Mom 252, deriving closeT252 and populating indicators", () => {
+    const stock = mapIndicatorResultToStock({
+      symbol: "TCS",
+      display_name: "Tata Consultancy Services Ltd.",
+      status: "ok",
+      matched: true,
+      as_of: "2026-09-21",
+      outputs: {
+        "SMA 50": 3153.02,
+        "SMA 200": 2568.52,
+        "Mom 252": 0.25,
+        Close: 3265.10,
+        "EMA 20": 3220.45,
+        "EMA 50": 3140.10,
+        "Avg Volume": 1250000,
+        RSI: 43.6,
+      },
+      ohlcv: { close: 3265.10, volume: 838700 },
+      indicator_name: "13 Trend Pullback [SCAN]",
+    });
+
+    expect(stock.signal).toBe("MATCH");
+    expect(stock.return_pct).toBeCloseTo(25.0);
+    // Derived closeT252: 3265.10 / (1 + 0.25) = 2612.08
+    expect(stock.entry_price).toBeCloseTo(2612.08);
+    expect(stock.exit_price).toBe(3265.10);
+    expect(stock.sma_50).toBe(3153.02);
+    expect(stock.sma_200).toBe(2568.52);
+    expect(stock.avg_volume).toBe(1250000);
+    expect(stock.indicators?.ema_20).toBe(3220.45);
+    expect(stock.indicators?.ema_50).toBe(3140.10);
+  });
+
+  it("resolves trade plan details with consistent entry, stopLoss, and target levels for indicator scans", () => {
+    const stock = mapIndicatorResultToStock({
+      symbol: "TCS",
+      display_name: "Tata Consultancy Services Ltd.",
+      status: "ok",
+      matched: true,
+      as_of: "2026-09-21",
+      outputs: {
+        "SMA 50": 3153.02,
+        "SMA 200": 2568.52,
+        "Mom 252": 0.25,
+        Close: 3265.10,
+        RSI: 43.6,
+      },
+      ohlcv: { close: 3265.10 },
+      indicator_name: "13 Trend Pullback [SCAN]",
+    });
+
+    const plan = resolveTradePlanDetails({
+      stock,
+      runId: "IND-20260921-031",
+      side: "BUY",
+    });
+
+    expect(plan.displayEntryPrice).toBe(3265.10);
+    // For LONG: stop loss must be below entry price (using SMA 50 = 3153.02)
+    expect(plan.stopLoss).toBe(3153.02);
+    expect(plan.stopLoss!).toBeLessThan(plan.displayEntryPrice!);
+
+    // Target must be 1:2 R:R above entry price: 3265.10 + 2 * (3265.10 - 3153.02) = 3489.26
+    expect(plan.target).toBe(3489.26);
+    expect(plan.target!).toBeGreaterThan(plan.displayEntryPrice!);
+
+    // Risk and reward calculations
+    expect(plan.riskAmount).toBeCloseTo(112.08);
+    expect(plan.rewardAmount).toBeCloseTo(224.16);
+    expect(plan.position).toBe("LONG");
   });
 });

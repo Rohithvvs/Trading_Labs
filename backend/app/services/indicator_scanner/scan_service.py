@@ -1001,9 +1001,20 @@ def result_payload(row) -> dict[str, Any]:
     ohlcv = payload["ohlcv"] or {}
     if close is None:
         close = ohlcv.get("close")
-    payload["close"] = close if isinstance(close, (int, float)) else None
-    payload["exit_price"] = payload["close"]
+    close_val = float(close) if isinstance(close, (int, float)) else None
+    payload["close"] = close_val
+    payload["exit_price"] = close_val
+
+    momentum = outputs.get("Momentum 252")
+    if momentum is None:
+        momentum = outputs.get("Mom 252")
+    if momentum is None:
+        momentum = outputs.get("First-Year Return")
     close_t252 = outputs.get("Close t-252")
+    if close_t252 is None and isinstance(momentum, (int, float)) and close_val:
+        close_t252 = round(close_val / (1.0 + float(momentum)), 2)
+        outputs["Close t-252"] = close_t252
+    payload["close_t252"] = close_t252 if isinstance(close_t252, (int, float)) else None
     payload["entry_price"] = close_t252 if isinstance(close_t252, (int, float)) else None
     failed_names = payload["failed_filters"]
     payload["primary_failure_reason"] = (
@@ -1047,16 +1058,28 @@ def symbol_detail_payload(run, row) -> dict[str, Any]:
         filters=filters,
     )
     close = outputs.get("Close")
-    close_t252 = outputs.get("Close t-252")
-    momentum = outputs.get("Momentum 252")
     ohlcv = payload.get("ohlcv") or {}
     if close is None:
         close = ohlcv.get("close")
+    close_val = float(close) if isinstance(close, (int, float)) else None
+
+    momentum = outputs.get("Momentum 252")
+    if momentum is None:
+        momentum = outputs.get("Mom 252")
+    if momentum is None:
+        momentum = outputs.get("First-Year Return")
+
+    close_t252 = outputs.get("Close t-252")
+    if close_t252 is None and isinstance(momentum, (int, float)) and close_val:
+        close_t252 = round(close_val / (1.0 + float(momentum)), 2)
+        outputs["Close t-252"] = close_t252
+
     return_pct = None
     if isinstance(momentum, (int, float)):
         return_pct = float(momentum) * 100.0
-    elif isinstance(close, (int, float)) and isinstance(close_t252, (int, float)) and close_t252:
-        return_pct = (float(close) / float(close_t252) - 1.0) * 100.0
+    elif isinstance(close_val, (int, float)) and isinstance(close_t252, (int, float)) and close_t252:
+        return_pct = (float(close_val) / float(close_t252) - 1.0) * 100.0
+
     payload.update(
         {
             "scan_id": run.public_scan_id,
@@ -1067,9 +1090,12 @@ def symbol_detail_payload(run, row) -> dict[str, Any]:
             "signal": "MATCH" if row.matched else "REJECT",
             "company": row.display_name,
             "entry_price": close_t252 if isinstance(close_t252, (int, float)) else None,
-            "exit_price": close if isinstance(close, (int, float)) else None,
+            "exit_price": close_val if isinstance(close_val, (int, float)) else None,
+            "candidate_entry_price": close_val,
+            "close_t252": close_t252 if isinstance(close_t252, (int, float)) else None,
             "return_pct": return_pct,
-            "close": close if isinstance(close, (int, float)) else None,
+            "close": close_val,
+            "outputs": outputs,
             "evaluation_date": row.as_of,
             "source": "indicator_scanner",
         }

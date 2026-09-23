@@ -682,10 +682,11 @@ export function prefillPaperTradeLocal(
     typeof payload.recommendation_meta?.strategy_name === "string"
       ? payload.recommendation_meta.strategy_name.trim()
       : "";
-  const origin = strategyName || "system recommendation";
+  const rawSide = String(payload.recommendation_meta?.signal || "").toUpperCase();
+  const side: "BUY" | "SELL" = rawSide === "SELL" || rawSide === "SHORT" ? "SELL" : "BUY";
   return {
     symbol,
-    side: "BUY",
+    side,
     type: limit != null ? "LIMIT" : "MARKET" as any,
     qty: 1,
     limit_price: limit,
@@ -754,6 +755,10 @@ function normalizeSymbolDetail(raw: any): any {
     news_extras,
     ohlcv: pick("ohlcv", ["candles", "ohlc"]) ?? null,
     research: pick("research", ["Research", "swing_research"]) ?? null,
+    technical: pick("technical", ["Technical"]) ?? null,
+    recommendation: pick("recommendation", ["Recommendation"]) ?? null,
+    market_regime: pick("market_regime", ["marketRegime"]) ?? null,
+    sector_overlay: pick("sector_overlay", ["sectorOverlay"]) ?? null,
   };
 }
 

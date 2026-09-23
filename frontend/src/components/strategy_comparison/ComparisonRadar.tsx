@@ -17,7 +17,9 @@ type Props = {
 };
 
 function sourceLabel(source: string | undefined): string {
-  return source === "lean" ? "Event engine" : "Strategy Tester";
+  if (source === "lean") return "Event engine";
+  if (source === "indicator_scan") return "Indicator Scanner";
+  return "Strategy Tester";
 }
 
 function AxisTick({ x, y, payload, textAnchor, cx, cy }: {

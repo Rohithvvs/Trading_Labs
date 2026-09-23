@@ -48,43 +48,86 @@ export const TechnicalsTab: React.FC<TechnicalsTabProps> = ({
   const year52High = (symbolDetail as any)?.year52_high ?? (stock as any)?.year52_high ?? null;
   const year52Low = (symbolDetail as any)?.year52_low ?? (stock as any)?.year52_low ?? null;
 
+  const techIndicators = ((symbolDetail as any)?.technical?.[0]?.indicators as Record<string, any>) || {};
+
   const rsiVal =
     stock?.rsi ??
     stock?.indicators?.rsi ??
     stock?.indicators?.rsi_14 ??
+    techIndicators.rsi_14 ??
+    techIndicators.rsi ??
     (symbolDetail?.technical_extras as any)?.rsi ??
     latestCandle?.rsi ??
     null;
 
-  const sma20Val = stock?.sma_20 ?? stock?.indicators?.sma_20 ?? latestCandle?.sma_20 ?? null;
-  const sma50Val = stock?.sma_50 ?? stock?.indicators?.sma_50 ?? latestCandle?.sma_50 ?? null;
-  const sma200Val = stock?.sma_200 ?? stock?.indicators?.sma_200 ?? latestCandle?.sma_200 ?? null;
+  const sma20Val =
+    stock?.sma_20 ??
+    stock?.indicators?.sma_20 ??
+    techIndicators.sma_20 ??
+    latestCandle?.sma_20 ??
+    null;
+
+  const sma50Val =
+    stock?.sma_50 ??
+    stock?.indicators?.sma_50 ??
+    techIndicators.sma_50 ??
+    latestCandle?.sma_50 ??
+    null;
+
+  const sma200Val =
+    stock?.sma_200 ??
+    stock?.indicators?.sma_200 ??
+    techIndicators.sma_200 ??
+    latestCandle?.sma_200 ??
+    null;
 
   const ema20Val =
     stock?.indicators?.ema_20 ??
     (stock?.indicators as any)?.["ema20"] ??
+    (stock?.indicators as any)?.["EMA 20"] ??
+    techIndicators.ema_20 ??
     null;
 
   const ema50Val =
     stock?.indicators?.ema_50 ??
     (stock?.indicators as any)?.["ema50"] ??
+    (stock?.indicators as any)?.["EMA 50"] ??
+    techIndicators.ema_50 ??
     null;
 
-  const volumeVal = stock?.volume ?? stock?.indicators?.volume ?? latestCandle?.volume ?? null;
-  const avgVolumeVal =
+  const volumeVal =
+    stock?.volume ??
+    stock?.indicators?.volume ??
+    latestCandle?.volume ??
+    null;
+
+  let avgVolumeVal =
     stock?.avg_volume ??
     stock?.indicators?.avg_volume_20 ??
     stock?.indicators?.avg_volume ??
+    (stock?.indicators as any)?.["volSma20"] ??
+    techIndicators.avg_volume_20 ??
+    techIndicators.avg_volume ??
     null;
+
+  if (avgVolumeVal == null && candles.length >= 5) {
+    const slice = candles.slice(-20);
+    const validVols = slice.map((c) => c.volume).filter((v): v is number => typeof v === "number" && v > 0);
+    if (validVols.length > 0) {
+      avgVolumeVal = Math.round(validVols.reduce((a, b) => a + b, 0) / validVols.length);
+    }
+  }
 
   const atrVal =
     stock?.indicators?.atr_14 ??
     stock?.indicators?.atr ??
+    techIndicators.atr_14 ??
+    techIndicators.atr ??
     symbolDetail?.technical_extras?.atr ??
     null;
 
-  const macdVal = stock?.indicators?.macd ?? null;
-  const macdSignalVal = stock?.indicators?.macd_signal ?? null;
+  const macdVal = stock?.indicators?.macd ?? techIndicators.macd ?? null;
+  const macdSignalVal = stock?.indicators?.macd_signal ?? techIndicators.macd_signal ?? null;
 
   const bollingerStatus =
     symbolDetail?.technical_extras?.bollinger_status ??
