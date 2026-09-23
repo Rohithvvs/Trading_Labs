@@ -554,6 +554,7 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
     });
   }, []);
 
+  const appliedIndicatorId = appliedIndicator?.id;
   useEffect(() => {
     let cancelled = false;
     const loadLibrary = async () => {
@@ -593,8 +594,8 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
             );
             if (alias) return alias.id;
           }
-          if (appliedIndicator?.id && incoming.some((row) => row.id === appliedIndicator.id)) {
-            return appliedIndicator.id;
+          if (appliedIndicatorId && incoming.some((row) => row.id === appliedIndicatorId)) {
+            return appliedIndicatorId;
           }
           const top1 = incoming.find((row) => getTop5Rank(row.name) === 1);
           return top1?.id || incoming[0]?.id || current || "";
@@ -607,25 +608,26 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [appliedIndicator?.id]);
+  }, [appliedIndicatorId]);
 
   useEffect(() => {
-    if (!appliedIndicator?.id) return;
+    if (!appliedIndicatorId) return;
     setIndicators((prev) => upsertIndicator(prev, appliedIndicator));
-    if (lastAppliedId.current !== appliedIndicator.id) {
-      lastAppliedId.current = appliedIndicator.id;
-      setSelectedId(appliedIndicator.id);
+    if (lastAppliedId.current !== appliedIndicatorId) {
+      lastAppliedId.current = appliedIndicatorId;
+      setSelectedId(appliedIndicatorId);
     }
-  }, [appliedIndicator]);
+  }, [appliedIndicator, appliedIndicatorId]);
 
   useEffect(() => {
     syncFiltersToOutputs(selected);
   }, [selected, syncFiltersToOutputs]);
 
+  const selectedIndicatorId = selected?.id;
   useEffect(() => {
     setOpenColumn(null);
     setHiddenColumns([]);
-  }, [selected?.id]);
+  }, [selectedIndicatorId]);
 
   const mapTopRow = useCallback((row: IndicatorScanRow, rank: number): RankedReturn => {
     const stock = mapIndicatorResultToStock(row);
