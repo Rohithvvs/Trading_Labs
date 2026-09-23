@@ -24,7 +24,6 @@ class LabStrategy:
     pine_kind: str  # vector | stateful | universe | rebalance
 
 
-LAB_STRATEGIES: tuple[LabStrategy, ...] = (
 TOP_5_STRATEGIES: tuple[LabStrategy, ...] = (
     LabStrategy(
         "top_01_momentum",

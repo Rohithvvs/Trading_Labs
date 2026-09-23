@@ -90,7 +90,7 @@ describe("IndicatorCustomDropdown - Top 5 Research Strategies", () => {
       fireEvent.click(trigger);
 
       // Verify group headers
-      expect(screen.getByText("⭐ Top Recommended (Proven Backtest)")).toBeDefined();
+      expect(screen.getByText("Top 5 Strategies")).toBeDefined();
       expect(screen.getByText("🚀 Momentum & Trend Following")).toBeDefined();
       expect(screen.getByText("📦 Darvas Box Systems")).toBeDefined();
       expect(screen.getByText("🔄 Mean Reversion & Volatility")).toBeDefined();

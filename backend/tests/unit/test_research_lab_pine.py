@@ -7,16 +7,12 @@ from app.services.research_lab.catalog import LAB_STRATEGIES
 from app.services.research_lab.pine_catalog import pine_source_for
 
 
-def test_catalog_has_twenty_one_strategies():
-    assert len(LAB_STRATEGIES) == 21
 def test_catalog_has_strategies():
     assert len(LAB_STRATEGIES) == 26
     ids = [item.strategy_id for item in LAB_STRATEGIES]
-    assert ids[0] == "01_darvas_classic"
     assert ids[0] == "top_01_momentum"
     assert ids[5] == "01_darvas_classic"
     assert ids[-1] == "21_sma_10_50"
-    assert len(set(ids)) == 21
     assert len(set(ids)) == 26
 
 

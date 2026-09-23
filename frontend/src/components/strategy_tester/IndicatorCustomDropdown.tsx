@@ -14,7 +14,6 @@ interface StrategyGroup {
   items: SavedIndicator[];
 }
 
-const TOP_5_PREFIXES = ["09", "17", "03", "19", "13"];
 export function getTop5Rank(name: string): number | null {
   const clean = name.trim().toLowerCase();
   const topMatch = clean.match(/^top\s*0?([1-5])[:\s]/);
@@ -58,16 +57,6 @@ function getCategory(name: string): "top5" | "trend" | "darvas" | "reversion" | 
   const numMatch = clean.match(/^(\d{2})\s/);
   const num = numMatch ? numMatch[1] : null;
 
-  if (
-    (num && TOP_5_PREFIXES.includes(num)) ||
-    clean.includes("52-Week") ||
-    clean.includes("Long-Term") ||
-    clean.includes("Super Trend") ||
-    clean.includes("Low-Drawdown") ||
-    clean.includes("Trend Pullback")
-  ) {
-    return "top5";
-  }
   if ((num && ["01", "02", "04", "05"].includes(num)) || clean.toLowerCase().includes("darvas")) {
     return "darvas";
   }
@@ -79,11 +68,9 @@ function getCategory(name: string): "top5" | "trend" | "darvas" | "reversion" | 
     return "reversion";
   }
   if (
-    (num && ["08", "10", "12", "14", "15", "16", "18", "20", "21"].includes(num)) ||
     (num && ["03", "08", "09", "10", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21"].includes(num)) ||
     clean.toLowerCase().includes("momentum") ||
     clean.toLowerCase().includes("golden") ||
-    clean.toLowerCase().includes("trend")
     clean.toLowerCase().includes("trend") ||
     clean.toLowerCase().includes("pullback") ||
     clean.toLowerCase().includes("breakout") ||
@@ -168,7 +155,7 @@ export const IndicatorCustomDropdown: React.FC<IndicatorCustomDropdownProps> = (
 
     const result: StrategyGroup[] = [];
     if (top5.length > 0) {
-      result.push({ id: "top5", label: "⭐ Top Recommended (Proven Backtest)", badge: "TOP 5", items: top5 });
+      result.push({ id: "top5", label: "Top 5 Strategies", badge: "TOP 5", items: top5 });
     }
     if (trend.length > 0) {
       result.push({ id: "trend", label: "🚀 Momentum & Trend Following", badge: "MOMENTUM", items: trend });
@@ -277,7 +264,6 @@ export const IndicatorCustomDropdown: React.FC<IndicatorCustomDropdownProps> = (
                         onClick={() => handleSelect(item.id)}
                       >
                         <div className="ind-custom-dd-item-text">
-                          <span className="ind-custom-dd-item-title">{item.name}</span>
                           <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                             <span className="ind-custom-dd-item-title">{item.name}</span>
                             {group.id === "top5" && rank !== null && (
