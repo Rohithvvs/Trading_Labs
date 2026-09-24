@@ -2179,28 +2179,46 @@ export function PaperOrderPage() {
               <dd>{formatInr(risk.estimatedCost)}</dd>
             </div>
             <div>
-              <dt>Brokerage</dt>
-              <dd>{formatInr(risk.brokerage)}</dd>
-            </div>
-            <div>
-              <dt>Securities Transaction Tax (STT)</dt>
-              <dd>{formatInr(risk.stt)}</dd>
-            </div>
-            <div>
-              <dt>Exchange & SEBI Charges</dt>
-              <dd>{formatInr(risk.exchangeTurnover + risk.sebiTurnover)}</dd>
-            </div>
-            <div>
-              <dt>GST (18% on Services)</dt>
-              <dd>{formatInr(risk.gst)}</dd>
-            </div>
-            <div>
-              <dt>{ticket.side === "BUY" ? "Stamp Duty (0.015%)" : "DP Charges"}</dt>
-              <dd>{formatInr(ticket.side === "BUY" ? risk.stampDuty : risk.dpCharges)}</dd>
-            </div>
-            <div style={{ borderTop: "1px dashed var(--border-color, #444)", paddingTop: "6px" }}>
-              <dt><strong>Total Charges & Taxes</strong></dt>
-              <dd><strong>{formatInr(risk.charges)}</strong></dd>
+              <dt style={{ display: "inline-flex", alignItems: "center" }}>
+                <span>Total Broker Charges</span>
+                <InfoTooltip
+                  position="top"
+                  maxWidth="300px"
+                  ariaLabel="Broker charges breakdown"
+                  content={
+                    <div style={{ display: "flex", flexDirection: "column", gap: "6px", minWidth: "220px", textAlign: "left" }}>
+                      <div style={{ fontWeight: 650, fontSize: "12px", borderBottom: "1px solid rgba(255,255,255,0.12)", paddingBottom: "4px", marginBottom: "2px", color: "var(--text-primary, #f1f5f9)" }}>
+                        Broker Charges Breakdown
+                      </div>
+                      <div style={{ display: "flex", justifyContent: "space-between", gap: "16px" }}>
+                        <span style={{ color: "var(--text-muted, #94a3b8)" }}>Brokerage</span>
+                        <span style={{ fontWeight: 600 }}>{formatInr(risk.brokerage)}</span>
+                      </div>
+                      <div style={{ display: "flex", justifyContent: "space-between", gap: "16px" }}>
+                        <span style={{ color: "var(--text-muted, #94a3b8)" }}>Securities Transaction Tax (STT)</span>
+                        <span style={{ fontWeight: 600 }}>{formatInr(risk.stt)}</span>
+                      </div>
+                      <div style={{ display: "flex", justifyContent: "space-between", gap: "16px" }}>
+                        <span style={{ color: "var(--text-muted, #94a3b8)" }}>Exchange &amp; SEBI Charges</span>
+                        <span style={{ fontWeight: 600 }}>{formatInr(risk.exchangeTurnover + risk.sebiTurnover)}</span>
+                      </div>
+                      <div style={{ display: "flex", justifyContent: "space-between", gap: "16px" }}>
+                        <span style={{ color: "var(--text-muted, #94a3b8)" }}>GST (18% on Services)</span>
+                        <span style={{ fontWeight: 600 }}>{formatInr(risk.gst)}</span>
+                      </div>
+                      <div style={{ display: "flex", justifyContent: "space-between", gap: "16px" }}>
+                        <span style={{ color: "var(--text-muted, #94a3b8)" }}>{ticket.side === "BUY" ? "Stamp Duty (0.015%)" : "DP Charges"}</span>
+                        <span style={{ fontWeight: 600 }}>{formatInr(ticket.side === "BUY" ? risk.stampDuty : risk.dpCharges)}</span>
+                      </div>
+                      <div style={{ borderTop: "1px dashed rgba(255,255,255,0.12)", paddingTop: "4px", marginTop: "2px", display: "flex", justifyContent: "space-between", gap: "16px", fontWeight: 700 }}>
+                        <span>Total</span>
+                        <span>{formatInr(risk.charges)}</span>
+                      </div>
+                    </div>
+                  }
+                />
+              </dt>
+              <dd>{formatInr(risk.charges)}</dd>
             </div>
             <div>
               <dt><strong>{ticket.side === "BUY" ? "Net Outlay Required" : "Estimated Net Proceeds"}</strong></dt>
