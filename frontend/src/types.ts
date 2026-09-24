@@ -324,6 +324,12 @@ export type PaperAccountSummary = {
   equity: number;
   realized_pnl: number;
   unrealized_pnl: number;
+  gross_realized_pnl?: number;
+  total_charges_paid?: number;
+  net_realized_pnl?: number;
+  gross_unrealized_pnl?: number;
+  estimated_exit_charges?: number;
+  net_unrealized_pnl?: number;
   total_invested: number;
   reserved_cash: number;
   /** Cash available to buy after pending-order reservations. Source of truth. */
@@ -352,6 +358,12 @@ export type PaperPosition = {
   unrealized_pnl: number;
   unrealized_pnl_percent: number;
   invested_value: number;
+  total_buy_charges?: number;
+  gross_unrealized_pnl?: number;
+  estimated_exit_charges?: number;
+  net_unrealized_pnl?: number;
+  net_return_percent?: number;
+  break_even_price?: number | null;
   stop_loss?: number | null;
   target?: number | null;
   lifecycle_state?: string;
@@ -445,6 +457,10 @@ export type PaperTradeHistoryItem = {
   exit_price: number;
   pnl: number;
   pnl_percent: number;
+  gross_pnl?: number | null;
+  total_charges?: number | null;
+  net_pnl?: number | null;
+  break_even_price?: number | null;
   notes?: string | null;
   source_signal?: string | null;
   source_score?: number | null;
@@ -454,6 +470,98 @@ export type PaperTradeHistoryItem = {
   holding_period_hours: number;
   exit_reason?: string | null;
   exit_source?: string | null;
+};
+
+export type ChargeItemBreakdown = {
+  turnover: number;
+  brokerage: number;
+  stt: number;
+  exchange_charges: number;
+  sebi_charges: number;
+  clearing_charges: number;
+  gst: number;
+  stamp_duty: number;
+  dp_charges: number;
+  total_charges: number;
+};
+
+export type ChargePreviewResponse = {
+  symbol: string;
+  side: "BUY" | "SELL";
+  qty: number;
+  price: number;
+  turnover: number;
+  charges: ChargeItemBreakdown;
+  estimated_order_cost: number;
+  estimated_net_proceeds: number;
+  effective_price_per_share: number;
+  break_even_price?: number | null;
+  profile_version: number;
+  profile_name: string;
+  assumptions: Record<string, any>;
+};
+
+export type ChargeProfile = {
+  id: number;
+  profile_name: string;
+  broker_id: string;
+  exchange: string;
+  segment: string;
+  currency: string;
+  is_active: boolean;
+  is_default: boolean;
+  version: number;
+  rounding_mode: string;
+  money_decimal_places: number;
+  brokerage_type: string;
+  brokerage_rate_pct: number;
+  brokerage_flat_per_executed_order: number;
+  brokerage_order_cap: number;
+  stt_buy_rate_pct: number;
+  stt_sell_rate_pct: number;
+  exchange_transaction_charge_buy_rate_pct: number;
+  exchange_transaction_charge_sell_rate_pct: number;
+  sebi_turnover_fee_rate_pct: number;
+  clearing_charge_buy_rate_pct: number;
+  clearing_charge_sell_rate_pct: number;
+  gst_rate_pct: number;
+  stamp_duty_buy_rate_pct: number;
+  stamp_duty_sell_rate_pct: number;
+  dp_charge_on_delivery_sell: number;
+  dp_charge_scope: string;
+  include_estimated_exit_charges_in_unrealised_pnl: boolean;
+  notes?: string | null;
+  effective_from: string;
+  created_at: string;
+};
+
+export type OrderChargeBreakdown = {
+  order_id?: number | null;
+  trade_id?: number | null;
+  symbol: string;
+  side: string;
+  executed_qty: number;
+  executed_price: number;
+  turnover: number;
+  charges: ChargeItemBreakdown;
+  created_at: string;
+};
+
+export type PositionPnLResponse = {
+  position_id: number;
+  symbol: string;
+  qty: number;
+  avg_entry_price: number;
+  current_price: number;
+  invested_value: number;
+  total_buy_charges: number;
+  gross_unrealized_pnl: number;
+  estimated_exit_charges: number;
+  net_unrealized_pnl: number;
+  net_return_percent: number;
+  break_even_price: number;
+  include_exit_charges: boolean;
+  charges_breakdown?: ChargeItemBreakdown | null;
 };
 
 export type MarketEngineHealth = {

@@ -34,6 +34,12 @@ class PaperAccountSummary(BaseModel):
     equity: float
     realized_pnl: float
     unrealized_pnl: float
+    gross_realized_pnl: float = 0.0
+    total_charges_paid: float = 0.0
+    net_realized_pnl: float = 0.0
+    gross_unrealized_pnl: float = 0.0
+    estimated_exit_charges: float = 0.0
+    net_unrealized_pnl: float = 0.0
     total_invested: float
     reserved_cash: float
     available_cash: float
@@ -52,6 +58,12 @@ class PaperPositionResponse(BaseModel):
     unrealized_pnl: float
     unrealized_pnl_percent: float
     invested_value: float
+    total_buy_charges: float = 0.0
+    gross_unrealized_pnl: float = 0.0
+    estimated_exit_charges: float = 0.0
+    net_unrealized_pnl: float = 0.0
+    net_return_percent: float = 0.0
+    break_even_price: float | None = None
     stop_loss: float | None = None
     target: float | None = None
     lifecycle_state: str = "OPEN_POSITION"
@@ -145,6 +157,10 @@ class PaperTradeHistoryItem(BaseModel):
     exit_price: float
     pnl: float
     pnl_percent: float
+    gross_pnl: float | None = None
+    total_charges: float | None = None
+    net_pnl: float | None = None
+    break_even_price: float | None = None
     notes: str | None = None
     source_signal: str | None = None
     source_score: float | None = None

@@ -14,6 +14,11 @@ import type {
   TimeframeConfig,
   SymbolDetail,
   MarketEngineStatus,
+  ChargeItemBreakdown,
+  ChargePreviewResponse,
+  ChargeProfile,
+  OrderChargeBreakdown,
+  PositionPnLResponse,
 } from "./types";
 import { apiUrl } from "./config";
 import { W52_STRATEGY_ID } from "./utils/strategyIdentity";
@@ -648,6 +653,97 @@ export async function updatePaperPosition(position: Pick<PaperPosition, "id" | "
     throw new Error(message || "Failed to update position");
   }
   return response.json() as Promise<PaperOrderActionResponse>;
+}
+
+export async function fetchChargeProfile(
+  brokerId: string = "DEFAULT",
+  exchange: string = "NSE",
+  segment: string = "EQUITY_DELIVERY"
+): Promise<ChargeProfile> {
+  const params = new URLSearchParams({
+    broker_id: brokerId,
+    exchange,
+    segment,
+  });
+  const response = await fetchWithDiagnostics(
+    `/paper-trading/charges/profile?${params.toString()}`,
+    undefined,
+    "Charge profile"
+  );
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || "Failed to load charge profile");
+  }
+  return response.json() as Promise<ChargeProfile>;
+}
+
+export async function fetchChargePreview(params: {
+  symbol: string;
+  side: "BUY" | "SELL";
+  qty: number;
+  price: number;
+  exchange?: string;
+  segment?: string;
+  broker_id?: string;
+}): Promise<ChargePreviewResponse> {
+  const q = new URLSearchParams({
+    symbol: params.symbol,
+    side: params.side,
+    qty: String(params.qty),
+    price: String(params.price),
+    exchange: params.exchange || "NSE",
+    segment: params.segment || "EQUITY_DELIVERY",
+    broker_id: params.broker_id || "DEFAULT",
+  });
+  const response = await fetchWithDiagnostics(
+    `/paper-trading/charges/preview?${q.toString()}`,
+    undefined,
+    "Charge preview"
+  );
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || "Failed to fetch charge preview");
+  }
+  return response.json() as Promise<ChargePreviewResponse>;
+}
+
+export async function fetchOrderCharges(orderId: number): Promise<OrderChargeBreakdown[]> {
+  const response = await fetchWithDiagnostics(
+    `/paper-trading/orders/${orderId}/charges`,
+    undefined,
+    "Order charges"
+  );
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || "Failed to load order charges");
+  }
+  return response.json() as Promise<OrderChargeBreakdown[]>;
+}
+
+export async function fetchTradeCharges(tradeId: number): Promise<OrderChargeBreakdown[]> {
+  const response = await fetchWithDiagnostics(
+    `/paper-trading/trades/${tradeId}/charges`,
+    undefined,
+    "Trade charges"
+  );
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || "Failed to load trade charges");
+  }
+  return response.json() as Promise<OrderChargeBreakdown[]>;
+}
+
+export async function fetchPositionPnL(positionId: number): Promise<PositionPnLResponse> {
+  const response = await fetchWithDiagnostics(
+    `/paper-trading/positions/${positionId}/pnl`,
+    undefined,
+    "Position PnL"
+  );
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || "Failed to load position PnL breakdown");
+  }
+  return response.json() as Promise<PositionPnLResponse>;
 }
 
 export async function prefillPaperTrade(payload: RecommendationPrefillRequest): Promise<RecommendationPrefillResponse> {

@@ -36,6 +36,14 @@ from ..models.paper_trading import (
     PaperTransaction,
     PaperAlert,
 )
+from ..models.paper_charges import ChargeProfile, TradeChargeBreakdown
+from ..services.charge_engine import (
+    calculate_delivery_charges,
+    calculate_break_even_sell_price,
+    get_active_profile,
+    get_or_create_default_profile,
+    invalidate_charge_profile_cache,
+)
 from ..services.trading_hours_service import trading_hours
 from ..schemas import AnalysisMode, OHLCVPoint
 from ..schemas.paper_trading import (
@@ -1355,8 +1363,23 @@ class PaperTradingService:
         current_price = dec(position.current_price) if position.current_price and position.current_price > 0 else dec(position.avg_entry_price)
         avg_entry = dec(position.avg_entry_price)
         qty = dec(position.qty)
-        unrealized = q_pnl((current_price - avg_entry) * qty)
-        unrealized_pct = q_pnl(((current_price - avg_entry) / avg_entry) * Decimal("100")) if avg_entry else Decimal("0.00")
+        gross_unrealized = q_pnl((current_price - avg_entry) * qty)
+        gross_unrealized_pct = q_pnl(((current_price - avg_entry) / avg_entry) * Decimal("100")) if avg_entry else Decimal("0.00")
+        total_buy_charges = dec(getattr(position, "total_buy_charges", 0) or Decimal("0"))
+
+        profile = get_active_profile(self.db, broker_id="DEFAULT", exchange="NSE", segment="EQUITY_DELIVERY")
+        exit_calc = calculate_delivery_charges("SELL", qty, current_price, profile=profile, apply_dp_charge=True)
+        est_exit_charges = exit_calc.total_charges
+        net_unrealized = q_pnl(gross_unrealized - total_buy_charges - est_exit_charges)
+        total_invested_basis = (avg_entry * qty) + total_buy_charges
+        net_return_pct = q_pnl((net_unrealized / total_invested_basis) * Decimal("100")) if total_invested_basis > Decimal("0") else Decimal("0.00")
+        be_price = getattr(position, "break_even_price", None)
+        if be_price is None or dec(be_price) <= Decimal("0"):
+            be_price = calculate_break_even_sell_price(qty, avg_entry, total_buy_charges, profile)
+
+        unrealized = net_unrealized if profile.include_estimated_exit_charges_in_unrealised_pnl else gross_unrealized
+        unrealized_pct = net_return_pct if profile.include_estimated_exit_charges_in_unrealised_pnl else gross_unrealized_pct
+
         return PaperPositionResponse(
             id=position.id,
             symbol=position.symbol,
@@ -1366,6 +1389,12 @@ class PaperTradingService:
             unrealized_pnl=as_float(unrealized),
             unrealized_pnl_percent=as_float(unrealized_pct),
             invested_value=as_float(q_pnl(avg_entry * qty)),
+            total_buy_charges=as_float(total_buy_charges),
+            gross_unrealized_pnl=as_float(gross_unrealized),
+            estimated_exit_charges=as_float(est_exit_charges),
+            net_unrealized_pnl=as_float(net_unrealized),
+            net_return_percent=as_float(net_return_pct),
+            break_even_price=as_float(be_price) if be_price else None,
             stop_loss=as_float(q_price(position.stop_loss)) if position.stop_loss else None,
             target=as_float(q_price(position.target)) if position.target else None,
             lifecycle_state=position.lifecycle_state,
@@ -1726,8 +1755,18 @@ class PaperTradingService:
 
         fill_price = q_price(current_price)
         order_qty = q_qty(order.qty)
+        profile = get_active_profile(self.db, broker_id="DEFAULT", exchange="NSE", segment="EQUITY_DELIVERY")
+
         if order.side == "BUY":
-            estimated_cost = q_pnl(fill_price * order_qty)
+            buy_charges_calc = calculate_delivery_charges(
+                side="BUY",
+                qty=order_qty,
+                price=fill_price,
+                profile=profile,
+            )
+            buy_charges = buy_charges_calc.total_charges
+            turnover = buy_charges_calc.turnover
+            estimated_cost = q_pnl(turnover + buy_charges)
             # Indexed SUM(reserved) — no full-row order/trade hydration
             available_cash = dec(self._available_cash_fast(account))
             if estimated_cost > available_cash:
@@ -1760,14 +1799,31 @@ class PaperTradingService:
             )
             position = self._find_open_position(account.id, order.symbol)
             if position:
-                total_cost = (dec(position.avg_entry_price) * dec(position.qty)) + estimated_cost
-                position.qty = q_qty(dec(position.qty) + order_qty)
-                position.avg_entry_price = q_price(total_cost / dec(position.qty))
+                total_cost = (dec(position.avg_entry_price) * dec(position.qty)) + (fill_price * order_qty)
+                new_qty = q_qty(dec(position.qty) + order_qty)
+                new_avg_entry = q_price(total_cost / new_qty)
+                new_total_buy_charges = q_pnl(dec(getattr(position, "total_buy_charges", 0) or Decimal("0")) + buy_charges)
+                new_be_price = calculate_break_even_sell_price(
+                    qty=new_qty,
+                    avg_entry_price=new_avg_entry,
+                    total_buy_charges=new_total_buy_charges,
+                    profile=profile,
+                )
+                position.qty = new_qty
+                position.avg_entry_price = new_avg_entry
+                position.total_buy_charges = new_total_buy_charges
+                position.break_even_price = q_price(new_be_price)
                 position.current_price = fill_price
                 position.stop_loss = pos_stop or position.stop_loss
                 position.target = pos_target or position.target
                 position.updated_at = datetime.now(timezone.utc)
             else:
+                new_be_price = calculate_break_even_sell_price(
+                    qty=order_qty,
+                    avg_entry_price=fill_price,
+                    total_buy_charges=buy_charges,
+                    profile=profile,
+                )
                 position = PaperPosition(
                     account_id=account.id,
                     status="OPEN",
@@ -1776,6 +1832,8 @@ class PaperTradingService:
                     qty=order.qty,
                     avg_entry_price=fill_price,
                     current_price=fill_price,
+                    total_buy_charges=q_pnl(buy_charges),
+                    break_even_price=q_price(new_be_price),
                     stop_loss=pos_stop,
                     target=pos_target,
                     notes=order.notes,
@@ -1796,6 +1854,51 @@ class PaperTradingService:
                     )
                 except Exception:
                     pass
+
+            # Record TradeChargeBreakdown for BUY
+            breakdown = TradeChargeBreakdown(
+                account_id=account.id,
+                order_id=getattr(order, "id", None),
+                trade_id=None,
+                position_id=getattr(position, "id", None),
+                profile_id=profile.id,
+                profile_version=profile.version,
+                symbol=order.symbol,
+                exchange="NSE",
+                segment="EQUITY_DELIVERY",
+                side="BUY",
+                executed_qty=order_qty,
+                executed_price=fill_price,
+                turnover=turnover,
+                brokerage=buy_charges_calc.brokerage,
+                stt=buy_charges_calc.stt,
+                exchange_charges=buy_charges_calc.exchange_charges,
+                sebi_charges=buy_charges_calc.sebi_charges,
+                clearing_charges=buy_charges_calc.clearing_charges,
+                gst=buy_charges_calc.gst,
+                stamp_duty=buy_charges_calc.stamp_duty,
+                dp_charges=buy_charges_calc.dp_charges,
+                total_charges=buy_charges,
+                calculation_metadata=buy_charges_calc.metadata,
+            )
+            self.db.add(breakdown)
+
+            # Log transaction for manual BUY to SQLite
+            try:
+                tx = PaperTransaction(
+                    account_id=int(account.id),
+                    timestamp=datetime.now(timezone.utc),
+                    symbol=order.symbol,
+                    action="BUY",
+                    qty=int(order.qty),
+                    price=float(fill_price),
+                    amount=float(estimated_cost),
+                    balance_after=float(account.cash_balance),
+                )
+                self.db.add(tx)
+            except Exception as e:
+                self.logger.exception("Failed to write BUY transaction to SQLite: %s", e)
+
             account.updated_at = datetime.now(timezone.utc)
             self._record_execution_event(
                 "ENTRY_FILLED",
@@ -1810,7 +1913,7 @@ class PaperTradingService:
             try:
                 trading_logger.info(
                     "ORDER_EXECUTED | order_id=%s | account=%s | user_id=%s | symbol=%s | side=BUY | qty=%s | "
-                    "filled_price=%s | status=FILLED | market_status=OPEN | execution_time=%s | position_id=%s",
+                    "filled_price=%s | status=FILLED | market_status=OPEN | execution_time=%s | position_id=%s | charges=%s",
                     getattr(order, "id", None),
                     account.id,
                     self.user_id,
@@ -1819,6 +1922,7 @@ class PaperTradingService:
                     order.filled_price,
                     order.filled_at.isoformat() if order.filled_at else None,
                     getattr(position, "id", None),
+                    buy_charges,
                 )
                 trading_logger.info(
                     "CAPITAL_UPDATED | account=%s | order_id=%s | symbol=%s | side=BUY | "
@@ -1860,23 +1964,77 @@ class PaperTradingService:
                 pass
             return order, None, None, "Order rejected: not enough position quantity to sell."
 
+        apply_dp = True
+        if profile.dp_charge_scope == "PER_SELL_ORDER":
+            existing_dp = self.db.scalar(
+                select(TradeChargeBreakdown.id).where(
+                    TradeChargeBreakdown.order_id == getattr(order, "id", None),
+                    TradeChargeBreakdown.dp_charges > Decimal("0"),
+                )
+            )
+            if existing_dp:
+                apply_dp = False
+        elif profile.dp_charge_scope == "PER_ISIN_PER_DAY":
+            today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+            existing_dp_today = self.db.scalar(
+                select(TradeChargeBreakdown.id).where(
+                    TradeChargeBreakdown.account_id == account.id,
+                    TradeChargeBreakdown.symbol == order.symbol,
+                    TradeChargeBreakdown.side == "SELL",
+                    TradeChargeBreakdown.dp_charges > Decimal("0"),
+                    TradeChargeBreakdown.created_at >= today_start,
+                )
+            )
+            if existing_dp_today:
+                apply_dp = False
+
+        sell_charges_calc = calculate_delivery_charges(
+            side="SELL",
+            qty=order_qty,
+            price=fill_price,
+            profile=profile,
+            apply_dp_charge=apply_dp,
+        )
+        sell_charges = sell_charges_calc.total_charges
+        sell_turnover = sell_charges_calc.turnover
+
         order.status = "FILLED"
         order.lifecycle_state = "EXIT_FILLED"
         order.filled_at = datetime.now(timezone.utc)
         order.filled_price = fill_price
         order.scheduled_execution = None
         prior_cash = account.cash_balance
-        account.cash_balance = q_pnl(dec(account.cash_balance) + q_pnl(fill_price * order_qty))
-        pnl = q_pnl((fill_price - dec(position.avg_entry_price)) * order_qty)
-        pnl_percent = q_pnl(((fill_price - dec(position.avg_entry_price)) / dec(position.avg_entry_price)) * Decimal("100")) if position.avg_entry_price else Decimal("0.00")
+
+        net_proceeds = q_pnl(sell_turnover - sell_charges)
+        account.cash_balance = q_pnl(dec(account.cash_balance) + net_proceeds)
+
+        pos_qty = dec(position.qty)
+        sell_ratio = (order_qty / pos_qty) if pos_qty > Decimal("0") else Decimal("1")
+        pos_buy_charges = dec(getattr(position, "total_buy_charges", 0) or Decimal("0"))
+        allocated_buy_charges = q_pnl(pos_buy_charges * sell_ratio)
+
+        gross_pnl = q_pnl((fill_price - dec(position.avg_entry_price)) * order_qty)
+        total_trade_charges = q_pnl(allocated_buy_charges + sell_charges)
+        net_pnl = q_pnl(gross_pnl - total_trade_charges)
+        cost_basis = (dec(position.avg_entry_price) * order_qty) + allocated_buy_charges
+        net_pnl_percent = (
+            q_pnl((net_pnl / cost_basis) * Decimal("100"))
+            if cost_basis > Decimal("0")
+            else Decimal("0.00")
+        )
+
         trade = PaperTradeHistory(
             account_id=account.id,
             symbol=position.symbol,
             qty=order.qty,
             entry_price=position.avg_entry_price,
             exit_price=fill_price,
-            pnl=pnl,
-            pnl_percent=pnl_percent,
+            pnl=net_pnl,
+            pnl_percent=net_pnl_percent,
+            gross_pnl=gross_pnl,
+            total_charges=total_trade_charges,
+            net_pnl=net_pnl,
+            break_even_price=position.break_even_price,
             notes=order.notes or position.notes,
             source_signal=position.source_signal,
             source_score=position.source_score,
@@ -1887,9 +2045,42 @@ class PaperTradingService:
             exit_source="MANUAL",
         )
         self.db.add(trade)
-        
-        self.logger.info("POSITION_CLOSED | position_id=%s | symbol=%s | exit_price=%s | pnl=%s | pnl_percent=%.2f | reason=MANUAL", getattr(position, "id", None), position.symbol, fill_price, round(pnl, 2), round(pnl_percent, 2))
-        # Log transaction for manual SELL to SQLite (if configured)
+        self.db.flush()
+
+        sell_breakdown = TradeChargeBreakdown(
+            account_id=account.id,
+            order_id=getattr(order, "id", None),
+            trade_id=trade.id,
+            position_id=getattr(position, "id", None),
+            profile_id=profile.id,
+            profile_version=profile.version,
+            symbol=position.symbol,
+            exchange="NSE",
+            segment="EQUITY_DELIVERY",
+            side="SELL",
+            executed_qty=order_qty,
+            executed_price=fill_price,
+            turnover=sell_turnover,
+            brokerage=sell_charges_calc.brokerage,
+            stt=sell_charges_calc.stt,
+            exchange_charges=sell_charges_calc.exchange_charges,
+            sebi_charges=sell_charges_calc.sebi_charges,
+            clearing_charges=sell_charges_calc.clearing_charges,
+            gst=sell_charges_calc.gst,
+            stamp_duty=sell_charges_calc.stamp_duty,
+            dp_charges=sell_charges_calc.dp_charges,
+            total_charges=sell_charges,
+            calculation_metadata={
+                **sell_charges_calc.metadata,
+                "allocated_buy_charges": float(allocated_buy_charges),
+                "gross_pnl": float(gross_pnl),
+                "net_pnl": float(net_pnl),
+            },
+        )
+        self.db.add(sell_breakdown)
+
+        self.logger.info("POSITION_CLOSED | position_id=%s | symbol=%s | exit_price=%s | net_pnl=%s | gross_pnl=%s | charges=%s | reason=MANUAL", getattr(position, "id", None), position.symbol, fill_price, round(net_pnl, 2), round(gross_pnl, 2), round(total_trade_charges, 2))
+        # Log transaction for manual SELL to SQLite
         try:
             tx = PaperTransaction(
                 account_id=int(account.id),
@@ -1898,25 +2089,36 @@ class PaperTradingService:
                 action="SELL",
                 qty=int(order.qty),
                 price=float(fill_price),
-                amount=float(fill_price) * int(order.qty),
+                amount=float(net_proceeds),
                 balance_after=float(account.cash_balance),
             )
             self.db.add(tx)
         except Exception as e:
-            print(f"ERROR in _try_fill_order (SELL tx): {e}")
-            self.logger.exception("Failed to write SELL transaction to SQLite")
-        if dec(position.qty) == order_qty:
+            self.logger.exception("Failed to write SELL transaction to SQLite: %s", e)
+
+        if pos_qty == order_qty:
             self.db.delete(position)
             updated_position = None
         else:
-            position.qty = q_qty(dec(position.qty) - order_qty)
+            remaining_qty = q_qty(pos_qty - order_qty)
+            remaining_buy_charges = q_pnl(pos_buy_charges - allocated_buy_charges)
+            new_be = calculate_break_even_sell_price(
+                qty=remaining_qty,
+                avg_entry_price=position.avg_entry_price,
+                total_buy_charges=remaining_buy_charges,
+                profile=profile,
+            )
+            position.qty = remaining_qty
+            position.total_buy_charges = remaining_buy_charges
+            position.break_even_price = q_price(new_be)
             position.current_price = fill_price
             position.updated_at = datetime.now(timezone.utc)
             updated_position = position
+
         try:
             trading_logger.info(
                 "ORDER_EXECUTED | order_id=%s | account=%s | user_id=%s | symbol=%s | side=SELL | qty=%s | "
-                "filled_price=%s | status=FILLED | market_status=OPEN | execution_time=%s | pnl=%s | pnl_percent=%.2f",
+                "filled_price=%s | status=FILLED | market_status=OPEN | execution_time=%s | pnl=%s | pnl_percent=%.2f | gross_pnl=%s | charges=%s",
                 getattr(order, "id", None),
                 account.id,
                 self.user_id,
@@ -1924,8 +2126,10 @@ class PaperTradingService:
                 order.qty,
                 fill_price,
                 order.filled_at.isoformat() if order.filled_at else None,
-                round(pnl, 2),
-                round(pnl_percent, 2),
+                round(net_pnl, 2),
+                round(net_pnl_percent, 2),
+                round(gross_pnl, 2),
+                round(total_trade_charges, 2),
             )
             trading_logger.info(
                 "CAPITAL_UPDATED | account=%s | order_id=%s | symbol=%s | side=SELL | "
@@ -1933,7 +2137,7 @@ class PaperTradingService:
                 account.id,
                 getattr(order, "id", None),
                 position.symbol,
-                q_pnl(fill_price * order_qty),
+                net_proceeds,
                 prior_cash,
                 account.cash_balance,
             )
@@ -2171,6 +2375,29 @@ class PaperTradingService:
         if self.db.scalar(select(ExecutionEvent).where(ExecutionEvent.dedupe_key == dedupe_key)):
             raise ValueError("Position exit has already been processed.")
         fill_price_dec = q_price(fill_price)
+        profile = get_active_profile(self.db, broker_id="DEFAULT", exchange="NSE", segment="EQUITY_DELIVERY")
+        exit_qty = q_qty(position.qty)
+
+        sell_charges_calc = calculate_delivery_charges(
+            side="SELL",
+            qty=exit_qty,
+            price=fill_price_dec,
+            profile=profile,
+            apply_dp_charge=True,
+        )
+        sell_charges = sell_charges_calc.total_charges
+        sell_turnover = sell_charges_calc.turnover
+
+        pos_buy_charges = dec(getattr(position, "total_buy_charges", 0) or Decimal("0"))
+        gross_pnl = q_pnl((fill_price_dec - dec(position.avg_entry_price)) * exit_qty)
+        total_trade_charges = q_pnl(pos_buy_charges + sell_charges)
+        net_pnl = q_pnl(gross_pnl - total_trade_charges)
+        cost_basis = (dec(position.avg_entry_price) * exit_qty) + pos_buy_charges
+        net_pnl_percent = (
+            q_pnl((net_pnl / cost_basis) * Decimal("100"))
+            if cost_basis > Decimal("0")
+            else Decimal("0.00")
+        )
 
         # Create a filled sell order representing the exit
         order = PaperOrder(
@@ -2196,16 +2423,18 @@ class PaperTradingService:
         self.db.add(order)
         self.db.flush()
 
-        pnl = q_pnl((fill_price_dec - dec(position.avg_entry_price)) * dec(position.qty))
-        pnl_percent = q_pnl(((fill_price_dec - dec(position.avg_entry_price)) / dec(position.avg_entry_price)) * Decimal("100")) if position.avg_entry_price else Decimal("0.00")
         trade = PaperTradeHistory(
             account_id=account.id,
             symbol=position.symbol,
             qty=position.qty,
             entry_price=position.avg_entry_price,
             exit_price=fill_price_dec,
-            pnl=pnl,
-            pnl_percent=pnl_percent,
+            pnl=net_pnl,
+            pnl_percent=net_pnl_percent,
+            gross_pnl=gross_pnl,
+            total_charges=total_trade_charges,
+            net_pnl=net_pnl,
+            break_even_price=position.break_even_price,
             notes=position.notes,
             source_signal=position.source_signal,
             source_score=position.source_score,
@@ -2216,11 +2445,45 @@ class PaperTradingService:
             exit_source=source,
         )
         self.db.add(trade)
-        
-        self.logger.info("POSITION_CLOSED | position_id=%s | symbol=%s | exit_price=%s | pnl=%s | pnl_percent=%.2f | reason=%s | source=%s", position.id, position.symbol, fill_price_dec, round(pnl, 2), round(pnl_percent, 2), reason, source)
+        self.db.flush()
 
-        # Credit account and remove position
-        account.cash_balance = q_pnl(dec(account.cash_balance) + q_pnl(fill_price_dec * dec(position.qty)))
+        sell_breakdown = TradeChargeBreakdown(
+            account_id=account.id,
+            order_id=order.id,
+            trade_id=trade.id,
+            position_id=position.id,
+            profile_id=profile.id,
+            profile_version=profile.version,
+            symbol=position.symbol,
+            exchange="NSE",
+            segment="EQUITY_DELIVERY",
+            side="SELL",
+            executed_qty=exit_qty,
+            executed_price=fill_price_dec,
+            turnover=sell_turnover,
+            brokerage=sell_charges_calc.brokerage,
+            stt=sell_charges_calc.stt,
+            exchange_charges=sell_charges_calc.exchange_charges,
+            sebi_charges=sell_charges_calc.sebi_charges,
+            clearing_charges=sell_charges_calc.clearing_charges,
+            gst=sell_charges_calc.gst,
+            stamp_duty=sell_charges_calc.stamp_duty,
+            dp_charges=sell_charges_calc.dp_charges,
+            total_charges=sell_charges,
+            calculation_metadata={
+                **sell_charges_calc.metadata,
+                "allocated_buy_charges": float(pos_buy_charges),
+                "gross_pnl": float(gross_pnl),
+                "net_pnl": float(net_pnl),
+            },
+        )
+        self.db.add(sell_breakdown)
+
+        self.logger.info("POSITION_CLOSED | position_id=%s | symbol=%s | exit_price=%s | net_pnl=%s | gross_pnl=%s | charges=%s | reason=%s | source=%s", position.id, position.symbol, fill_price_dec, round(net_pnl, 2), round(gross_pnl, 2), round(total_trade_charges, 2), reason, source)
+
+        # Credit account net proceeds and remove position
+        net_proceeds = q_pnl(sell_turnover - sell_charges)
+        account.cash_balance = q_pnl(dec(account.cash_balance) + net_proceeds)
         account.updated_at = datetime.now(timezone.utc)
         self._record_execution_event(
             "EXIT_FILLED",
@@ -2818,15 +3081,32 @@ class PaperTradingService:
         trades: list[PaperTradeHistory],
         price_cache: dict[str, PriceSnapshot],
     ) -> PaperAccountSummary:
-        realized_dec = q_pnl(sum((dec(item.pnl) for item in trades), Decimal("0")))
+        realized_net = q_pnl(sum((dec(item.net_pnl if item.net_pnl is not None else item.pnl) for item in trades), Decimal("0")))
+        realized_gross = q_pnl(sum((dec(item.gross_pnl if item.gross_pnl is not None else item.pnl) for item in trades), Decimal("0")))
+        total_charges_closed = q_pnl(sum((dec(item.total_charges or Decimal("0")) for item in trades), Decimal("0")))
+
+        profile = get_active_profile(self.db, broker_id="DEFAULT", exchange="NSE", segment="EQUITY_DELIVERY")
+        gross_unrealized = Decimal("0")
+        est_exit_charges = Decimal("0")
+        open_pos_buy_charges = Decimal("0")
         invested = Decimal("0")
-        unrealized = Decimal("0")
+
         for position in positions:
             cached = price_cache.get(position.symbol)
             raw_price = cached.current_price if (cached and cached.current_price > 0) else position.current_price
             current_price = dec(raw_price if raw_price > 0 else position.avg_entry_price)
-            invested += dec(position.avg_entry_price) * dec(position.qty)
-            unrealized += (current_price - dec(position.avg_entry_price)) * dec(position.qty)
+            pos_qty = dec(position.qty)
+            pos_buy_charges = dec(getattr(position, "total_buy_charges", 0) or Decimal("0"))
+            open_pos_buy_charges += pos_buy_charges
+            invested += dec(position.avg_entry_price) * pos_qty
+
+            gross_unrealized += (current_price - dec(position.avg_entry_price)) * pos_qty
+            exit_calc = calculate_delivery_charges("SELL", pos_qty, current_price, profile=profile, apply_dp_charge=True)
+            est_exit_charges += exit_calc.total_charges
+
+        net_unrealized = gross_unrealized - open_pos_buy_charges - est_exit_charges
+        total_charges_paid = total_charges_closed + open_pos_buy_charges
+
         reserved_cash = Decimal("0")
         for order in orders:
             # Do NOT reserve capital for PENDING_MARKET_OPEN (per market-hours lifecycle).
@@ -2845,6 +3125,7 @@ class PaperTradingService:
                 else:
                     order_price = dec(position.avg_entry_price) if positions else dec("100")
                 reserved_cash += order_price * dec(order.qty)
+
         position_value = sum(
             (
                 dec(
@@ -2863,8 +3144,14 @@ class PaperTradingService:
             starting_balance=as_float(q_pnl(account.starting_balance)),
             balance=as_float(q_pnl(account.cash_balance)),
             equity=as_float(equity),
-            realized_pnl=as_float(realized_dec),
-            unrealized_pnl=as_float(q_pnl(unrealized)),
+            realized_pnl=as_float(realized_net),
+            unrealized_pnl=as_float(q_pnl(net_unrealized if profile.include_estimated_exit_charges_in_unrealised_pnl else gross_unrealized)),
+            gross_realized_pnl=as_float(realized_gross),
+            total_charges_paid=as_float(total_charges_paid),
+            net_realized_pnl=as_float(realized_net),
+            gross_unrealized_pnl=as_float(gross_unrealized),
+            estimated_exit_charges=as_float(est_exit_charges),
+            net_unrealized_pnl=as_float(net_unrealized),
             total_invested=as_float(q_pnl(invested)),
             reserved_cash=as_float(q_pnl(reserved_cash)),
             available_cash=as_float(q_pnl(dec(account.cash_balance) - reserved_cash)),
@@ -2883,13 +3170,31 @@ class PaperTradingService:
             current_price = dec(snapshot.current_price)
         elif current_price <= 0:
             current_price = avg_entry
-        unrealized = q_pnl((current_price - avg_entry) * qty)
-        unrealized_pct = q_pnl(((current_price - avg_entry) / avg_entry) * Decimal("100")) if avg_entry else Decimal("0.00")
+
+        gross_unrealized = q_pnl((current_price - avg_entry) * qty)
+        gross_unrealized_pct = q_pnl(((current_price - avg_entry) / avg_entry) * Decimal("100")) if avg_entry else Decimal("0.00")
+        total_buy_charges = dec(getattr(position, "total_buy_charges", 0) or Decimal("0"))
+
+        profile = get_active_profile(self.db, broker_id="DEFAULT", exchange="NSE", segment="EQUITY_DELIVERY")
+        exit_calc = calculate_delivery_charges("SELL", qty, current_price, profile=profile, apply_dp_charge=True)
+        est_exit_charges = exit_calc.total_charges
+        net_unrealized = q_pnl(gross_unrealized - total_buy_charges - est_exit_charges)
+        total_invested_basis = (avg_entry * qty) + total_buy_charges
+        net_return_pct = q_pnl((net_unrealized / total_invested_basis) * Decimal("100")) if total_invested_basis > Decimal("0") else Decimal("0.00")
+
+        be_price = getattr(position, "break_even_price", None)
+        if be_price is None or dec(be_price) <= Decimal("0"):
+            be_price = calculate_break_even_sell_price(qty, avg_entry, total_buy_charges, profile)
+
+        unrealized = net_unrealized if profile.include_estimated_exit_charges_in_unrealised_pnl else gross_unrealized
+        unrealized_pct = net_return_pct if profile.include_estimated_exit_charges_in_unrealised_pnl else gross_unrealized_pct
+
         risk_reward = None
         if position.stop_loss and position.target:
             risk = abs(avg_entry - dec(position.stop_loss))
             reward = abs(dec(position.target) - avg_entry)
             risk_reward = as_float(q_pnl(reward / risk)) if risk else None
+
         return PaperPositionResponse(
             id=position.id,
             symbol=position.symbol,
@@ -2899,6 +3204,12 @@ class PaperTradingService:
             unrealized_pnl=as_float(unrealized),
             unrealized_pnl_percent=as_float(unrealized_pct),
             invested_value=as_float(q_pnl(avg_entry * qty)),
+            total_buy_charges=as_float(total_buy_charges),
+            gross_unrealized_pnl=as_float(gross_unrealized),
+            estimated_exit_charges=as_float(est_exit_charges),
+            net_unrealized_pnl=as_float(net_unrealized),
+            net_return_percent=as_float(net_return_pct),
+            break_even_price=as_float(be_price) if be_price else None,
             stop_loss=as_float(q_price(position.stop_loss)) if position.stop_loss else None,
             target=as_float(q_price(position.target)) if position.target else None,
             lifecycle_state=position.lifecycle_state,
@@ -2953,14 +3264,22 @@ class PaperTradingService:
 
     def _serialize_trade(self, trade: PaperTradeHistory) -> PaperTradeHistoryItem:
         holding_period = (trade.closed_at - trade.opened_at).total_seconds() / 3600
+        gross_pnl = as_float(trade.gross_pnl) if trade.gross_pnl is not None else as_float(trade.pnl)
+        total_charges = as_float(trade.total_charges) if trade.total_charges is not None else 0.0
+        net_pnl = as_float(trade.net_pnl) if trade.net_pnl is not None else as_float(trade.pnl)
+        be_price = as_float(trade.break_even_price) if trade.break_even_price is not None else None
         return PaperTradeHistoryItem(
             id=trade.id,
             symbol=trade.symbol,
             qty=int(dec(trade.qty)),
             entry_price=as_float(q_price(trade.entry_price)),
             exit_price=as_float(q_price(trade.exit_price)),
-            pnl=as_float(q_pnl(trade.pnl)),
+            pnl=net_pnl,
             pnl_percent=as_float(q_pnl(trade.pnl_percent)),
+            gross_pnl=gross_pnl,
+            total_charges=total_charges,
+            net_pnl=net_pnl,
+            break_even_price=be_price,
             notes=trade.notes,
             source_signal=trade.source_signal,
             source_score=trade.source_score,
@@ -3493,4 +3812,63 @@ class PaperTradingService:
             "last_reconciliation_at": last_reconciliation_at,
             "open_positions": open_positions,
             "tracked_symbols": engine_status.get("active_monitored_symbols_count", 0),
+        }
+
+    def get_order_charge_breakdowns(self, order_id: int) -> list[TradeChargeBreakdown]:
+        account = self._get_or_create_account()
+        order = self.db.scalar(select(PaperOrder).where(PaperOrder.id == order_id, PaperOrder.account_id == account.id))
+        if not order:
+            raise ValueError("Order not found.")
+        return list(self.db.scalars(
+            select(TradeChargeBreakdown)
+            .where(TradeChargeBreakdown.order_id == order_id)
+            .order_by(TradeChargeBreakdown.created_at.asc())
+        ))
+
+    def get_trade_charge_breakdowns(self, trade_id: int) -> list[TradeChargeBreakdown]:
+        account = self._get_or_create_account()
+        trade = self.db.scalar(select(PaperTradeHistory).where(PaperTradeHistory.id == trade_id, PaperTradeHistory.account_id == account.id))
+        if not trade:
+            raise ValueError("Trade not found.")
+        return list(self.db.scalars(
+            select(TradeChargeBreakdown)
+            .where(TradeChargeBreakdown.trade_id == trade_id)
+            .order_by(TradeChargeBreakdown.created_at.asc())
+        ))
+
+    def get_position_pnl_breakdown(self, position_id: int) -> dict[str, Any]:
+        account = self._get_or_create_account()
+        position = self.db.scalar(select(PaperPosition).where(PaperPosition.id == position_id, PaperPosition.account_id == account.id))
+        if not position:
+            raise ValueError("Position not found.")
+
+        profile = get_active_profile(self.db, broker_id="DEFAULT", exchange="NSE", segment="EQUITY_DELIVERY")
+        cur_p = dec(position.current_price if position.current_price and position.current_price > 0 else position.avg_entry_price)
+        qty = dec(position.qty)
+        avg_entry = dec(position.avg_entry_price)
+        gross_unrealized = q_pnl((cur_p - avg_entry) * qty)
+        buy_charges = dec(getattr(position, "total_buy_charges", 0) or Decimal("0"))
+
+        exit_calc = calculate_delivery_charges("SELL", qty, cur_p, profile=profile, apply_dp_charge=True)
+        est_exit_charges = exit_calc.total_charges
+        net_unrealized = q_pnl(gross_unrealized - buy_charges - est_exit_charges)
+        total_basis = (avg_entry * qty) + buy_charges
+        net_return_pct = q_pnl((net_unrealized / total_basis) * Decimal("100")) if total_basis > Decimal("0") else Decimal("0.00")
+        be_price = getattr(position, "break_even_price", None)
+        if be_price is None or dec(be_price) <= Decimal("0"):
+            be_price = calculate_break_even_sell_price(qty, avg_entry, buy_charges, profile)
+
+        return {
+            "position_id": position.id,
+            "symbol": position.symbol,
+            "qty": int(qty),
+            "avg_entry_price": as_float(q_price(avg_entry)),
+            "current_price": as_float(q_price(cur_p)),
+            "gross_unrealized_pnl": as_float(gross_unrealized),
+            "total_buy_charges": as_float(buy_charges),
+            "estimated_exit_charges": as_float(est_exit_charges),
+            "net_unrealized_pnl": as_float(net_unrealized),
+            "net_return_percent": as_float(net_return_pct),
+            "break_even_price": as_float(be_price),
+            "exit_charges_breakdown": exit_calc.to_dict(),
         }

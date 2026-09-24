@@ -9,6 +9,7 @@ from .paper_trading import (
     PaperTradeHistory,
     PaperTradingAccount,
 )
+from .paper_charges import ChargeProfile, TradeChargeBreakdown
 from .stock import WatchedStock, StockMaster
 from .strategy_market_data import DailyOhlcv, IndexOhlcv, DataLoadLog
 from .ltm_strategy import LtmBookState, StrategyScanLatest, StrategyScanRun
@@ -57,6 +58,8 @@ __all__ = [
     "PaperPosition",
     "PaperTradeHistory",
     "PaperTradingAccount",
+    "ChargeProfile",
+    "TradeChargeBreakdown",
     "PaperNotification",
     "PaperDailyJournal",
     "MarketEngineSession",

@@ -33,6 +33,22 @@ from ..schemas.paper_trading import (
     MarketSessionStatusResponse,
     PaperTradeHistoryItem,
 )
+from ..models.paper_charges import ChargeProfile, TradeChargeBreakdown
+from ..schemas.paper_charges import (
+    ChargeItemBreakdown,
+    ChargePreviewRequest,
+    ChargePreviewResponse,
+    ChargeProfileCreateRequest,
+    ChargeProfileResponse,
+    OrderChargeBreakdownResponse,
+    PositionPnLResponse,
+)
+from ..services.charge_engine import (
+    calculate_delivery_charges,
+    calculate_break_even_sell_price,
+    get_active_profile,
+    invalidate_charge_profile_cache,
+)
 from ..services.paper_trading_service import PaperTradingService
 from ..services.market_engine_service import market_engine
 from ..services.trading_hours_service import trading_hours
@@ -40,6 +56,9 @@ from ..utils import sanitize_for_json
 from ..config import settings
 from ..core.deps import get_current_user_id_sync, require_feature_sync
 import uuid
+from decimal import Decimal
+from typing import Literal
+from sqlalchemy import select, func
 
 
 router = APIRouter(prefix="/paper-trading", tags=["paper-trading"])
@@ -837,3 +856,324 @@ async def get_engine_status(service: PaperTradingService = Depends(get_service))
             "tracked_symbols": 0,
             "error": str(e),
         })
+
+
+def serialize_charge_profile(p: ChargeProfile) -> ChargeProfileResponse:
+    return ChargeProfileResponse(
+        id=p.id,
+        profile_name=p.profile_name,
+        broker_id=p.broker_id,
+        exchange=p.exchange,
+        segment=p.segment,
+        currency=p.currency,
+        is_active=p.is_active,
+        is_default=p.is_default,
+        version=p.version,
+        rounding_mode=p.rounding_mode,
+        money_decimal_places=p.money_decimal_places,
+        brokerage_type=p.brokerage_type,
+        brokerage_rate_pct=float(p.brokerage_rate_pct),
+        brokerage_flat_per_executed_order=float(p.brokerage_flat_per_executed_order),
+        brokerage_order_cap=float(p.brokerage_order_cap),
+        stt_buy_rate_pct=float(p.stt_buy_rate_pct),
+        stt_sell_rate_pct=float(p.stt_sell_rate_pct),
+        exchange_transaction_charge_buy_rate_pct=float(p.exchange_transaction_charge_buy_rate_pct),
+        exchange_transaction_charge_sell_rate_pct=float(p.exchange_transaction_charge_sell_rate_pct),
+        sebi_turnover_fee_rate_pct=float(p.sebi_turnover_fee_rate_pct),
+        clearing_charge_buy_rate_pct=float(p.clearing_charge_buy_rate_pct),
+        clearing_charge_sell_rate_pct=float(p.clearing_charge_sell_rate_pct),
+        gst_rate_pct=float(p.gst_rate_pct),
+        stamp_duty_buy_rate_pct=float(p.stamp_duty_buy_rate_pct),
+        stamp_duty_sell_rate_pct=float(p.stamp_duty_sell_rate_pct),
+        dp_charge_on_delivery_sell=float(p.dp_charge_on_delivery_sell),
+        dp_charge_scope=p.dp_charge_scope,
+        include_estimated_exit_charges_in_unrealised_pnl=p.include_estimated_exit_charges_in_unrealised_pnl,
+        notes=p.notes,
+        effective_from=p.effective_from,
+        created_at=p.created_at,
+    )
+
+
+def serialize_charge_breakdown(b: TradeChargeBreakdown) -> OrderChargeBreakdownResponse:
+    return OrderChargeBreakdownResponse(
+        order_id=b.order_id,
+        trade_id=b.trade_id,
+        symbol=b.symbol,
+        side=b.side,
+        executed_qty=float(b.executed_qty),
+        executed_price=float(b.executed_price),
+        turnover=float(b.turnover),
+        charges=ChargeItemBreakdown(
+            turnover=float(b.turnover),
+            brokerage=float(b.brokerage),
+            stt=float(b.stt),
+            exchange_charges=float(b.exchange_charges),
+            sebi_charges=float(b.sebi_charges),
+            clearing_charges=float(b.clearing_charges),
+            gst=float(b.gst),
+            stamp_duty=float(b.stamp_duty),
+            dp_charges=float(b.dp_charges),
+            total_charges=float(b.total_charges),
+        ),
+        created_at=b.created_at,
+    )
+
+
+@router.get("/charges/profile", response_model=ChargeProfileResponse)
+def get_charge_profile_route(
+    broker_id: str = Query(default="DEFAULT"),
+    exchange: str = Query(default="NSE"),
+    segment: str = Query(default="EQUITY_DELIVERY"),
+    service: PaperTradingService = Depends(get_service),
+) -> ChargeProfileResponse:
+    profile = get_active_profile(service.db, broker_id=broker_id, exchange=exchange, segment=segment)
+    return serialize_charge_profile(profile)
+
+
+@router.get("/charges/preview", response_model=ChargePreviewResponse)
+def get_charge_preview_route(
+    symbol: str = Query(...),
+    side: Literal["BUY", "SELL"] = Query(...),
+    qty: int = Query(..., gt=0),
+    price: float = Query(..., ge=0.0),
+    exchange: str = Query(default="NSE"),
+    segment: str = Query(default="EQUITY_DELIVERY"),
+    broker_id: str = Query(default="DEFAULT"),
+    service: PaperTradingService = Depends(get_service),
+) -> ChargePreviewResponse:
+    profile = get_active_profile(service.db, broker_id=broker_id, exchange=exchange, segment=segment)
+    res = calculate_delivery_charges(
+        side=side,
+        qty=qty,
+        price=price,
+        profile=profile,
+        apply_dp_charge=True,
+    )
+    break_even = None
+    if side == "BUY":
+        break_even = calculate_break_even_sell_price(
+            qty=qty,
+            avg_entry_price=price,
+            total_buy_charges=res.total_charges,
+            profile=profile,
+        )
+    return ChargePreviewResponse(
+        symbol=symbol,
+        side=side,
+        qty=qty,
+        price=price,
+        turnover=float(res.turnover),
+        charges=ChargeItemBreakdown(
+            turnover=float(res.turnover),
+            brokerage=float(res.brokerage),
+            stt=float(res.stt),
+            exchange_charges=float(res.exchange_charges),
+            sebi_charges=float(res.sebi_charges),
+            clearing_charges=float(res.clearing_charges),
+            gst=float(res.gst),
+            stamp_duty=float(res.stamp_duty),
+            dp_charges=float(res.dp_charges),
+            total_charges=float(res.total_charges),
+        ),
+        estimated_order_cost=float(res.turnover + res.total_charges) if side == "BUY" else float(res.turnover),
+        estimated_net_proceeds=float(max(Decimal("0"), res.turnover - res.total_charges)) if side == "SELL" else 0.0,
+        effective_price_per_share=float(res.effective_rate_per_share),
+        break_even_price=float(break_even) if break_even else None,
+        profile_version=profile.version,
+        profile_name=profile.profile_name,
+        assumptions={
+            **res.metadata,
+            "break_even_price": float(break_even) if break_even else None,
+        },
+    )
+
+
+@router.post("/charges/preview", response_model=ChargePreviewResponse)
+def post_charge_preview_route(
+    payload: ChargePreviewRequest,
+    service: PaperTradingService = Depends(get_service),
+) -> ChargePreviewResponse:
+    profile = get_active_profile(service.db, broker_id=payload.broker_id, exchange=payload.exchange, segment="EQUITY_DELIVERY")
+    res = calculate_delivery_charges(
+        side=payload.side,
+        qty=payload.qty,
+        price=payload.price,
+        profile=profile,
+        apply_dp_charge=True,
+    )
+    break_even = None
+    if payload.side == "BUY":
+        break_even = calculate_break_even_sell_price(
+            qty=payload.qty,
+            avg_entry_price=payload.price,
+            total_buy_charges=res.total_charges,
+            profile=profile,
+        )
+    return ChargePreviewResponse(
+        symbol=payload.symbol,
+        side=payload.side,
+        qty=payload.qty,
+        price=payload.price,
+        turnover=float(res.turnover),
+        charges=ChargeItemBreakdown(
+            turnover=float(res.turnover),
+            brokerage=float(res.brokerage),
+            stt=float(res.stt),
+            exchange_charges=float(res.exchange_charges),
+            sebi_charges=float(res.sebi_charges),
+            clearing_charges=float(res.clearing_charges),
+            gst=float(res.gst),
+            stamp_duty=float(res.stamp_duty),
+            dp_charges=float(res.dp_charges),
+            total_charges=float(res.total_charges),
+        ),
+        estimated_order_cost=float(res.turnover + res.total_charges) if payload.side == "BUY" else float(res.turnover),
+        estimated_net_proceeds=float(max(Decimal("0"), res.turnover - res.total_charges)) if payload.side == "SELL" else 0.0,
+        effective_price_per_share=float(res.effective_rate_per_share),
+        break_even_price=float(break_even) if break_even else None,
+        profile_version=profile.version,
+        profile_name=profile.profile_name,
+        assumptions={
+            **res.metadata,
+            "break_even_price": float(break_even) if break_even else None,
+        },
+    )
+
+
+@router.get("/orders/{order_id}/charges", response_model=list[OrderChargeBreakdownResponse])
+def get_order_charges_route(
+    order_id: int,
+    service: PaperTradingService = Depends(get_service),
+) -> list[OrderChargeBreakdownResponse]:
+    try:
+        breakdowns = service.get_order_charge_breakdowns(order_id)
+        return [serialize_charge_breakdown(b) for b in breakdowns]
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.get("/trades/{trade_id}/charges", response_model=list[OrderChargeBreakdownResponse])
+def get_trade_charges_route(
+    trade_id: int,
+    service: PaperTradingService = Depends(get_service),
+) -> list[OrderChargeBreakdownResponse]:
+    try:
+        breakdowns = service.get_trade_charge_breakdowns(trade_id)
+        return [serialize_charge_breakdown(b) for b in breakdowns]
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.get("/positions/{position_id}/pnl", response_model=PositionPnLResponse)
+def get_position_pnl_route(
+    position_id: int,
+    service: PaperTradingService = Depends(get_service),
+) -> PositionPnLResponse:
+    try:
+        data = service.get_position_pnl_breakdown(position_id)
+        profile = get_active_profile(service.db)
+        exit_bd = data.get("exit_charges_breakdown", {})
+        charges_breakdown = ChargeItemBreakdown(
+            turnover=exit_bd.get("turnover", 0.0),
+            brokerage=exit_bd.get("brokerage", 0.0),
+            stt=exit_bd.get("stt", 0.0),
+            exchange_charges=exit_bd.get("exchange_charges", 0.0),
+            sebi_charges=exit_bd.get("sebi_charges", 0.0),
+            clearing_charges=exit_bd.get("clearing_charges", 0.0),
+            gst=exit_bd.get("gst", 0.0),
+            stamp_duty=exit_bd.get("stamp_duty", 0.0),
+            dp_charges=exit_bd.get("dp_charges", 0.0),
+            total_charges=exit_bd.get("total_charges", 0.0),
+        ) if exit_bd else None
+
+        return PositionPnLResponse(
+            position_id=data["position_id"],
+            symbol=data["symbol"],
+            qty=data["qty"],
+            avg_entry_price=data["avg_entry_price"],
+            current_price=data["current_price"],
+            invested_value=data["qty"] * data["avg_entry_price"],
+            total_buy_charges=data["total_buy_charges"],
+            gross_unrealized_pnl=data["gross_unrealized_pnl"],
+            estimated_exit_charges=data["estimated_exit_charges"],
+            net_unrealized_pnl=data["net_unrealized_pnl"],
+            net_return_percent=data["net_return_percent"],
+            break_even_price=data["break_even_price"],
+            include_exit_charges=profile.include_estimated_exit_charges_in_unrealised_pnl,
+            charges_breakdown=charges_breakdown,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.get("/admin/charges/profiles", response_model=list[ChargeProfileResponse])
+def get_all_charge_profiles_route(
+    service: PaperTradingService = Depends(get_service),
+) -> list[ChargeProfileResponse]:
+    profiles = list(service.db.scalars(
+        select(ChargeProfile).order_by(ChargeProfile.created_at.desc())
+    ))
+    return [serialize_charge_profile(p) for p in profiles]
+
+
+@router.post("/admin/charges/profiles", response_model=ChargeProfileResponse)
+def create_charge_profile_route(
+    payload: ChargeProfileCreateRequest,
+    service: PaperTradingService = Depends(get_service),
+) -> ChargeProfileResponse:
+    max_ver = service.db.scalar(
+        select(func.max(ChargeProfile.version)).where(
+            ChargeProfile.broker_id == payload.broker_id,
+            ChargeProfile.exchange == payload.exchange,
+            ChargeProfile.segment == payload.segment,
+        )
+    ) or 0
+
+    if payload.is_active:
+        active_existing = list(service.db.scalars(
+            select(ChargeProfile).where(
+                ChargeProfile.broker_id == payload.broker_id,
+                ChargeProfile.exchange == payload.exchange,
+                ChargeProfile.segment == payload.segment,
+                ChargeProfile.is_active == True,
+            )
+        ))
+        for p in active_existing:
+            p.is_active = False
+
+    new_profile = ChargeProfile(
+        profile_name=payload.profile_name,
+        broker_id=payload.broker_id,
+        exchange=payload.exchange,
+        segment=payload.segment,
+        currency=payload.currency,
+        is_active=payload.is_active,
+        is_default=payload.is_default,
+        version=max_ver + 1,
+        rounding_mode=payload.rounding_mode,
+        money_decimal_places=payload.money_decimal_places,
+        brokerage_type=payload.brokerage_type,
+        brokerage_rate_pct=Decimal(str(payload.brokerage_rate_pct)),
+        brokerage_flat_per_executed_order=Decimal(str(payload.brokerage_flat_per_executed_order)),
+        brokerage_order_cap=Decimal(str(payload.brokerage_order_cap)),
+        stt_buy_rate_pct=Decimal(str(payload.stt_buy_rate_pct)),
+        stt_sell_rate_pct=Decimal(str(payload.stt_sell_rate_pct)),
+        exchange_transaction_charge_buy_rate_pct=Decimal(str(payload.exchange_transaction_charge_buy_rate_pct)),
+        exchange_transaction_charge_sell_rate_pct=Decimal(str(payload.exchange_transaction_charge_sell_rate_pct)),
+        sebi_turnover_fee_rate_pct=Decimal(str(payload.sebi_turnover_fee_rate_pct)),
+        clearing_charge_buy_rate_pct=Decimal(str(payload.clearing_charge_buy_rate_pct)),
+        clearing_charge_sell_rate_pct=Decimal(str(payload.clearing_charge_sell_rate_pct)),
+        gst_rate_pct=Decimal(str(payload.gst_rate_pct)),
+        stamp_duty_buy_rate_pct=Decimal(str(payload.stamp_duty_buy_rate_pct)),
+        stamp_duty_sell_rate_pct=Decimal(str(payload.stamp_duty_sell_rate_pct)),
+        dp_charge_on_delivery_sell=Decimal(str(payload.dp_charge_on_delivery_sell)),
+        dp_charge_scope=payload.dp_charge_scope,
+        include_estimated_exit_charges_in_unrealised_pnl=payload.include_estimated_exit_charges_in_unrealised_pnl,
+        notes=payload.notes,
+    )
+    service.db.add(new_profile)
+    service.db.commit()
+    service.db.refresh(new_profile)
+    invalidate_charge_profile_cache()
+    return serialize_charge_profile(new_profile)
+

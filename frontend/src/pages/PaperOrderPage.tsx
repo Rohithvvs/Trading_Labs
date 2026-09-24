@@ -8,6 +8,7 @@ import {
   prefillPaperTradeLocal,
   updatePaperOrder,
   invalidatePaperCaches,
+  fetchChargePreview,
 } from "../api";
 
 import { toCanonicalSymbol } from "../utils/paperOrderNavigation";
@@ -20,7 +21,7 @@ import {
 } from "../utils/paperCapital";
 import type { PaperOrderNavState } from "../types/paperOrderNav";
 import { isPaperOrderNavState } from "../types/paperOrderNav";
-import type { PaperOrderTicketState, RecommendationPrefillRequest } from "../types";
+import type { PaperOrderTicketState, RecommendationPrefillRequest, ChargePreviewResponse } from "../types";
 import { useToast, Button, Modal } from "../design-system";
 import { InfoTooltip } from "../components/InfoTooltip";
 import { TOOLTIPS } from "../constants/tooltips";
@@ -277,6 +278,8 @@ export function PaperOrderPage() {
   const [idempotencyKey, setIdempotencyKey] = useState(() => crypto.randomUUID());
   const [trailingStopPct, setTrailingStopPct] = useState<string>("2");
   const [cashAllocPct, setCashAllocPct] = useState<string>("10");
+  const [chargePreview, setChargePreview] = useState<ChargePreviewResponse | null>(null);
+  const [chargePreviewLoading, setChargePreviewLoading] = useState(false);
   const derivedStopRef = useRef(seedStop == null && seedLevels.derivedStop);
   const derivedTargetRef = useRef(seedTarget == null && seedLevels.derivedTarget);
   const userClearedStopRef = useRef(false);
@@ -294,6 +297,47 @@ export function PaperOrderPage() {
     if (ticket.type === "STOP") return ticket.stopPrice ?? currentPrice;
     return currentPrice;
   }, [ticket, currentPrice]);
+
+  // Dynamic charge preview lookup from backend charge engine with debouncing
+  useEffect(() => {
+    const qty = Number(ticket.qty);
+    const price = entryReference;
+    const sym = toCanonicalSymbol(ticket.symbol);
+    if (!sym || !qty || qty <= 0 || !price || price <= 0) {
+      setChargePreview(null);
+      return;
+    }
+
+    let active = true;
+    setChargePreviewLoading(true);
+
+    const timer = setTimeout(() => {
+      fetchChargePreview({
+        symbol: sym,
+        side: ticket.side as "BUY" | "SELL",
+        qty,
+        price,
+        exchange: "NSE",
+        segment: "EQUITY_DELIVERY",
+      })
+        .then((res) => {
+          if (active) {
+            setChargePreview(res);
+            setChargePreviewLoading(false);
+          }
+        })
+        .catch(() => {
+          if (active) {
+            setChargePreviewLoading(false);
+          }
+        });
+    }, 150);
+
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [ticket.symbol, ticket.side, ticket.qty, entryReference]);
 
   useEffect(() => {
     const entry = entryReference != null && entryReference > 0 ? entryReference : null;
@@ -358,8 +402,53 @@ export function PaperOrderPage() {
     const potentialLoss = riskAmount;
     const riskReward = riskPerShare > 0 ? rewardPerShare / riskPerShare : meta.riskReward ?? 0;
     const riskPercent = availableCash && riskAmount ? (riskAmount / availableCash) * 100 : 0;
-    const brokerage = 0;
-    const charges = 0;
+
+    // Use charge preview if matches current order value; otherwise calculate client-side fallback
+    const turnover = estimatedCost;
+    let brokerage = 0;
+    let stt = 0;
+    let exchangeTurnover = 0;
+    let sebiTurnover = 0;
+    let gst = 0;
+    let stampDuty = 0;
+    let dpCharges = 0;
+    let totalCharges = 0;
+    let breakEvenPrice = 0;
+
+    if (chargePreview?.charges && Math.abs(chargePreview.turnover - turnover) < 1.0) {
+      brokerage = Number(chargePreview.charges.brokerage) || 0;
+      stt = Number(chargePreview.charges.stt) || 0;
+      exchangeTurnover = Number(chargePreview.charges.exchange_charges) || 0;
+      sebiTurnover = Number(chargePreview.charges.sebi_charges) || 0;
+      gst = Number(chargePreview.charges.gst) || 0;
+      stampDuty = Number(chargePreview.charges.stamp_duty) || 0;
+      dpCharges = Number(chargePreview.charges.dp_charges) || 0;
+      totalCharges = Number(chargePreview.charges.total_charges) || 0;
+      breakEvenPrice = Number(chargePreview.break_even_price ?? chargePreview.assumptions?.break_even_price) || 0;
+    } else if (turnover > 0 && qty > 0) {
+      // Local fallback calculation matching INDIA_EQUITY_DELIVERY_DEFAULT
+      brokerage = 0;
+      stt = Math.round(turnover * 0.0010 * 100) / 100;
+      exchangeTurnover = Math.round(turnover * 0.0000307 * 100) / 100;
+      sebiTurnover = Math.round(turnover * 0.0000010 * 100) / 100;
+      const taxable = brokerage + exchangeTurnover + sebiTurnover;
+      gst = Math.round(taxable * 0.18 * 100) / 100;
+      stampDuty = ticket.side === "BUY" ? Math.round(turnover * 0.00015 * 100) / 100 : 0;
+      dpCharges = 0;
+      totalCharges = Math.round((brokerage + stt + exchangeTurnover + sebiTurnover + gst + stampDuty + dpCharges) * 100) / 100;
+      if (ticket.side === "BUY") {
+        const estSellCharges = Math.round(turnover * 0.0010363 * 100) / 100;
+        breakEvenPrice = Math.round(((turnover + totalCharges + estSellCharges) / qty) * 100) / 100;
+      } else {
+        breakEvenPrice = entry;
+      }
+    }
+
+    if (ticket.side === "BUY" && breakEvenPrice <= 0 && turnover > 0 && qty > 0) {
+      const estSellCharges = Math.round(turnover * 0.0010363 * 100) / 100;
+      breakEvenPrice = Math.round(((turnover + totalCharges + estSellCharges) / qty) * 100) / 100;
+    }
+
     return {
       estimatedCost,
       riskPerShare,
@@ -370,10 +459,17 @@ export function PaperOrderPage() {
       riskReward,
       riskPercent,
       brokerage,
-      charges,
-      totalCost: estimatedCost + brokerage + charges,
+      charges: totalCharges,
+      stt,
+      exchangeTurnover,
+      sebiTurnover,
+      gst,
+      stampDuty,
+      dpCharges,
+      breakEvenPrice,
+      totalCost: ticket.side === "BUY" ? estimatedCost + totalCharges : Math.max(0, estimatedCost - totalCharges),
     };
-  }, [ticket, entryReference, availableCash, meta.riskReward]);
+  }, [ticket, entryReference, availableCash, meta.riskReward, chargePreview]);
 
   const applyAccount = useCallback(
     (acct: any | null, gen: number, symbol: string, status: LaneState = "ready") => {
@@ -1927,16 +2023,20 @@ export function PaperOrderPage() {
             )}
           </section>
 
-          {/* 6. Risk summary — client-side, always ready from form state */}
+          {/* 6. Risk & Transaction Cost summary — client-side, always ready from form state */}
           <section className="panel paper-order-risk" data-testid="paper-order-risk">
-            <h3 className="paper-order-section-title">Risk Summary</h3>
+            <h3 className="paper-order-section-title">Risk & Transaction Cost Summary</h3>
             <div className="paper-order-risk__grid">
-              <Metric label="Estimated Cost" value={formatInr(risk.estimatedCost)} />
+              <Metric label={ticket.side === "BUY" ? "Gross Order Value" : "Gross Sale Value"} value={formatInr(risk.estimatedCost)} />
+              <Metric label="Brokerage" value={formatInr(risk.brokerage)} />
+              <Metric label="Total Taxes & Charges" value={formatInr(risk.charges)} />
+              <Metric label={ticket.side === "BUY" ? "Net Outlay Required" : "Estimated Net Proceeds"} value={formatInr(risk.totalCost)} />
+              {ticket.side === "BUY" && risk.breakEvenPrice > 0 ? (
+                <Metric label="Break-Even Exit Price" value={formatInr(risk.breakEvenPrice)} />
+              ) : null}
               <Metric label="Risk Amount" value={formatInr(risk.riskAmount)} />
               <Metric label="Potential Profit" value={formatInr(risk.potentialProfit)} />
               <Metric label="Potential Loss" value={formatInr(risk.potentialLoss)} />
-              <Metric label="Brokerage" value={formatInr(risk.brokerage)} />
-              <Metric label="Charges" value={formatInr(risk.charges)} />
               <Metric label="Risk % of Account" value={`${risk.riskPercent.toFixed(2)}%`} />
             </div>
             {fieldErrors.risk ? (
@@ -1945,8 +2045,7 @@ export function PaperOrderPage() {
               </div>
             ) : null}
             <p className="helper-text" style={{ marginTop: 12 }}>
-              Guideline: risk no more than {(maxRiskPercent * 100).toFixed(1)}% per trade. Prefer setups with at
-              least 1:2 risk-reward. Paper trading only — no real capital is used.
+              Guideline: risk no more than {(maxRiskPercent * 100).toFixed(1)}% per trade. Charges include STT (0.1%), NSE exchange fee, SEBI turnover fee, Stamp Duty &amp; 18% GST on services.
             </p>
           </section>
 
@@ -2076,13 +2175,43 @@ export function PaperOrderPage() {
               <dd>{formatInr(entryReference)}</dd>
             </div>
             <div>
-              <dt>Estimated Cost</dt>
+              <dt>Order Value (Turnover)</dt>
               <dd>{formatInr(risk.estimatedCost)}</dd>
             </div>
             <div>
               <dt>Brokerage</dt>
               <dd>{formatInr(risk.brokerage)}</dd>
             </div>
+            <div>
+              <dt>Securities Transaction Tax (STT)</dt>
+              <dd>{formatInr(risk.stt)}</dd>
+            </div>
+            <div>
+              <dt>Exchange & SEBI Charges</dt>
+              <dd>{formatInr(risk.exchangeTurnover + risk.sebiTurnover)}</dd>
+            </div>
+            <div>
+              <dt>GST (18% on Services)</dt>
+              <dd>{formatInr(risk.gst)}</dd>
+            </div>
+            <div>
+              <dt>{ticket.side === "BUY" ? "Stamp Duty (0.015%)" : "DP Charges"}</dt>
+              <dd>{formatInr(ticket.side === "BUY" ? risk.stampDuty : risk.dpCharges)}</dd>
+            </div>
+            <div style={{ borderTop: "1px dashed var(--border-color, #444)", paddingTop: "6px" }}>
+              <dt><strong>Total Charges & Taxes</strong></dt>
+              <dd><strong>{formatInr(risk.charges)}</strong></dd>
+            </div>
+            <div>
+              <dt><strong>{ticket.side === "BUY" ? "Net Outlay Required" : "Estimated Net Proceeds"}</strong></dt>
+              <dd><strong>{formatInr(risk.totalCost)}</strong></dd>
+            </div>
+            {ticket.side === "BUY" && risk.breakEvenPrice > 0 ? (
+              <div style={{ color: "var(--accent-color, #3b82f6)" }}>
+                <dt>Break-Even Exit Price</dt>
+                <dd>{formatInr(risk.breakEvenPrice)}</dd>
+              </div>
+            ) : null}
             <div>
               <dt>Order Type</dt>
               <dd>{ticket.type}</dd>

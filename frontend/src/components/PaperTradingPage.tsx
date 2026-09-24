@@ -43,6 +43,7 @@ import {
   startMarketEngine,
   stopMarketEngine,
   invalidatePaperCaches,
+  fetchTradeCharges,
 } from "../api";
 
 import TokenStatus from "./TokenStatus";
@@ -63,16 +64,88 @@ import type {
   RecommendationPrefillRequest,
   MarketEngineStatus,
   MarketEngineHealth,
+  OrderChargeBreakdown,
 } from "../types";
 import { fetchPaperTradingEngineStatus } from "../api";
 
 function TradeDetailsModal({ trade, onClose }: { trade: PaperTradeHistoryItem | null; onClose: () => void }) {
+  const [breakdowns, setBreakdowns] = useState<OrderChargeBreakdown[]>([]);
+  const [loadingCharges, setLoadingCharges] = useState(false);
+
+  useEffect(() => {
+    if (!trade) {
+      setBreakdowns([]);
+      return;
+    }
+    let active = true;
+    setLoadingCharges(true);
+    fetchTradeCharges(trade.id)
+      .then((data) => {
+        if (active) {
+          setBreakdowns(data.breakdowns ?? []);
+          setLoadingCharges(false);
+        }
+      })
+      .catch(() => {
+        if (active) setLoadingCharges(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [trade?.id]);
+
   if (!trade) return null;
+
+  const grossPnl = trade.gross_pnl ?? trade.pnl;
+  const totalCharges = trade.total_charges ?? 0;
+  const netPnl = trade.net_pnl ?? trade.pnl;
+
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true" onClick={onClose} onKeyDown={(e) => { if (e.key === 'Escape') onClose(); }} tabIndex={-1} style={{ zIndex: 9999 }}>
-      <div className="confirm-modal" onClick={e => e.stopPropagation()} style={{ minWidth: 400, maxWidth: 500 }}>
-        <h2>Trade Exit Details</h2>
-        <div style={{ marginTop: 16, marginBottom: 24, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+      <div className="confirm-modal" onClick={e => e.stopPropagation()} style={{ minWidth: 460, maxWidth: 580 }}>
+        <h2>Trade Summary &amp; P&amp;L Analysis</h2>
+        
+        {/* Core trade metrics */}
+        <div style={{ marginTop: 16, marginBottom: 16, display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, background: 'var(--card-bg, #1a1e29)', padding: 12, borderRadius: 6 }}>
+          <div>
+            <div className="muted-copy">Gross P&amp;L:</div>
+            <div style={{ fontWeight: 600, color: grossPnl >= 0 ? '#10b981' : '#ef4444' }}>
+              {formatCurrency(grossPnl)}
+            </div>
+          </div>
+          <div>
+            <div className="muted-copy">Total Charges:</div>
+            <div style={{ fontWeight: 600, color: '#f59e0b' }}>
+              {formatCurrency(totalCharges)}
+            </div>
+          </div>
+          <div>
+            <div className="muted-copy">Net P&amp;L:</div>
+            <div style={{ fontWeight: 700, color: netPnl >= 0 ? '#10b981' : '#ef4444' }}>
+              {formatCurrency(netPnl)} ({trade.pnl_percent.toFixed(2)}%)
+            </div>
+          </div>
+        </div>
+
+        <div style={{ marginBottom: 16, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <div>
+            <div className="muted-copy">Entry Price:</div>
+            <div style={{ fontWeight: 600 }}>₹{trade.entry_price.toFixed(2)}</div>
+          </div>
+          <div>
+            <div className="muted-copy">Exit Price:</div>
+            <div style={{ fontWeight: 600 }}>₹{trade.exit_price.toFixed(2)}</div>
+          </div>
+          {trade.break_even_price != null && trade.break_even_price > 0 ? (
+            <div>
+              <div className="muted-copy">Break-Even Price:</div>
+              <div style={{ fontWeight: 600, color: '#3b82f6' }}>₹{trade.break_even_price.toFixed(2)}</div>
+            </div>
+          ) : null}
+          <div>
+            <div className="muted-copy">Quantity:</div>
+            <div style={{ fontWeight: 600 }}>{trade.qty}</div>
+          </div>
           <div>
             <div className="muted-copy">Reason:</div>
             <div style={{ fontWeight: 600 }}>{trade.exit_reason ?? "MANUAL_EXIT"}</div>
@@ -84,15 +157,55 @@ function TradeDetailsModal({ trade, onClose }: { trade: PaperTradeHistoryItem | 
           <div>
             <div className="muted-copy">Exit Price:</div>
             <div style={{ fontWeight: 600 }}>₹{trade.exit_price.toFixed(2)}</div>
+            <div className="muted-copy">Closed At:</div>
+            <div style={{ fontWeight: 600 }}>{new Date(trade.closed_at).toLocaleString()}</div>
           </div>
           <div>
             <div className="muted-copy">Exit Time:</div>
             <div style={{ fontWeight: 600 }}>{new Date(trade.closed_at).toLocaleTimeString()}</div>
+            <div className="muted-copy">Holding Period:</div>
+            <div style={{ fontWeight: 600 }}>{trade.holding_period_hours.toFixed(1)} hrs</div>
           </div>
         </div>
         
+
+        {/* Itemized transaction taxes & charges */}
+        <div style={{ marginTop: 12, marginBottom: 16 }}>
+          <h4 style={{ fontSize: '0.95rem', marginBottom: 8 }}>Transaction Cost &amp; Tax Audit</h4>
+          {loadingCharges ? (
+            <div style={{ fontSize: '0.85rem', color: '#888' }}>Loading audited charges…</div>
+          ) : breakdowns.length > 0 ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {breakdowns.map((bd, i) => (
+                <div key={bd.id ?? i} style={{ background: 'var(--card-bg, #1e2230)', padding: 10, borderRadius: 6, fontSize: '0.85rem' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 600, marginBottom: 6 }}>
+                    <span>{bd.side} Fill #{bd.id} ({bd.exchange} {bd.segment})</span>
+                    <span>Turnover: ₹{bd.turnover.toFixed(2)}</span>
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px 12px', color: '#ccc' }}>
+                    <div>Brokerage: ₹{bd.brokerage.toFixed(2)}</div>
+                    <div>STT: ₹{bd.stt.toFixed(2)}</div>
+                    <div>Exchange Charges: ₹{bd.exchange_turnover_charges.toFixed(2)}</div>
+                    <div>SEBI Charges: ₹{bd.sebi_turnover_charges.toFixed(2)}</div>
+                    <div>GST (18% on Services): ₹{bd.gst.toFixed(2)}</div>
+                    <div>{bd.side === "BUY" ? "Stamp Duty" : "DP Charges"}: ₹{(bd.side === "BUY" ? bd.stamp_duty : bd.dp_charges).toFixed(2)}</div>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px dashed #444', marginTop: 6, paddingTop: 4, fontWeight: 600 }}>
+                    <span>Fill Total Charges:</span>
+                    <span>₹{bd.total_charges.toFixed(2)}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div style={{ fontSize: '0.85rem', color: '#888' }}>
+              Total charges incurred: ₹{totalCharges.toFixed(2)} (Standard delivery profile)
+            </div>
+          )}
+        </div>
+
         {trade.exit_source === "RECONCILIATION" && (
-          <div style={{ background: '#083544', padding: 12, borderRadius: 6, marginBottom: 24, fontSize: '0.9rem' }}>
+          <div style={{ background: '#083544', padding: 12, borderRadius: 6, marginBottom: 16, fontSize: '0.9rem' }}>
             <strong>Recovered During Historical Reconciliation</strong>
           </div>
         )}
@@ -2180,6 +2293,27 @@ function OrderTicketCard({
             <p>
               Estimated total {ticket.side === 'BUY' ? 'cost' : 'proceeds'}: ₹{ticket.side === 'BUY' ? ((entryReference ?? 0) * ticket.qty + 0).toFixed(2) : ((entryReference ?? 0) * ticket.qty - ((entryReference ?? 0) * ticket.qty * 0.001)).toFixed(2)}
             </p>
+            {(() => {
+              const turnover = (entryReference ?? 0) * ticket.qty;
+              const stt = turnover * 0.0010;
+              const exch = turnover * 0.0000307;
+              const sebi = turnover * 0.0000010;
+              const gst = (exch + sebi) * 0.18;
+              const stamp = ticket.side === 'BUY' ? turnover * 0.00015 : 0;
+              const totalCharges = stt + exch + sebi + gst + stamp;
+              const netTotal = ticket.side === 'BUY' ? turnover + totalCharges : Math.max(0, turnover - totalCharges);
+              return (
+                <div style={{ fontSize: '0.9rem', display: 'flex', flexDirection: 'column', gap: 4, marginTop: 8, marginBottom: 8, background: 'var(--card-bg, #1a1e29)', padding: 10, borderRadius: 6 }}>
+                  <div>Brokerage: ₹0.00 (Zero Brokerage)</div>
+                  <div>STT (0.10%): ₹{stt.toFixed(2)}</div>
+                  <div>Exchange &amp; Statutory Taxes: ₹{(exch + sebi + gst + stamp).toFixed(2)}</div>
+                  <div style={{ fontWeight: 600 }}>Total Estimated Charges: ₹{totalCharges.toFixed(2)}</div>
+                  <div style={{ fontWeight: 700, marginTop: 4, color: 'var(--text-highlight, #fff)' }}>
+                    Estimated {ticket.side === 'BUY' ? 'Total Net Outlay' : 'Net Proceeds'}: ₹{netTotal.toFixed(2)}
+                  </div>
+                </div>
+              );
+            })()}
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 12 }}>
               <button type="button" className="button ghost-button" onClick={() => setPreviewOpen(false)}>Cancel</button>
               <button data-testid="paper-confirm-order-button" type="button" className="button primary-button" onClick={async () => { setPreviewOpen(false); await onPlace(); }}>
@@ -2200,19 +2334,25 @@ function PositionCard({ position, selectedSymbol, onSelect, onClose, onExit }: {
   onClose: (positionId: number) => void;
   onExit: (position: PaperPosition) => void;
 }) {
+  const netPnl = position.net_unrealized_pnl ?? position.unrealized_pnl;
+  const netReturnPct = position.net_return_percent ?? position.unrealized_pnl_percent;
+  const totalCharges = (position.total_buy_charges ?? 0) + (position.estimated_exit_charges ?? 0);
+
   return (
     <div className={`paper-card ${selectedSymbol === position.symbol ? "is-selected" : ""}`}>
       <div className="paper-card__header">
         <button type="button" className="paper-card__symbol" onClick={() => onSelect(position.symbol)}>{position.symbol}</button>
-        <span className={`paper-card__status ${position.unrealized_pnl >= 0 ? "paper-card__pnl-positive" : "paper-card__pnl-negative"}`}>
-          {formatCurrency(position.unrealized_pnl)} ({position.unrealized_pnl_percent.toFixed(2)}%)
+        <span className={`paper-card__status ${netPnl >= 0 ? "paper-card__pnl-positive" : "paper-card__pnl-negative"}`}>
+          {formatCurrency(netPnl)} ({netReturnPct.toFixed(2)}%)
         </span>
       </div>
       <div className="paper-card__body">
         <div className="paper-card__field"><span className="paper-card__field-label">Signal</span><span className="paper-card__field-value">{position.source_signal ?? "--"}</span></div>
         <div className="paper-card__field"><span className="paper-card__field-label">Qty</span><span className="paper-card__field-value">{position.qty}</span></div>
         <div className="paper-card__field"><span className="paper-card__field-label">Avg</span><span className="paper-card__field-value">{position.avg_entry_price.toFixed(2)}</span></div>
+        <div className="paper-card__field"><span className="paper-card__field-label">Break-Even</span><span className="paper-card__field-value" style={{ color: '#3b82f6' }}>{position.break_even_price?.toFixed(2) ?? "--"}</span></div>
         <div className="paper-card__field"><span className="paper-card__field-label">Current</span><span className="paper-card__field-value">{position.current_price?.toFixed(2) ?? "--"}</span></div>
+        <div className="paper-card__field"><span className="paper-card__field-label">Charges</span><span className="paper-card__field-value" style={{ color: '#f59e0b' }}>₹{totalCharges.toFixed(2)}</span></div>
         <div className="paper-card__field"><span className="paper-card__field-label">Stop</span><span className="paper-card__field-value">{position.stop_loss?.toFixed(2) ?? "--"}</span></div>
         <div className="paper-card__field"><span className="paper-card__field-label">Target</span><span className="paper-card__field-value">{position.target?.toFixed(2) ?? "--"}</span></div>
         <div className="paper-card__field"><span className="paper-card__field-label">R:R</span><span className="paper-card__field-value">{position.risk_reward_ratio?.toFixed(2) ?? "--"}</span></div>
@@ -2252,11 +2392,17 @@ const PositionsTable = memo(function PositionsTable({
           <tr>
             <th>Symbol</th>
             <th>Signal Source</th>
+            <th>Signal</th>
             <th>Qty</th>
             <th>Avg entry <InfoTooltip content={TOOLTIPS.PAPER_TRADING.AVG_ENTRY} /></th>
+            <th>Break-Even</th>
             <th>Current <InfoTooltip content={TOOLTIPS.PAPER_TRADING.CURRENT_PRICE} /></th>
             <th>Unrealized <InfoTooltip content={TOOLTIPS.PAPER_TRADING.UNREALIZED_COL} /></th>
             <th>% P&L / Return <InfoTooltip content={TOOLTIPS.PAPER_TRADING.PERCENT_PNL} /></th>
+            <th>Gross P&amp;L</th>
+            <th>Net Unrealized <InfoTooltip content={TOOLTIPS.PAPER_TRADING.UNREALIZED_COL} /></th>
+            <th>% Net Return <InfoTooltip content={TOOLTIPS.PAPER_TRADING.PERCENT_PNL} /></th>
+            <th>Taxes &amp; Charges</th>
             <th>Stop <InfoTooltip content={TOOLTIPS.PAPER_TRADING.STOP_COL} /></th>
             <th>Target <InfoTooltip content={TOOLTIPS.PAPER_TRADING.TARGET_COL} /></th>
             <th>R:R <InfoTooltip content={TOOLTIPS.PAPER_TRADING.RR_COL} /></th>
@@ -2290,6 +2436,39 @@ const PositionsTable = memo(function PositionsTable({
               </td>
             </tr>
           ))}
+          {positions.map((position) => {
+            const netPnl = position.net_unrealized_pnl ?? position.unrealized_pnl;
+            const grossPnl = position.gross_unrealized_pnl ?? (position.current_price ? (position.current_price - position.avg_entry_price) * position.qty : position.unrealized_pnl);
+            const totalCharges = (position.total_buy_charges ?? 0) + (position.estimated_exit_charges ?? 0);
+            const netReturnPct = position.net_return_percent ?? position.unrealized_pnl_percent;
+            return (
+              <tr key={position.id} className={selectedSymbol === position.symbol ? "is-selected" : ""} data-testid="position-row">
+                <td><button type="button" className="text-button" onClick={() => onSelect(position.symbol)}>{position.symbol}</button></td>
+                <td>
+                  {position.source_signal
+                    ? <span className={`signal-badge signal-${String(position.source_signal).toLowerCase()}`}>{position.source_signal}</span>
+                    : "--"}
+                </td>
+                <td>{position.qty}</td>
+                <td className="number-cell">{position.avg_entry_price.toFixed(2)}</td>
+                <td className="number-cell" style={{ color: '#3b82f6', fontWeight: 600 }}>{position.break_even_price?.toFixed(2) ?? "--"}</td>
+                <td className="number-cell">{position.current_price?.toFixed(2) ?? "--"}</td>
+                <td className={`number-cell ${grossPnl >= 0 ? "text-positive" : "text-negative"}`}>{formatCurrency(grossPnl)}</td>
+                <td className={`number-cell ${netPnl >= 0 ? "text-positive" : "text-negative"}`} style={{ fontWeight: 600 }}>{formatCurrency(netPnl)}</td>
+                <td className={`number-cell ${netReturnPct >= 0 ? "text-positive" : "text-negative"}`}>{netReturnPct.toFixed(2)}%</td>
+                <td className="number-cell" style={{ color: '#f59e0b' }}>₹{totalCharges.toFixed(2)}</td>
+                <td className="number-cell">{position.stop_loss?.toFixed(2) ?? "--"}</td>
+                <td className="number-cell">{position.target?.toFixed(2) ?? "--"}</td>
+                <td className="number-cell">{position.risk_reward_ratio?.toFixed(2) ?? "--"}</td>
+                <td>{formatLifecycle(position.lifecycle_state, position.paused_reason)}</td>
+                <td>{position.created_at ? new Date(position.created_at).toLocaleString() : "--"}</td>
+                <td style={{ display: 'flex', gap: 8 }}>
+                  <button type="button" className="button ghost-button small-button" onClick={() => onExit(position)}>Exit</button>
+                  <button type="button" className="button ghost-button small-button" onClick={() => onClose(position.id)}>Square Off</button>
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
       </div>
@@ -2474,18 +2653,27 @@ function formatLifecycle(state?: string | null, pausedReason?: string | null) {
 }
 
 function HistoryCard({ trade, onSelect }: { trade: PaperTradeHistoryItem; onSelect: (t: PaperTradeHistoryItem) => void }) {
+  const netPnl = trade.net_pnl ?? trade.pnl;
+  const grossPnl = trade.gross_pnl ?? trade.pnl;
+  const totalCharges = trade.total_charges ?? 0;
+
   return (
     <div className="paper-card" onClick={() => onSelect(trade)} style={{ cursor: 'pointer' }}>
       <div className="paper-card__header">
         <span className="paper-card__symbol" style={{ color: 'var(--text)', cursor: 'pointer' }}>{trade.symbol}</span>
-        <span className={`paper-card__status ${trade.pnl >= 0 ? "paper-card__pnl-positive" : "paper-card__pnl-negative"}`}>
-          {formatCurrency(trade.pnl)} ({trade.pnl_percent.toFixed(2)}%)
+        <span className={`paper-card__status ${netPnl >= 0 ? "paper-card__pnl-positive" : "paper-card__pnl-negative"}`}>
+          {formatCurrency(netPnl)} ({trade.pnl_percent.toFixed(2)}%)
         </span>
       </div>
       <div className="paper-card__body">
         <div className="paper-card__field"><span className="paper-card__field-label">Qty</span><span className="paper-card__field-value">{trade.qty}</span></div>
         <div className="paper-card__field"><span className="paper-card__field-label">Entry</span><span className="paper-card__field-value">{trade.entry_price.toFixed(2)}</span></div>
         <div className="paper-card__field"><span className="paper-card__field-label">Exit</span><span className="paper-card__field-value">{trade.exit_price.toFixed(2)}</span></div>
+        {trade.break_even_price != null && trade.break_even_price > 0 ? (
+          <div className="paper-card__field"><span className="paper-card__field-label">Break-Even</span><span className="paper-card__field-value" style={{ color: '#3b82f6' }}>{trade.break_even_price.toFixed(2)}</span></div>
+        ) : null}
+        <div className="paper-card__field"><span className="paper-card__field-label">Gross P&amp;L</span><span className="paper-card__field-value" style={{ color: grossPnl >= 0 ? '#10b981' : '#ef4444' }}>{formatCurrency(grossPnl)}</span></div>
+        <div className="paper-card__field"><span className="paper-card__field-label">Charges</span><span className="paper-card__field-value" style={{ color: '#f59e0b' }}>₹{totalCharges.toFixed(2)}</span></div>
         <div className="paper-card__field"><span className="paper-card__field-label">Hold</span><span className="paper-card__field-value">{trade.holding_period_hours.toFixed(1)}h</span></div>
         <div className="paper-card__field"><span className="paper-card__field-label">Exit Reason</span><span className="paper-card__field-value">{trade.exit_reason ?? "MANUAL"}</span></div>
         <div className="paper-card__field"><span className="paper-card__field-label">Closed</span><span className="paper-card__field-value">{new Date(trade.closed_at).toLocaleString()}</span></div>
@@ -2511,6 +2699,11 @@ const HistoryTable = memo(function HistoryTable({ trades, selectedTrade, setSele
               <th>Exit</th>
               <th>P&amp;L</th>
               <th>P&amp;L %</th>
+              <th>Break-Even</th>
+              <th>Gross P&amp;L</th>
+              <th>Charges</th>
+              <th>Net P&amp;L</th>
+              <th>Net %</th>
               <th>Signal</th>
               <th>Strategy</th>
               <th>Score</th>
@@ -2538,6 +2731,31 @@ const HistoryTable = memo(function HistoryTable({ trades, selectedTrade, setSele
                 <td>{trade.holding_period_hours.toFixed(1)}h</td>
               </tr>
             ))}
+            {trades.map((trade) => {
+              const netPnl = trade.net_pnl ?? trade.pnl;
+              const grossPnl = trade.gross_pnl ?? trade.pnl;
+              const totalCharges = trade.total_charges ?? 0;
+              return (
+                <tr key={trade.id} data-testid="history-row" onClick={() => setSelectedTrade(trade)} style={{ cursor: 'pointer' }}>
+                  <td>{trade.symbol}</td>
+                  <td>{trade.qty}</td>
+                  <td className="number-cell">{trade.entry_price.toFixed(2)}</td>
+                  <td className="number-cell">{trade.exit_price.toFixed(2)}</td>
+                  <td className="number-cell" style={{ color: '#3b82f6' }}>{trade.break_even_price?.toFixed(2) ?? "--"}</td>
+                  <td className={`number-cell ${grossPnl >= 0 ? "text-positive" : "text-negative"}`}>{formatCurrency(grossPnl)}</td>
+                  <td className="number-cell" style={{ color: '#f59e0b' }}>₹{totalCharges.toFixed(2)}</td>
+                  <td className={`number-cell ${netPnl >= 0 ? "text-positive" : "text-negative"}`} style={{ fontWeight: 600 }}>{formatCurrency(netPnl)}</td>
+                  <td className={`number-cell ${netPnl >= 0 ? "text-positive" : "text-negative"}`}>{trade.pnl_percent.toFixed(2)}%</td>
+                  <td>{trade.source_signal ? <span className={`signal-badge signal-${trade.source_signal.toLowerCase()}`}>{trade.source_signal}</span> : "--"}</td>
+                  <td data-testid="history-strategy">{extractStrategyFromNotes(trade.notes) || "--"}</td>
+                  <td className="number-cell">{trade.source_score?.toFixed(1) ?? "--"}</td>
+                  <td>{new Date(trade.opened_at).toLocaleString()}</td>
+                  <td>{new Date(trade.closed_at).toLocaleString()}</td>
+                  <td>{trade.exit_reason ?? "MANUAL"}</td>
+                  <td>{trade.holding_period_hours.toFixed(1)}h</td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
