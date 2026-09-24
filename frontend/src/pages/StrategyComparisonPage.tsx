@@ -15,6 +15,7 @@ import { ComparisonCharts, SLOT_COLORS } from "../components/strategy_comparison
 import { ComparisonLeaderboard } from "../components/strategy_comparison/LeaderboardTable";
 import { ComparisonRadar } from "../components/strategy_comparison/ComparisonRadar";
 import { PineCodeEditor } from "../components/strategy_tester/PineCodeEditor";
+import { StrategyVennDiagram } from "../components/strategy_comparison/StrategyVennDiagram";
 import "./strategyTester.css";
 import "./strategyComparison.css";
 
@@ -469,6 +470,18 @@ export function StrategyComparisonPage() {
           <Link to="/strategy-tester" className="sc-btn" data-testid="sc-open-tester">
             Open Strategy Tester
           </Link>
+          {comparison ? (
+            <button
+              type="button"
+              className="sc-btn sc-btn--venn-cta"
+              onClick={() => {
+                document.getElementById("sc-venn-section")?.scrollIntoView({ behavior: "smooth" });
+              }}
+              title="Jump directly to Venn Diagram representation"
+            >
+              🟡 Venn Diagram (∩ / ∪) ↓
+            </button>
+          ) : null}
           <button type="button" className="sc-btn sc-btn-primary" onClick={addSlot} disabled={slots.length >= 4} data-testid="sc-add-strategy">
             + Add Strategy
           </button>
@@ -521,6 +534,48 @@ export function StrategyComparisonPage() {
           </div>
         )}
       </section>
+
+      {comparison ? (
+        <nav className="sc-quick-nav">
+          <button
+            type="button"
+            onClick={() => document.getElementById("sc-metrics")?.scrollIntoView({ behavior: "smooth" })}
+          >
+            📈 Metrics
+          </button>
+          <button
+            type="button"
+            onClick={() => document.getElementById("sc-signals")?.scrollIntoView({ behavior: "smooth" })}
+          >
+            🎯 Signal Overlap
+          </button>
+          <button
+            type="button"
+            className="sc-quick-nav-highlight"
+            onClick={() => document.getElementById("sc-venn-section")?.scrollIntoView({ behavior: "smooth" })}
+          >
+            🟡 Venn Diagram (∩ / ∪)
+          </button>
+          <button
+            type="button"
+            onClick={() => document.getElementById("sc-charts")?.scrollIntoView({ behavior: "smooth" })}
+          >
+            📊 Charts
+          </button>
+          <button
+            type="button"
+            onClick={() => document.getElementById("sc-config")?.scrollIntoView({ behavior: "smooth" })}
+          >
+            ⚙️ Config &amp; Logic
+          </button>
+          <button
+            type="button"
+            onClick={() => document.getElementById("sc-trades")?.scrollIntoView({ behavior: "smooth" })}
+          >
+            💼 Trades
+          </button>
+        </nav>
+      ) : null}
 
       {!catalogLoading && catalog.length === 0 && !catalogError ? (
         <div className="sc-empty" data-testid="sc-empty-catalog">
@@ -597,7 +652,10 @@ export function StrategyComparisonPage() {
           <MetricSection comparison={comparison} cols={cols} highlight={highlightDiffs} />
           <SummarySection comparison={comparison} />
           <SignalSection comparison={comparison} search={signalSearch} onSearch={setSignalSearch} />
-          <ComparisonCharts comparison={comparison} />
+          <StrategyVennDiagram comparison={comparison} />
+          <div id="sc-charts">
+            <ComparisonCharts comparison={comparison} />
+          </div>
           <ConfigSection comparison={comparison} cols={cols} highlight={highlightDiffs} />
           <LogicSection comparison={comparison} cols={cols} highlight={highlightDiffs} />
           {comparison.has_pine ? <PineSection comparison={comparison} /> : null}
@@ -664,7 +722,7 @@ function MetricSection({
     { label: "Final Equity", higherIsBetter: true, value: (s) => s.metrics.final_equity, render: (s) => fmtInr(s.metrics.final_equity) },
   ];
   return (
-    <section className="sc-section" data-testid="sc-metrics">
+    <section className="sc-section" id="sc-metrics" data-testid="sc-metrics">
       <h2 className="sc-section-title">Performance</h2>
       <Grid cols={cols}>
         <div className="sc-grid-head">
@@ -863,7 +921,7 @@ function SignalSection({
   const q = search.trim().toUpperCase();
   const rows = signals.symbols.filter((row) => !q || row.symbol.includes(q));
   return (
-    <section className="sc-section" data-testid="sc-signals">
+    <section className="sc-section" id="sc-signals" data-testid="sc-signals">
       <h2 className="sc-section-title">Signal comparison</h2>
       {!signals.available ? (
         <p className="sc-section-note">{signals.unavailable_reason}</p>
@@ -942,7 +1000,7 @@ function TradeSection({
   const q = search.trim().toUpperCase();
   const rows = comparison.trades.symbols.filter((row) => !q || row.symbol.includes(q));
   return (
-    <section className="sc-section" data-testid="sc-trades">
+    <section className="sc-section" id="sc-trades" data-testid="sc-trades">
       <h2 className="sc-section-title">Trade comparison</h2>
       <div className="sc-toolbar">
         <input className="sc-search" style={{ maxWidth: 280 }} placeholder="Filter by symbol" value={search} onChange={(e) => onSearch(e.target.value)} data-testid="sc-trade-search" />
