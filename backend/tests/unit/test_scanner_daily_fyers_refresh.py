@@ -10,7 +10,9 @@ import pytest
 from app.schemas import OHLCVPoint
 from app.services.fyers_service import FyersService
 from app.services.market_data_service import (
+    daily_refresh_kind,
     incremental_history_window,
+    merge_quote_bar,
     required_scanner_session,
     session_bar_is_final,
     strategy_rows_from_scan_frames,
@@ -59,7 +61,8 @@ def test_later_scan_the_same_day_reuses_the_database():
     assert needs is False
 
 
-def test_preopen_first_click_still_refreshes_the_completed_session():
+def test_stored_session_is_reused_even_if_it_was_written_on_an_earlier_day():
+    """Hosted scans must not re-download every name just because updated_at is old."""
     now = datetime(2026, 9, 28, 8, 0, tzinfo=IST)
     needs = symbol_needs_daily_fyers_fetch(
         260,
@@ -69,7 +72,41 @@ def test_preopen_first_click_still_refreshes_the_completed_session():
         now=now,
         required_session=date(2026, 9, 25),
     )
-    assert needs is True
+    assert needs is False
+
+
+def test_one_day_gap_uses_a_batched_quote_not_per_symbol_history():
+    assert (
+        daily_refresh_kind(
+            260,
+            _utc(2026, 9, 24, 10, 0),
+            220,
+            required_session=date(2026, 9, 25),
+        )
+        == "latest_bar"
+    )
+    assert (
+        daily_refresh_kind(
+            40,
+            _utc(2026, 9, 24, 10, 0),
+            220,
+            required_session=date(2026, 9, 25),
+        )
+        == "history"
+    )
+
+
+def test_quote_bar_lands_on_the_nse_session_date():
+    merged, delta = merge_quote_bar(
+        None,
+        date(2026, 9, 25),
+        {"open": 10, "high": 12, "low": 9, "close": 11, "volume": 100},
+    )
+    assert len(merged) == 1
+    assert len(delta) == 1
+    from app.services.market_data_service import candle_session_date
+
+    assert candle_session_date(merged.index[0]) == date(2026, 9, 25)
 
 
 def test_short_gap_rewrites_the_last_stored_session():

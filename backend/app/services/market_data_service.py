@@ -799,12 +799,6 @@ def required_scanner_session(now: datetime | None = None) -> date:
     return expected_last_completed_session(ist)
 
 
-def _ist_calendar_day(ts: datetime | None) -> date | None:
-    if ts is None:
-        return None
-    return candle_session_date(ts)
-
-
 def cache_covers_required_session(
     count: int,
     latest: datetime | None,
@@ -832,26 +826,88 @@ def symbol_needs_daily_fyers_fetch(
     now: datetime | None = None,
     required_session: date | None = None,
 ) -> bool:
-    """True when this Run Scanner click must pull daily bars from Fyers.
+    """True when stored daily history does not yet reach the session being scanned.
 
-    The first scan of an IST calendar day refreshes every name and stores the
-    result. Later scans that day reuse the database once the required session
-    is present and this symbol was written today.
+    A symbol that already has that session is reused. Hosted scans must not
+    re-download the whole universe on every click just because ``updated_at``
+    is from a previous calendar day.
     """
-    from .trading_hours_service import TradingHoursService, trading_hours
-
-    if not cache_covers_required_session(
+    del updated_at
+    return not cache_covers_required_session(
         count,
         latest,
         required_history,
         now,
         required_session=required_session,
+    )
+
+
+def daily_refresh_kind(
+    count: int,
+    latest: datetime | None,
+    required_history: int,
+    *,
+    required_session: date,
+) -> str:
+    """How to fill one symbol: ``none``, ``latest_bar``, or ``history``.
+
+    A short gap uses one batched quote refresh. A long gap needs history.
+    """
+    if not symbol_needs_daily_fyers_fetch(
+        count,
+        latest,
+        required_history,
+        required_session=required_session,
     ):
-        return True
-    th = trading_hours if trading_hours is not None else TradingHoursService()
-    today = th._to_ist(now).date()
-    written_on = _ist_calendar_day(updated_at)
-    return written_on is None or written_on < today
+        return "none"
+    session = candle_session_date(latest)
+    if (
+        count >= required_history
+        and session is not None
+        and 0 <= (required_session - session).days <= _REWRITE_BOUNDARY_DAYS
+    ):
+        return "latest_bar"
+    return "history"
+
+
+def quote_session_timestamp(session: date) -> datetime:
+    """Naive UTC instant whose IST calendar date is ``session`` (15:30 IST)."""
+    local = datetime.combine(session, datetime.min.time().replace(hour=15, minute=30), tzinfo=_IST)
+    return local.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def merge_quote_bar(
+    existing: pd.DataFrame | None,
+    session: date,
+    bar: dict,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Return ``(merged_history, one_bar_delta)`` for one Fyers quote."""
+    stamp = quote_session_timestamp(session)
+    delta = pd.DataFrame(
+        {
+            "open": [float(bar["open"])],
+            "high": [float(bar["high"])],
+            "low": [float(bar["low"])],
+            "close": [float(bar["close"])],
+            "volume": [int(float(bar.get("volume") or 0))],
+        },
+        index=pd.DatetimeIndex([stamp]),
+    )
+    if existing is None or existing.empty:
+        return delta, delta
+    merged = existing.copy()
+    idx = stamp
+    if getattr(merged.index, "tz", None) is not None:
+        idx = stamp.replace(tzinfo=timezone.utc)
+    merged.loc[idx, ["open", "high", "low", "close", "volume"]] = [
+        delta.iloc[0]["open"],
+        delta.iloc[0]["high"],
+        delta.iloc[0]["low"],
+        delta.iloc[0]["close"],
+        delta.iloc[0]["volume"],
+    ]
+    merged = merged[~merged.index.duplicated(keep="last")].sort_index()
+    return merged, delta
 
 
 def incremental_history_window(

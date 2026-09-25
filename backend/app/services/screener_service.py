@@ -406,6 +406,8 @@ class ScreenerService:
         from .market_data_service import (
             MarketDataService,
             cache_covers_required_session,
+            daily_refresh_kind,
+            merge_quote_bar,
             persist_fyers_scan_bars,
             required_scanner_session,
             symbol_needs_daily_fyers_fetch,
@@ -558,7 +560,26 @@ class ScreenerService:
                 ordered_fetch.append(symbol)
             needs_fetch = ordered_fetch
 
-            # --- Worker pool: FYERS only for incomplete/stale symbols ---
+            # Names that only miss the latest session share one batched Fyers
+            # quote call. Per-symbol history for all 755 names does not finish
+            # on the hosted server, so the Vercel scan never returns.
+            latest_only: list[str] = []
+            history_needed: list[str] = []
+            for symbol in needs_fetch:
+                count, latest, _updated_at = _meta_parts(symbol)
+                kind = daily_refresh_kind(
+                    count,
+                    latest,
+                    required_history,
+                    required_session=target_session,
+                )
+                if kind == "latest_bar":
+                    latest_only.append(symbol)
+                elif kind == "history":
+                    history_needed.append(symbol)
+            needs_fetch = history_needed
+
+            # --- Worker pool: FYERS history only for names with a real gap ---
             fyers_sem = asyncio.Semaphore(max_workers)
             loop = asyncio.get_running_loop()
             done_counter = {"n": 0}
@@ -567,6 +588,59 @@ class ScreenerService:
             last_progress_t = {"t": time.perf_counter()}
             pending_upserts: list[tuple[str, str, pd.DataFrame]] = []
             upsert_lock = asyncio.Lock()
+
+            if latest_only:
+                _progress(
+                    f"Fetching latest OHLC from Fyers... (0/{len(latest_only)})",
+                    43,
+                )
+                try:
+                    from .strategies.breakout52w.session_overlay import fetch_live_session_bars
+
+                    equity_bars, index_close = await fetch_live_session_bars(latest_only)
+                    for symbol, bar in equity_bars.items():
+                        merged, delta = merge_quote_bar(
+                            symbol_frames.get(symbol),
+                            target_session,
+                            bar,
+                        )
+                        symbol_frames[symbol] = merged
+                        pending_upserts.append((symbol, "1D", delta))
+                    self.logger.info(
+                        "SCANNER_FYERS_QUOTES | stage=%s | requested=%s | stored=%s | index=%s",
+                        stage_name,
+                        len(latest_only),
+                        len(equity_bars),
+                        index_close,
+                    )
+                    if index_close and index_close > 0:
+                        try:
+                            from ..config.settings import settings as app_settings
+                            from .market_data_ingestion.repository import upsert_index_bars
+                            from .market_data_service import session_bar_is_final
+
+                            if session_bar_is_final(target_session):
+                                await upsert_index_bars(
+                                    [
+                                        {
+                                            "trade_date": target_session,
+                                            "symbol": app_settings.strategy_index_store_symbol,
+                                            "open": float(index_close),
+                                            "high": float(index_close),
+                                            "low": float(index_close),
+                                            "close": float(index_close),
+                                            "volume": 0,
+                                            "source": "FYERS",
+                                        }
+                                    ]
+                                )
+                        except Exception:
+                            self.logger.warning("SCANNER_FYERS_INDEX_QUOTE_FAILED")
+                except Exception:
+                    self.logger.exception(
+                        "SCANNER_FYERS_QUOTES_FAILED | symbols=%s | continuing with stored candles",
+                        len(latest_only),
+                    )
 
             async def process_symbol_fyers(symbol: str, worker_id: int):
                 async with fyers_sem:
@@ -701,62 +775,72 @@ class ScreenerService:
                     len(needs_fetch),
                     max_workers,
                 )
-                await asyncio.gather(
-                    *(process_symbol_fyers(s, i % max_workers) for i, s in enumerate(needs_fetch))
-                )
-                stage_timings["fyers_fetch_ms"] = (time.perf_counter() - fetch_t0) * 1000
-
-                # Batch persist deltas (single sequential writer — avoids pool stampedes)
-                upsert_t0 = time.perf_counter()
-                if pending_upserts:
-                    written = await md_service.upsert_candles_multi(pending_upserts)
-                    self.logger.info(
-                        "SCANNER_UPSERT_BATCH | stage=%s | symbols_written=%s | upsert_ms=%.0f",
-                        stage_name,
-                        written,
-                        (time.perf_counter() - upsert_t0) * 1000,
+                try:
+                    # History backfill must not hold the hosted scan open until
+                    # the browser gives up. Quotes for the latest session already ran.
+                    await asyncio.wait_for(
+                        asyncio.gather(
+                            *(process_symbol_fyers(s, i % max_workers) for i, s in enumerate(needs_fetch))
+                        ),
+                        timeout=45.0,
                     )
-                    try:
-                        stored = await persist_fyers_scan_bars(
-                            pending_upserts,
-                            refresh_index=True,
-                        )
-                        self.logger.info(
-                            "SCANNER_FYERS_STORED | stage=%s | daily_upserted=%s | index_upserted=%s",
-                            stage_name,
-                            stored.get("daily_upserted"),
-                            stored.get("index_upserted"),
-                        )
-                    except Exception:
-                        self.logger.exception(
-                            "SCANNER_FYERS_STORE_FAILED | stage=%s | candle cache was saved",
-                            stage_name,
-                        )
-                stage_timings["upsert_ms"] = (time.perf_counter() - upsert_t0) * 1000
-
-                # Drop frames that still lack required history after API
-                for symbol in list(symbol_frames.keys()):
-                    df = symbol_frames[symbol]
-                    if df is None or df.empty or len(df) < required_history:
-                        if symbol in needs_fetch:
-                            self.logger.warning(
-                                "Skipping %s gracefully: history (%s) below required (%s).",
-                                symbol,
-                                0 if df is None or df.empty else len(df),
-                                required_history,
-                            )
-                            symbol_frames.pop(symbol, None)
-
-                self.logger.info(
-                    "SCANNER_FYERS_FETCH | stage=%s | requested=%s | frames_now=%s | fetch_ms=%.0f",
-                    stage_name,
-                    len(needs_fetch),
-                    len(symbol_frames),
-                    stage_timings["fyers_fetch_ms"],
-                )
+                except asyncio.TimeoutError:
+                    self.logger.warning(
+                        "SCANNER_FYERS_HISTORY_BUDGET | stage=%s | symbols=%s",
+                        stage_name,
+                        len(needs_fetch),
+                    )
+                stage_timings["fyers_fetch_ms"] = (time.perf_counter() - fetch_t0) * 1000
             else:
                 stage_timings["fyers_fetch_ms"] = 0.0
-                stage_timings["upsert_ms"] = 0.0
+
+            upsert_t0 = time.perf_counter()
+            if pending_upserts:
+                written = await md_service.upsert_candles_multi(pending_upserts)
+                self.logger.info(
+                    "SCANNER_UPSERT_BATCH | stage=%s | symbols_written=%s | upsert_ms=%.0f",
+                    stage_name,
+                    written,
+                    (time.perf_counter() - upsert_t0) * 1000,
+                )
+                try:
+                    stored = await persist_fyers_scan_bars(
+                        pending_upserts,
+                        refresh_index=False,
+                    )
+                    self.logger.info(
+                        "SCANNER_FYERS_STORED | stage=%s | daily_upserted=%s | index_upserted=%s",
+                        stage_name,
+                        stored.get("daily_upserted"),
+                        stored.get("index_upserted"),
+                    )
+                except Exception:
+                    self.logger.exception(
+                        "SCANNER_FYERS_STORE_FAILED | stage=%s | candle cache was saved",
+                        stage_name,
+                    )
+            stage_timings["upsert_ms"] = (time.perf_counter() - upsert_t0) * 1000
+
+            for symbol in list(symbol_frames.keys()):
+                df = symbol_frames[symbol]
+                if df is None or df.empty or len(df) < required_history:
+                    if symbol in needs_fetch:
+                        self.logger.warning(
+                            "Skipping %s gracefully: history (%s) below required (%s).",
+                            symbol,
+                            0 if df is None or df.empty else len(df),
+                            required_history,
+                        )
+                        symbol_frames.pop(symbol, None)
+
+            self.logger.info(
+                "SCANNER_FYERS_FETCH | stage=%s | history_symbols=%s | quote_symbols=%s | frames_now=%s | fetch_ms=%.0f",
+                stage_name,
+                len(needs_fetch),
+                len(latest_only),
+                len(symbol_frames),
+                stage_timings["fyers_fetch_ms"],
+            )
 
             stage_timings["data_acquisition_ms"] = (time.perf_counter() - phase_t0) * 1000
             self.logger.info(
