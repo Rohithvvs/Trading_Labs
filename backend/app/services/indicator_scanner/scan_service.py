@@ -260,7 +260,15 @@ async def fetch_current_indicator_market_data(
 
     report: dict[str, Any] = {}
     try:
-        report["daily_sync"] = await sync_daily_market_data_for_scan(store_symbols or symbols)
+        # Hard cap so a Fyers refresh cannot pin the process until Render restarts
+        # it and the startup reaper marks the run SCAN_INTERRUPTED.
+        report["daily_sync"] = await asyncio.wait_for(
+            sync_daily_market_data_for_scan(store_symbols or symbols),
+            timeout=35.0,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("INDICATOR_SCAN_DAILY_SYNC_TIMEOUT | continuing with stored candles")
+        report["daily_sync"] = {"status": "TIMEOUT"}
     except Exception as exc:
         logger.warning("INDICATOR_SCAN_DAILY_SYNC_FAILED | err=%s", exc)
         report["daily_sync"] = {"status": "FAILED", "error": type(exc).__name__}
