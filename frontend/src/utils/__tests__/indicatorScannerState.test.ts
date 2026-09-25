@@ -85,10 +85,78 @@ describe("indicatorScannerState", () => {
     expect(localStorage.getItem(INDICATOR_SCANNER_LAST_SCAN_ID_KEY)).toBe("IND-20260829-001");
     const loaded = loadIndicatorScannerState();
     expect(loaded?.scan?.scan_id).toBe("IND-20260829-001");
+    expect(loaded?.scan?.indicator_id).toBe("ind-1");
     expect(loaded?.scan?.matched_count).toBe(12);
     expect(loaded?.results[0].symbol).toBe("RELIANCE");
+    expect(loaded?.scansByIndicator?.["ind-1"]?.results[0].symbol).toBe("RELIANCE");
     expect(loaded?.diagnostics?.skipped).toBe(3);
     expect(loaded?.indicators).toHaveLength(1);
     expect(JSON.parse(localStorage.getItem(INDICATOR_SCANNER_STATE_KEY) || "{}").indicators).toHaveLength(1);
+  });
+
+  it("keeps the last scan for every strategy", () => {
+    saveIndicatorScannerState({
+      selectedId: "ind-2",
+      appliedIndicator: indicator({ id: "ind-2", name: "RSI Oversold [SCAN]" }),
+      indicators: [
+        indicator({ id: "ind-1", name: "52-Week High Breakout [SCAN]" }),
+        indicator({ id: "ind-2", name: "RSI Oversold [SCAN]" }),
+      ],
+      timeframe: "1D",
+      scanDate: "2026-08-28",
+      filters: [],
+      scan: {
+        id: "run-2",
+        scan_id: "IND-B",
+        indicator_id: "ind-2",
+        indicator_name: "RSI Oversold [SCAN]",
+        universe: "nse-755",
+        universe_size: 755,
+        timeframe: "1D",
+        status: "completed",
+        progress_pct: 100,
+        processed_count: 755,
+        total_count: 755,
+        matched_count: 3,
+      },
+      results: [{ symbol: "TCS", status: "ok", matched: true, outputs: {} }],
+      total: 3,
+      page: 1,
+      sortField: "symbol",
+      sortDir: "asc",
+      search: "",
+      matchedOnly: false,
+      diagnostics: null,
+      scansByIndicator: {
+        "ind-1": {
+          scan: {
+            id: "run-1",
+            scan_id: "IND-A",
+            indicator_id: "ind-1",
+            indicator_name: "52-Week High Breakout [SCAN]",
+            universe: "nse-755",
+            universe_size: 755,
+            timeframe: "1D",
+            status: "completed",
+            progress_pct: 100,
+            processed_count: 755,
+            total_count: 755,
+            matched_count: 1,
+          },
+          results: [{ symbol: "RELIANCE", status: "ok", matched: true, outputs: {} }],
+          total: 1,
+          page: 1,
+          scanDate: "2026-08-27",
+          filters: [],
+          diagnostics: null,
+        },
+      },
+    });
+
+    const loaded = loadIndicatorScannerState();
+    expect(loaded?.scansByIndicator?.["ind-1"]?.results[0].symbol).toBe("RELIANCE");
+    expect(loaded?.scansByIndicator?.["ind-1"]?.scan.scan_id).toBe("IND-A");
+    expect(loaded?.scansByIndicator?.["ind-2"]?.results[0].symbol).toBe("TCS");
+    expect(loaded?.scan?.scan_id).toBe("IND-B");
   });
 });

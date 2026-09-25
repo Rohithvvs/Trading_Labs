@@ -197,6 +197,57 @@ async def next_public_scan_id(day: date | None = None) -> str:
     return f"{prefix}{count + 1:03d}"
 
 
+_LATEST_ACTIVE_STATUSES = ("queued", "running", "preparing", "cancelling")
+
+
+def _indicator_scan_query(indicator_id: uuid.UUID, user_id: uuid.UUID | None):
+    stmt = select(IndicatorScanRun).where(IndicatorScanRun.indicator_id == indicator_id)
+    if user_id is not None:
+        stmt = stmt.where(IndicatorScanRun.user_id == user_id)
+    return stmt
+
+
+async def latest_scan_for_indicator(
+    indicator_id: uuid.UUID,
+    *,
+    user_id: uuid.UUID | None,
+) -> IndicatorScanRun | None:
+    """Newest visible scan for one strategy.
+
+    An in-progress run wins. Otherwise the newest completed run wins, so a later
+    failed attempt does not hide the last result set. A failed run is returned
+    only when the strategy has never completed.
+    """
+    async with AsyncSessionLocal() as db:
+        active = (
+            await db.execute(
+                _indicator_scan_query(indicator_id, user_id)
+                .where(IndicatorScanRun.status.in_(_LATEST_ACTIVE_STATUSES))
+                .order_by(IndicatorScanRun.started_at.desc())
+                .limit(1)
+            )
+        ).scalars().first()
+        if active is not None:
+            return active
+        completed = (
+            await db.execute(
+                _indicator_scan_query(indicator_id, user_id)
+                .where(IndicatorScanRun.status == "completed")
+                .order_by(IndicatorScanRun.completed_at.desc(), IndicatorScanRun.started_at.desc())
+                .limit(1)
+            )
+        ).scalars().first()
+        if completed is not None:
+            return completed
+        return (
+            await db.execute(
+                _indicator_scan_query(indicator_id, user_id)
+                .order_by(IndicatorScanRun.started_at.desc())
+                .limit(1)
+            )
+        ).scalars().first()
+
+
 async def find_active_scan(user_id: uuid.UUID | None) -> IndicatorScanRun | None:
     async with AsyncSessionLocal() as db:
         stmt = (

@@ -819,3 +819,108 @@ def test_momentum_pulse_backtest_uses_pulse_algorithm_not_ltm(api):
     assert res.json()["strategyId"] == "momentum_pulse"
     assert res.json()["strategyId"] != "17_long_term_mom"
 
+
+def test_latest_indicator_scan_returns_the_newest_visible_run(api, test_engine):
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import select
+    from sqlalchemy.orm import Session
+
+    from app.models.auth import User
+    from app.models.indicator_scanner import IndicatorScanRun
+
+    email = f"ind_{uuid.uuid4().hex[:10]}@example.com"
+    registered = api.post(
+        "/auth/register",
+        json={"email": email, "password": "SecurePassword123!", "full_name": "Indicator User"},
+    )
+    assert registered.status_code in (200, 201), registered.text
+    headers = {"Authorization": f"Bearer {registered.json()['access_token']}"}
+    saved = api.post(
+        "/indicators",
+        json={
+            "name": BREAKOUT_SCAN_TITLE,
+            "description": "Scan template",
+            "source_code": BREAKOUT_SCAN_SOURCE,
+            "timeframe": "1D",
+        },
+        headers=headers,
+    )
+    assert saved.status_code == 200, saved.text
+    indicator_id = uuid.UUID(saved.json()["id"])
+    other = api.post(
+        "/indicators",
+        json={
+            "name": "RSI Oversold Scan",
+            "description": "second",
+            "source_code": BREAKOUT_SCAN_SOURCE,
+            "timeframe": "1D",
+        },
+        headers=headers,
+    )
+    assert other.status_code == 200, other.text
+    other_id = uuid.UUID(other.json()["id"])
+    now = datetime.now(timezone.utc)
+    completed_summary = {"top_positive": [{"symbol": "RELIANCE"}], "top_negative": [{"symbol": "IDEA"}]}
+
+    def run(public_id, owner_id, target_id, status, started, completed=None, summary=None):
+        return IndicatorScanRun(
+            public_scan_id=public_id,
+            user_id=owner_id,
+            indicator_id=target_id,
+            indicator_name=BREAKOUT_SCAN_TITLE,
+            indicator_snapshot={"outputs": []},
+            universe="nse-755",
+            universe_size=755,
+            timeframe="1D",
+            status=status,
+            stage=status,
+            progress_pct=100 if status == "completed" else 15,
+            processed_count=755 if status == "completed" else 20,
+            total_count=755,
+            matched_count=4 if status == "completed" else 0,
+            summary=summary if summary is not None else (completed_summary if status == "completed" else {}),
+            started_at=started,
+            completed_at=completed,
+        )
+
+    with Session(test_engine) as db:
+        user = db.execute(select(User).where(User.email == email)).scalar_one()
+        db.add_all(
+            [
+                run("IND-OLD", user.id, indicator_id, "completed", now - timedelta(hours=3), now - timedelta(hours=3, minutes=-1)),
+                run("IND-NEW", user.id, indicator_id, "completed", now - timedelta(hours=2), now - timedelta(hours=2, minutes=-1)),
+                run("IND-FAIL", user.id, indicator_id, "failed", now - timedelta(hours=1), now - timedelta(minutes=50), summary={}),
+                run("IND-OTHER-USER", uuid.uuid4(), indicator_id, "completed", now, now, summary=completed_summary),
+                run("IND-DONE", user.id, other_id, "completed", now - timedelta(hours=2), now - timedelta(hours=2, minutes=-1)),
+                run("IND-RUN", user.id, other_id, "running", now - timedelta(minutes=5)),
+            ]
+        )
+        db.commit()
+
+    latest = api.get(f"/indicators/{indicator_id}/scans/latest", headers=headers)
+    assert latest.status_code == 200, latest.text
+    body = latest.json()
+    assert body["scan_id"] == "IND-NEW"
+    assert body["indicator_id"] == str(indicator_id)
+    assert body["status"] == "completed"
+
+    active = api.get(f"/indicators/{other_id}/scans/latest", headers=headers)
+    assert active.status_code == 200, active.text
+    assert active.json()["scan_id"] == "IND-RUN"
+    assert active.json()["status"] == "running"
+
+    empty = api.post(
+        "/indicators",
+        json={
+            "name": "Never Scanned",
+            "description": "third",
+            "source_code": BREAKOUT_SCAN_SOURCE,
+            "timeframe": "1D",
+        },
+        headers=headers,
+    )
+    assert empty.status_code == 200, empty.text
+    missing = api.get(f"/indicators/{empty.json()['id']}/scans/latest", headers=headers)
+    assert missing.status_code == 404
+

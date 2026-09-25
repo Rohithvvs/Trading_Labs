@@ -196,6 +196,7 @@ vi.mock("../../api_indicator_scanner", () => ({
   fetchIndicatorScanResults: vi.fn(),
   fetchIndicatorScanResult: vi.fn(),
   fetchIndicatorScanDiagnostics: vi.fn(),
+  fetchLatestIndicatorScan: vi.fn(async () => null),
   exportIndicatorScanCsv: vi.fn(),
   cancelIndicatorScan: vi.fn(),
 }));

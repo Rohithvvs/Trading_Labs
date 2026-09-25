@@ -10,6 +10,7 @@ import {
   fetchIndicatorScan,
   fetchIndicatorScanDiagnostics,
   fetchIndicatorScanResults,
+  fetchLatestIndicatorScan,
   fetchIndicators,
   seedLabIndicators,
   startIndicatorBacktest,
@@ -38,6 +39,7 @@ import {
   loadIndicatorScannerState,
   saveIndicatorScannerState,
   uniqueIndicatorsByIdAndName,
+  type IndicatorScanCacheEntry,
 } from "../../utils/indicatorScannerState";
 import { formatDateTime, formatDuration } from "./RunStatusRow";
 import { StrategyBuilderCard } from "./StrategyBuilderCard";
@@ -473,8 +475,17 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
   const pollRef = useRef<number | null>(null);
   const pollConsecutiveErrorsRef = useRef<number>(0);
   const scanIdRef = useRef<string | null>(savedScanner?.scan?.scan_id || null);
+  const activeOwnerRef = useRef<string>(savedScanner?.scan?.indicator_id || savedScanner?.selectedId || "");
+  const selectedIdRef = useRef<string>(savedScanner?.selectedId || appliedIndicator?.id || "");
+  const selectionTokenRef = useRef(0);
+  const scanCacheRef = useRef<Record<string, IndicatorScanCacheEntry>>(savedScanner?.scansByIndicator || {});
+  const selectIndicatorRef = useRef<(id: string, options?: { forgetId?: string }) => void>(() => {});
   const lastAppliedId = useRef<string | null>(appliedIndicator?.id || null);
   const resultsRequestIdRef = useRef<number>(0);
+  const withIndicatorOwner = useCallback((status: IndicatorScanStatus, owner?: string | null): IndicatorScanStatus => {
+    const indicatorId = status.indicator_id || owner || activeOwnerRef.current || "";
+    return indicatorId ? { ...status, indicator_id: indicatorId } : status;
+  }, []);
   const [scanSlot, setScanSlot] = useState<HTMLElement | null>(null);
 
   useEffect(() => {
@@ -511,6 +522,7 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
     }
     return visibleIndicators[0] || (appliedIndicator?.id === selectedId ? appliedIndicator : null);
   }, [visibleIndicators, indicators, selectedId, appliedIndicator]);
+  selectedIdRef.current = selectedId || selected?.id || "";
 
   const absorbedSelected = useMemo(() => absorbedFromIndicator(selected), [selected]);
   const visibleColumnsAbsorbed = useMemo(
@@ -615,7 +627,7 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
     setIndicators((prev) => upsertIndicator(prev, appliedIndicator));
     if (lastAppliedId.current !== appliedIndicatorId) {
       lastAppliedId.current = appliedIndicatorId;
-      setSelectedId(appliedIndicatorId);
+      selectIndicatorRef.current(appliedIndicatorId);
     }
   }, [appliedIndicator, appliedIndicatorId]);
 
@@ -665,6 +677,7 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
           direction: "asc",
         }),
       ]);
+      if (scanIdRef.current !== scanId) return;
       setTopPositiveRows((positive.results || []).map((row, index) => mapTopRow(row, index + 1)));
       setTopNegativeRows((negative.results || []).map((row, index) => mapTopRow(row, index + 1)));
     },
@@ -685,7 +698,7 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
           sort: signalFilter === "ALL" ? "signal" : sortField,
           direction: sortDir,
         });
-        if (reqId === resultsRequestIdRef.current) {
+        if (reqId === resultsRequestIdRef.current && scanIdRef.current === scanId) {
           setResults(payload.results);
           setTotal(payload.total);
         }
@@ -707,17 +720,23 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
 
   const handleTerminalScan = useCallback(
     async (status: IndicatorScanStatus) => {
+      const scanId = status.scan_id;
+      if (scanIdRef.current !== scanId) return;
       stopPoll();
+      if (scanIdRef.current !== scanId) return;
       setBusy(false);
-      setScan(status);
+      setScan(withIndicatorOwner(status));
       if (status.status === "completed") {
         try {
           const fresh = await fetchIndicatorScan(status.scan_id);
-          setScan(fresh);
+          if (scanIdRef.current !== scanId) return;
+          setScan(withIndicatorOwner(fresh));
         } catch {
           /* keep polled status */
         }
+        if (scanIdRef.current !== scanId) return;
         await Promise.all([loadResults(status.scan_id, 1), loadTopReturns(status.scan_id)]);
+        if (scanIdRef.current !== scanId) return;
         setPage(1);
         const failed = status.failed_count || 0;
         if (failed > 0) {
@@ -728,7 +747,7 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
         }
       }
     },
-    [loadResults, loadTopReturns, notify, stopPoll],
+    [loadResults, loadTopReturns, notify, stopPoll, withIndicatorOwner],
   );
 
   const poll = useCallback(
@@ -742,7 +761,7 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
           const status = await fetchIndicatorScan(scanId);
           pollConsecutiveErrorsRef.current = 0;
           if (scanIdRef.current !== scanId) return;
-          setScan(status);
+          setScan(withIndicatorOwner(status));
           if (status.status === "completed" || status.status === "failed" || status.status === "cancelled") {
             await handleTerminalScan(status);
             return;
@@ -751,11 +770,11 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
           if (Date.now() - pollStart > 180_000 && isFetchingCurrentData(status) && (status.progress_pct ?? 0) <= 2) {
             stopPoll();
             setBusy(false);
-            setScan({
+            setScan(withIndicatorOwner({
               ...status,
               status: "failed",
               error_detail: "Market data fetch timed out. Please click Scan to restart.",
-            });
+            }));
             notify({
               title: "Scan timed out",
               message: "Market data fetch took too long. Please click Scan to retry.",
@@ -797,7 +816,7 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
         void tick();
       }, 1000);
     },
-    [handleTerminalScan, notify, stopPoll],
+    [handleTerminalScan, notify, stopPoll, withIndicatorOwner],
   );
 
   useEffect(() => () => stopPoll(), [stopPoll]);
@@ -817,7 +836,8 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
     } else if (scan?.status === "completed") {
       fetchIndicatorScan(scanId)
         .then((status) => {
-          setScan(status);
+          if (scanIdRef.current !== scanId) return;
+          setScan(withIndicatorOwner(status));
           return loadTopReturns(scanId);
         })
         .catch(() => {});
@@ -828,6 +848,21 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
 
   useEffect(() => {
     try {
+      if (scan?.scan_id) {
+        const owner = String(scan.indicator_id || selected?.id || selectedId || "");
+        const selectedOwner = String(selected?.id || selectedId || "");
+        if (owner && (!scan.indicator_id || !selectedOwner || scan.indicator_id === selectedOwner)) {
+          scanCacheRef.current[owner] = {
+            scan: scan.indicator_id ? scan : { ...scan, indicator_id: owner },
+            results,
+            total,
+            page,
+            scanDate,
+            filters,
+            diagnostics,
+          };
+        }
+      }
       saveIndicatorScannerState({
         selectedId: selected?.id || selectedId,
         appliedIndicator: selected || appliedIndicator,
@@ -844,6 +879,7 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
         search,
         matchedOnly: signalFilter === "MATCH",
         diagnostics,
+        scansByIndicator: scanCacheRef.current,
       });
     } catch {
       /* ignore */
@@ -881,6 +917,140 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
     }
   }, [scan?.scan_id, scan?.status, loadTopReturns]);
 
+  const rememberVisibleScan = () => {
+    if (!scan?.scan_id) return;
+    const owner = String(scan.indicator_id || activeOwnerRef.current || selected?.id || selectedId || "");
+    if (!owner) return;
+    scanCacheRef.current[owner] = {
+      scan: scan.indicator_id ? scan : { ...scan, indicator_id: owner },
+      results,
+      total,
+      page,
+      scanDate,
+      filters,
+      diagnostics,
+    };
+  };
+
+  const clearVisibleScan = () => {
+    setScan(null);
+    setResults([]);
+    setTotal(0);
+    setPage(1);
+    setDiagnostics(null);
+    setTopPositiveRows([]);
+    setTopNegativeRows([]);
+    setBusy(false);
+    scanIdRef.current = null;
+  };
+
+  const applyCachedScan = (entry: IndicatorScanCacheEntry) => {
+    const stamped = withIndicatorOwner(entry.scan, entry.scan.indicator_id);
+    setScan(stamped);
+    setResults(entry.results || []);
+    setTotal(entry.total || 0);
+    setPage(entry.page || 1);
+    setDiagnostics(entry.diagnostics ?? null);
+    setTopPositiveRows([]);
+    setTopNegativeRows([]);
+    if (entry.scanDate) setScanDate(entry.scanDate);
+    setFilters(entry.filters || []);
+    scanIdRef.current = stamped.scan_id;
+    if (isFreshActiveScan(stamped)) {
+      setBusy(true);
+      poll(stamped.scan_id);
+    } else if (isScanActive(stamped)) {
+      setBusy(false);
+      setScan({
+        ...stamped,
+        status: "failed",
+        error_detail: "Previous scan was interrupted. Start a new scan.",
+      });
+    } else {
+      setBusy(false);
+    }
+  };
+
+  const refreshLatest = async (indicatorId: string) => {
+    const token = ++selectionTokenRef.current;
+    try {
+      const status = await fetchLatestIndicatorScan(indicatorId);
+      if (token !== selectionTokenRef.current || selectedIdRef.current !== indicatorId) return;
+      if (!status?.scan_id) return;
+      const stamped = withIndicatorOwner(status, indicatorId);
+      const local = scanCacheRef.current[indicatorId];
+      const same =
+        local?.scan?.scan_id === stamped.scan_id &&
+        local.scan.status === stamped.status &&
+        (local.results?.length || 0) > 0;
+      if (same) return;
+      if (!isFreshActiveScan(stamped)) stopPoll();
+      if (stamped.scan_id !== scanIdRef.current) {
+        setResults([]);
+        setTotal(0);
+        setPage(1);
+        setTopPositiveRows([]);
+        setTopNegativeRows([]);
+      }
+      setScan(stamped);
+      scanIdRef.current = stamped.scan_id;
+      if (stamped.as_of && /^\d{4}-\d{2}-\d{2}/.test(stamped.as_of)) {
+        setScanDate(stamped.as_of.slice(0, 10));
+      }
+      scanCacheRef.current[indicatorId] = {
+        ...(local || {
+          results: [],
+          total: 0,
+          page: 1,
+          scanDate: stamped.as_of || "",
+          filters,
+          diagnostics: null,
+        }),
+        scan: stamped,
+        scanDate: stamped.as_of || local?.scanDate || scanDate,
+      };
+      if (isFreshActiveScan(stamped)) {
+        setBusy(true);
+        poll(stamped.scan_id);
+      } else if (isScanActive(stamped)) {
+        setBusy(false);
+        setScan({
+          ...stamped,
+          status: "failed",
+          error_detail: "Previous scan was interrupted. Start a new scan.",
+        });
+      } else {
+        setBusy(false);
+      }
+    } catch {
+      /* keep the snapshot already on screen */
+    }
+  };
+
+  const selectIndicator = (id: string, options?: { forgetId?: string }) => {
+    const currentId = selected?.id || selectedId;
+    if (!options?.forgetId && (!id || id === currentId)) return;
+    stopPoll();
+    resultsRequestIdRef.current += 1;
+    rememberVisibleScan();
+    if (options?.forgetId) delete scanCacheRef.current[options.forgetId];
+    if (!id) {
+      selectedIdRef.current = "";
+      activeOwnerRef.current = "";
+      setSelectedId("");
+      clearVisibleScan();
+      return;
+    }
+    selectedIdRef.current = id;
+    activeOwnerRef.current = id;
+    setSelectedId(id);
+    const entry = scanCacheRef.current[id];
+    if (entry?.scan?.scan_id) applyCachedScan(entry);
+    else clearVisibleScan();
+    void refreshLatest(id);
+  };
+  selectIndicatorRef.current = selectIndicator;
+
   const handleScan = async () => {
     const indicator = selected || indicators[0];
     if (!indicator?.id) {
@@ -900,6 +1070,8 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
     if (effectiveScanDate !== scanDate) {
       setScanDate(effectiveScanDate);
     }
+    activeOwnerRef.current = indicator.id;
+    selectedIdRef.current = indicator.id;
     setBusy(true);
     setResults([]);
     setTopPositiveRows([]);
@@ -917,19 +1089,22 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
         filters: pineFilters,
         sort: { field: sortField, direction: sortDir },
       });
-      setScan(started);
-      scanIdRef.current = started.scan_id || null;
-      if (!started.scan_id) {
+      if (selectedIdRef.current !== indicator.id) return;
+      const stamped = withIndicatorOwner(started, indicator.id);
+      setScan(stamped);
+      scanIdRef.current = stamped.scan_id || null;
+      if (!stamped.scan_id) {
         setBusy(false);
         notify({ title: "Failed to start scan", message: "Scan did not return an id.", type: "error" });
         return;
       }
-      if (started.status === "completed" || started.status === "failed" || started.status === "cancelled") {
-        await handleTerminalScan(started);
+      if (stamped.status === "completed" || stamped.status === "failed" || stamped.status === "cancelled") {
+        await handleTerminalScan(stamped);
         return;
       }
-      poll(started.scan_id);
+      poll(stamped.scan_id);
     } catch (err) {
+      if (selectedIdRef.current !== indicator.id) return;
       setBusy(false);
       notify({
         title: "Failed to start scan",
@@ -1068,7 +1243,7 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
     try {
       const copy = await duplicateIndicator(selected.id);
       setIndicators((prev) => uniqueIndicatorsByIdAndName(upsertIndicator(prev, copy)));
-      setSelectedId(copy.id);
+      selectIndicator(copy.id);
       notify({ title: "Indicator duplicated", type: "success" });
     } catch (err) {
       notify({ title: "Unable to duplicate indicator", message: err instanceof Error ? err.message : "", type: "error" });
@@ -1079,9 +1254,10 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
     if (!selected?.id) return;
     try {
       await archiveIndicator(selected.id);
-      const remaining = uniqueIndicatorsByIdAndName(indicators.filter((item) => item.id !== selected.id));
+      const archivedId = selected.id;
+      const remaining = uniqueIndicatorsByIdAndName(indicators.filter((item) => item.id !== archivedId));
       setIndicators(remaining);
-      setSelectedId(remaining[0]?.id || "");
+      selectIndicator(remaining[0]?.id || "", { forgetId: archivedId });
       notify({ title: "Indicator archived", type: "success" });
     } catch (err) {
       notify({ title: "Unable to archive indicator", message: err instanceof Error ? err.message : "", type: "error" });
@@ -1269,11 +1445,11 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
             <IndicatorCustomDropdown
               selected={selected}
               indicators={visibleIndicators}
-              onSelect={(id) => setSelectedId(id)}
+              onSelect={(id) => selectIndicator(id)}
             />
             <select
               value={selected?.id || selectedId}
-              onChange={(e) => setSelectedId(e.target.value)}
+              onChange={(e) => selectIndicator(e.target.value)}
               data-testid="select-saved-indicator"
               style={{ position: "absolute", opacity: 0, pointerEvents: "none", width: 0, height: 0 }}
               tabIndex={-1}

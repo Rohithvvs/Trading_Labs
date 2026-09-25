@@ -273,6 +273,20 @@ async def archive_indicator(indicator_id: uuid.UUID, user: User = Depends(requir
     return {"id": str(row.id), "is_archived": True}
 
 
+@router.get("/{indicator_id}/scans/latest")
+async def latest_indicator_scan(
+    indicator_id: uuid.UUID,
+    user: User = Depends(require_feature("advanced_scanner")),
+):
+    """Return this strategy's latest scan so the screener can restore it without a rescan."""
+    row = _owned(await persistence.get_definition(indicator_id), user)
+    run = await persistence.latest_scan_for_indicator(row.id, user_id=user.id)
+    if run is None:
+        raise HTTPException(status_code=404, detail={"message": "No scan for this indicator"})
+    run = await ensure_summary_analytics(run)
+    return scan_status_payload(run)
+
+
 @router.post("/{indicator_id}/scans")
 async def start_scan(
     indicator_id: uuid.UUID,

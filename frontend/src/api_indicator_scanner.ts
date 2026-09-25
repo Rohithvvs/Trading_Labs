@@ -288,6 +288,14 @@ export async function startIndicatorScan(
   return response.json();
 }
 
+/** Latest scan for one saved strategy. Null when that strategy has never been scanned. */
+export async function fetchLatestIndicatorScan(indicatorId: string): Promise<IndicatorScanStatus | null> {
+  const response = await fetchWithAuth(`/indicators/${encodeURIComponent(indicatorId)}/scans/latest`);
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error(await parseError(response, "Unable to load the latest indicator scan."));
+  return response.json();
+}
+
 export async function fetchIndicatorScan(scanId: string): Promise<IndicatorScanStatus> {
   const response = await fetchWithAuth(`/indicator-scans/${encodeURIComponent(scanId)}`);
   if (!response.ok) throw new Error(await parseError(response, "Unable to load scan status."));

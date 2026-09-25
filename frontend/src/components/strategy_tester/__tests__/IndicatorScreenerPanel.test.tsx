@@ -14,6 +14,7 @@ const archiveIndicator = vi.fn();
 const cancelIndicatorScan = vi.fn();
 const exportIndicatorScanCsv = vi.fn();
 const fetchIndicatorScanDiagnostics = vi.fn();
+const fetchLatestIndicatorScan = vi.fn();
 const startIndicatorBacktest = vi.fn();
 const fetchIndicatorBacktest = vi.fn();
 const fetchIndicatorBacktestResults = vi.fn();
@@ -40,6 +41,7 @@ vi.mock("../../../api_indicator_scanner", () => ({
   cancelIndicatorScan: (...args: unknown[]) => cancelIndicatorScan(...args),
   exportIndicatorScanCsv: (...args: unknown[]) => exportIndicatorScanCsv(...args),
   fetchIndicatorScanDiagnostics: (...args: unknown[]) => fetchIndicatorScanDiagnostics(...args),
+  fetchLatestIndicatorScan: (...args: unknown[]) => fetchLatestIndicatorScan(...args),
   startIndicatorBacktest: (...args: unknown[]) => startIndicatorBacktest(...args),
   fetchIndicatorBacktest: (...args: unknown[]) => fetchIndicatorBacktest(...args),
   fetchIndicatorBacktestResults: (...args: unknown[]) => fetchIndicatorBacktestResults(...args),
@@ -136,6 +138,7 @@ describe("IndicatorScreenerPanel", () => {
         ],
       },
     });
+    fetchLatestIndicatorScan.mockResolvedValue(null);
     fetchIndicatorScanDiagnostics.mockResolvedValue({
       total_symbols: 755,
       successful: 753,
@@ -283,6 +286,144 @@ describe("IndicatorScreenerPanel", () => {
     expect(screen.getAllByText("RSI 14 > 60").length).toBeGreaterThanOrEqual(1);
     expect(screen.queryByText("Close > SMA 50")).toBeNull();
     expect(screen.queryByText("RSI 14 > 55")).toBeNull();
+  });
+
+  it("shows each strategy's last scan when the selection changes", async () => {
+    const other = {
+      ...applied,
+      id: "ind-2",
+      name: "RSI Oversold [SCAN]",
+      parsed_definition: { outputs: [{ name: "Signal" }] },
+    };
+    fetchIndicators.mockResolvedValue([applied, other]);
+    renderPanel();
+    const select = (await screen.findByTestId("select-saved-indicator")) as HTMLSelectElement;
+    await waitFor(() => expect([...select.options].some((opt) => opt.value === "ind-2")).toBe(true));
+
+    fireEvent.click(screen.getByTestId("btn-scan-indicator"));
+    await waitFor(() => expect(screen.getByTestId("indicator-results-table").textContent).toContain("RELIANCE"));
+    expect(screen.getByTestId("card-run-info").textContent).toMatch(/IND-20260829-001/);
+
+    fireEvent.change(select, { target: { value: "ind-2" } });
+    await waitFor(() => expect(screen.getByTestId("card-run-info").textContent).toMatch(/RUN ID:\s*—/));
+    expect(screen.getByTestId("indicator-results-table").textContent).not.toContain("RELIANCE");
+    expect(screen.getByTestId("indicator-row-360ONE")).toBeTruthy();
+
+    startIndicatorScan.mockResolvedValue({
+      id: "run-2",
+      scan_id: "IND-B",
+      indicator_id: "ind-2",
+      indicator_name: other.name,
+      status: "queued",
+      universe: "nse-755",
+      universe_size: 755,
+      timeframe: "1D",
+      total_count: 755,
+      processed_count: 0,
+      progress_pct: 0,
+      matched_count: 0,
+      started_at: "2026-08-28T19:00:00.000Z",
+    });
+    fetchIndicatorScan.mockResolvedValue({
+      id: "run-2",
+      scan_id: "IND-B",
+      indicator_id: "ind-2",
+      indicator_name: other.name,
+      status: "completed",
+      stage: "completed",
+      universe: "nse-755",
+      universe_size: 755,
+      timeframe: "1D",
+      total_count: 755,
+      processed_count: 755,
+      progress_pct: 100,
+      matched_count: 1,
+      success_count: 755,
+      failed_count: 0,
+      skipped_count: 0,
+      as_of: "2026-08-28",
+      started_at: "2026-08-28T19:00:00.000Z",
+      completed_at: "2026-08-28T19:01:00.000Z",
+      summary: { positive_returns: 1, negative_returns: 0, top_positive: [], top_negative: [] },
+    });
+    fetchIndicatorScanResults.mockImplementation(async (scanId: string, params: { return_bucket?: string } = {}) => {
+      if (params.return_bucket) return { total: 0, page: 1, page_size: 5, results: [] };
+      const symbol = scanId === "IND-B" ? "TCS" : "RELIANCE";
+      return {
+        total: 1,
+        page: 1,
+        page_size: 50,
+        results: [{ symbol, display_name: symbol, status: "ok", matched: true, outputs: { Signal: 1 } }],
+      };
+    });
+
+    fireEvent.click(screen.getByTestId("btn-scan-indicator"));
+    await waitFor(() => expect(screen.getByTestId("indicator-results-table").textContent).toContain("TCS"));
+    expect(screen.getByTestId("card-run-info").textContent).toMatch(/IND-B/);
+    const scansAfterBoth = startIndicatorScan.mock.calls.length;
+
+    fireEvent.change(select, { target: { value: "ind-1" } });
+    await waitFor(() => expect(screen.getByTestId("indicator-results-table").textContent).toContain("RELIANCE"));
+    expect(screen.getByTestId("indicator-results-table").textContent).not.toContain("TCS");
+    expect(screen.getByTestId("card-run-info").textContent).toMatch(/IND-20260829-001/);
+
+    fireEvent.change(select, { target: { value: "ind-2" } });
+    await waitFor(() => expect(screen.getByTestId("indicator-results-table").textContent).toContain("TCS"));
+    expect(screen.getByTestId("indicator-results-table").textContent).not.toContain("RELIANCE");
+    expect(screen.getByTestId("card-run-info").textContent).toMatch(/IND-B/);
+    expect(startIndicatorScan).toHaveBeenCalledTimes(scansAfterBoth);
+  });
+
+  it("loads a strategy's previous scan from the server when this visit has no local copy", async () => {
+    const other = {
+      ...applied,
+      id: "ind-2",
+      name: "Momentum Pulse [SCAN]",
+      parsed_definition: { outputs: [{ name: "Signal" }] },
+    };
+    fetchIndicators.mockResolvedValue([applied, other]);
+    fetchLatestIndicatorScan.mockImplementation(async (id: string) => {
+      if (id !== "ind-2") return null;
+      return {
+        id: "run-saved",
+        scan_id: "IND-SAVED",
+        indicator_id: "ind-2",
+        indicator_name: other.name,
+        status: "completed",
+        stage: "completed",
+        universe: "nse-755",
+        universe_size: 755,
+        timeframe: "1D",
+        total_count: 755,
+        processed_count: 755,
+        progress_pct: 100,
+        matched_count: 2,
+        success_count: 755,
+        failed_count: 0,
+        skipped_count: 0,
+        as_of: "2026-08-28",
+        started_at: "2026-08-28T19:00:00.000Z",
+        completed_at: "2026-08-28T19:01:00.000Z",
+        summary: { positive_returns: 1, negative_returns: 0, top_positive: [], top_negative: [] },
+      };
+    });
+    fetchIndicatorScanResults.mockImplementation(async (scanId: string, params: { return_bucket?: string } = {}) => {
+      if (params.return_bucket) return { total: 0, page: 1, page_size: 5, results: [] };
+      if (scanId !== "IND-SAVED") return { total: 0, page: 1, page_size: 50, results: [] };
+      return {
+        total: 1,
+        page: 1,
+        page_size: 50,
+        results: [{ symbol: "INFY", display_name: "Infosys", status: "ok", matched: true, outputs: { Signal: 1 } }],
+      };
+    });
+    renderPanel();
+    const select = (await screen.findByTestId("select-saved-indicator")) as HTMLSelectElement;
+    await waitFor(() => expect([...select.options].some((opt) => opt.value === "ind-2")).toBe(true));
+    fireEvent.change(select, { target: { value: "ind-2" } });
+    await waitFor(() => expect(screen.getByTestId("indicator-results-table").textContent).toContain("INFY"));
+    expect(screen.getByTestId("card-run-info").textContent).toMatch(/IND-SAVED/);
+    expect(startIndicatorScan).not.toHaveBeenCalled();
   });
 
   it("passes the selected indicator to Edit", async () => {

@@ -2391,18 +2391,15 @@ const PositionsTable = memo(function PositionsTable({
         <thead>
           <tr>
             <th>Symbol</th>
-            <th>Signal Source</th>
             <th>Signal</th>
             <th>Qty</th>
             <th>Avg entry <InfoTooltip content={TOOLTIPS.PAPER_TRADING.AVG_ENTRY} /></th>
-            <th>Break-Even</th>
             <th>Current <InfoTooltip content={TOOLTIPS.PAPER_TRADING.CURRENT_PRICE} /></th>
-            <th>Unrealized <InfoTooltip content={TOOLTIPS.PAPER_TRADING.UNREALIZED_COL} /></th>
-            <th>% P&L / Return <InfoTooltip content={TOOLTIPS.PAPER_TRADING.PERCENT_PNL} /></th>
+            <th>Break-Even</th>
             <th>Gross P&amp;L</th>
+            <th>Taxes &amp; Charges</th>
             <th>Net Unrealized <InfoTooltip content={TOOLTIPS.PAPER_TRADING.UNREALIZED_COL} /></th>
             <th>% Net Return <InfoTooltip content={TOOLTIPS.PAPER_TRADING.PERCENT_PNL} /></th>
-            <th>Taxes &amp; Charges</th>
             <th>Stop <InfoTooltip content={TOOLTIPS.PAPER_TRADING.STOP_COL} /></th>
             <th>Target <InfoTooltip content={TOOLTIPS.PAPER_TRADING.TARGET_COL} /></th>
             <th>R:R <InfoTooltip content={TOOLTIPS.PAPER_TRADING.RR_COL} /></th>
@@ -2412,30 +2409,6 @@ const PositionsTable = memo(function PositionsTable({
           </tr>
         </thead>
         <tbody>
-          {positions.map((position) => (
-            <tr key={position.id} className={selectedSymbol === position.symbol ? "is-selected" : ""} data-testid="position-row">
-              <td><button type="button" className="text-button" onClick={() => onSelect(position.symbol)}>{position.symbol}</button></td>
-              <td>
-                {position.source_signal
-                  ? <span className={`signal-badge signal-${String(position.source_signal).toLowerCase()}`}>{position.source_signal}</span>
-                  : "--"}
-              </td>
-              <td>{position.qty}</td>
-              <td className="number-cell">{position.avg_entry_price.toFixed(2)}</td>
-              <td className="number-cell">{position.current_price?.toFixed(2) ?? "--"}</td>
-              <td className={`number-cell ${position.unrealized_pnl >= 0 ? "text-positive" : "text-negative"}`}>{formatCurrency(position.unrealized_pnl)}</td>
-              <td className={`number-cell ${position.unrealized_pnl_percent >= 0 ? "text-positive" : "text-negative"}`}>{position.unrealized_pnl_percent.toFixed(2)}%</td>
-              <td className="number-cell">{position.stop_loss?.toFixed(2) ?? "--"}</td>
-              <td className="number-cell">{position.target?.toFixed(2) ?? "--"}</td>
-              <td className="number-cell">{position.risk_reward_ratio?.toFixed(2) ?? "--"}</td>
-              <td>{formatLifecycle(position.lifecycle_state, position.paused_reason)}</td>
-              <td>{position.created_at ? new Date(position.created_at).toLocaleString() : "--"}</td>
-              <td style={{ display: 'flex', gap: 8 }}>
-                <button type="button" className="button ghost-button small-button" onClick={() => onExit(position)}>Exit</button>
-                <button type="button" className="button ghost-button small-button" onClick={() => onClose(position.id)}>Square Off</button>
-              </td>
-            </tr>
-          ))}
           {positions.map((position) => {
             const netPnl = position.net_unrealized_pnl ?? position.unrealized_pnl;
             const grossPnl = position.gross_unrealized_pnl ?? (position.current_price ? (position.current_price - position.avg_entry_price) * position.qty : position.unrealized_pnl);
@@ -2449,14 +2422,14 @@ const PositionsTable = memo(function PositionsTable({
                     ? <span className={`signal-badge signal-${String(position.source_signal).toLowerCase()}`}>{position.source_signal}</span>
                     : "--"}
                 </td>
-                <td>{position.qty}</td>
+                <td className="number-cell">{position.qty}</td>
                 <td className="number-cell">{position.avg_entry_price.toFixed(2)}</td>
-                <td className="number-cell" style={{ color: '#3b82f6', fontWeight: 600 }}>{position.break_even_price?.toFixed(2) ?? "--"}</td>
                 <td className="number-cell">{position.current_price?.toFixed(2) ?? "--"}</td>
+                <td className="number-cell" style={{ color: '#3b82f6', fontWeight: 600 }}>{position.break_even_price?.toFixed(2) ?? "--"}</td>
                 <td className={`number-cell ${grossPnl >= 0 ? "text-positive" : "text-negative"}`}>{formatCurrency(grossPnl)}</td>
+                <td className="number-cell" style={{ color: '#f59e0b' }}>₹{totalCharges.toFixed(2)}</td>
                 <td className={`number-cell ${netPnl >= 0 ? "text-positive" : "text-negative"}`} style={{ fontWeight: 600 }}>{formatCurrency(netPnl)}</td>
                 <td className={`number-cell ${netReturnPct >= 0 ? "text-positive" : "text-negative"}`}>{netReturnPct.toFixed(2)}%</td>
-                <td className="number-cell" style={{ color: '#f59e0b' }}>₹{totalCharges.toFixed(2)}</td>
                 <td className="number-cell">{position.stop_loss?.toFixed(2) ?? "--"}</td>
                 <td className="number-cell">{position.target?.toFixed(2) ?? "--"}</td>
                 <td className="number-cell">{position.risk_reward_ratio?.toFixed(2) ?? "--"}</td>
@@ -2697,8 +2670,6 @@ const HistoryTable = memo(function HistoryTable({ trades, selectedTrade, setSele
               <th>Qty</th>
               <th>Entry</th>
               <th>Exit</th>
-              <th>P&amp;L</th>
-              <th>P&amp;L %</th>
               <th>Break-Even</th>
               <th>Gross P&amp;L</th>
               <th>Charges</th>
@@ -2714,38 +2685,22 @@ const HistoryTable = memo(function HistoryTable({ trades, selectedTrade, setSele
             </tr>
           </thead>
           <tbody>
-            {trades.map((trade) => (
-              <tr key={trade.id} data-testid="history-row" onClick={() => setSelectedTrade(trade)} style={{ cursor: 'pointer' }}>
-                <td>{trade.symbol}</td>
-                <td>{trade.qty}</td>
-                <td className="number-cell">{trade.entry_price.toFixed(2)}</td>
-                <td className="number-cell">{trade.exit_price.toFixed(2)}</td>
-                <td className={`number-cell ${trade.pnl >= 0 ? "text-positive" : "text-negative"}`}>{formatCurrency(trade.pnl)}</td>
-                <td className={`number-cell ${trade.pnl >= 0 ? "text-positive" : "text-negative"}`}>{trade.pnl_percent.toFixed(2)}%</td>
-                <td>{trade.source_signal ? <span className={`signal-badge signal-${trade.source_signal.toLowerCase()}`}>{trade.source_signal}</span> : "--"}</td>
-                <td data-testid="history-strategy">{extractStrategyFromNotes(trade.notes) || "--"}</td>
-                <td className="number-cell">{trade.source_score?.toFixed(1) ?? "--"}</td>
-                <td>{new Date(trade.opened_at).toLocaleString()}</td>
-                <td>{new Date(trade.closed_at).toLocaleString()}</td>
-                <td>{trade.exit_reason ?? "MANUAL"}</td>
-                <td>{trade.holding_period_hours.toFixed(1)}h</td>
-              </tr>
-            ))}
             {trades.map((trade) => {
               const netPnl = trade.net_pnl ?? trade.pnl;
               const grossPnl = trade.gross_pnl ?? trade.pnl;
               const totalCharges = trade.total_charges ?? 0;
+              const netPnlPercent = trade.entry_price && trade.qty ? (netPnl / (trade.entry_price * trade.qty)) * 100 : trade.pnl_percent;
               return (
                 <tr key={trade.id} data-testid="history-row" onClick={() => setSelectedTrade(trade)} style={{ cursor: 'pointer' }}>
                   <td>{trade.symbol}</td>
-                  <td>{trade.qty}</td>
+                  <td className="number-cell">{trade.qty}</td>
                   <td className="number-cell">{trade.entry_price.toFixed(2)}</td>
                   <td className="number-cell">{trade.exit_price.toFixed(2)}</td>
                   <td className="number-cell" style={{ color: '#3b82f6' }}>{trade.break_even_price?.toFixed(2) ?? "--"}</td>
                   <td className={`number-cell ${grossPnl >= 0 ? "text-positive" : "text-negative"}`}>{formatCurrency(grossPnl)}</td>
                   <td className="number-cell" style={{ color: '#f59e0b' }}>₹{totalCharges.toFixed(2)}</td>
                   <td className={`number-cell ${netPnl >= 0 ? "text-positive" : "text-negative"}`} style={{ fontWeight: 600 }}>{formatCurrency(netPnl)}</td>
-                  <td className={`number-cell ${netPnl >= 0 ? "text-positive" : "text-negative"}`}>{trade.pnl_percent.toFixed(2)}%</td>
+                  <td className={`number-cell ${netPnl >= 0 ? "text-positive" : "text-negative"}`}>{netPnlPercent.toFixed(2)}%</td>
                   <td>{trade.source_signal ? <span className={`signal-badge signal-${trade.source_signal.toLowerCase()}`}>{trade.source_signal}</span> : "--"}</td>
                   <td data-testid="history-strategy">{extractStrategyFromNotes(trade.notes) || "--"}</td>
                   <td className="number-cell">{trade.source_score?.toFixed(1) ?? "--"}</td>
