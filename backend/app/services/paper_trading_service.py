@@ -70,7 +70,13 @@ from ..observability.metrics import DUPLICATE_EXECUTIONS, ORDER_EXECUTIONS
 # In-memory PriceSnapshot cache with TTL (avoids redundant FYERS calls across requests within short window)
 _price_snapshot_cache: dict[str, tuple[PriceSnapshot, float]] = {}
 _price_snapshot_cache_lock = threading.Lock()
-_PRICE_CACHE_TTL_SEC = 5.0  # fresh LTP for execution / quotes
+_PRICE_CACHE_TTL_SEC = 5.0  # execution / chart snapshot reuse
+# Paper-desk live print. Shorter than the 1s UI poll so each tick reaches FYERS,
+# while bursts inside the window share one broker call. Independent of the 15s
+# PG ltp_cache used by scans and the 5s chart snapshot.
+_QUOTE_LIVE_TTL_SEC = 0.75
+# symbol -> (price, source, fetched_at, monotonic_ts)
+_live_quote_cache: dict[str, tuple[float, str, datetime, float]] = {}
 # Soft-stale reuse on confirm when broker is slow (still better than multi-second hang)
 _PRICE_CACHE_STALE_SEC = 60.0
 # Hard budget for live LTP on place/confirm — never wait the full FYERS/yfinance path
@@ -747,44 +753,41 @@ class PaperTradingService:
 
         ltp: float | None = None
         source = "NO_DATA"
+        fresh_broker = False
 
-        # 0) Fresh in-process snapshot (same process, ~3s TTL) — skip network entirely.
+        # 0) Desk quote memo (~1s). Do not serve the 5s chart snapshot or the 15s
+        # PG ltp_cache here — those kept the paper-desk print 10–15s behind.
         try:
             import time as _mono
 
             with _price_snapshot_cache_lock:
-                cached_entry = _price_snapshot_cache.get(normalized_symbol)
-            if cached_entry:
-                snap, cache_ts = cached_entry
+                live = _live_quote_cache.get(normalized_symbol)
+            if live:
+                price, live_source, fetched_at, cache_ts = live
                 age = _mono.monotonic() - cache_ts
-                if (
-                    snap
-                    and snap.current_price
-                    and float(snap.current_price) > 0
-                    and age < _PRICE_CACHE_TTL_SEC
-                ):
+                if price and float(price) > 0 and age < _QUOTE_LIVE_TTL_SEC:
                     snap_source = (
-                        snap.source
-                        if snap.source in {"FYERS_QUOTE", "CANDLE_FALLBACK", "NO_DATA", "TEST_MOCK"}
+                        live_source
+                        if live_source in {"FYERS_QUOTE", "CANDLE_FALLBACK", "NO_DATA", "TEST_MOCK"}
                         else "CANDLE_FALLBACK"
                     )
                     latency_ms = int((_time.perf_counter() - started) * 1000)
                     self.logger.info(
                         "QUOTE_MEMORY_CACHE_HIT | symbol=%s | ltp=%s | source=%s | age_ms=%s | latency_ms=%s",
                         normalized_symbol,
-                        snap.current_price,
+                        price,
                         snap_source,
                         int(age * 1000),
                         latency_ms,
                     )
                     return PaperQuoteResponse(
                         symbol=normalized_symbol,
-                        current_price=round(float(snap.current_price), 2),
+                        current_price=round(float(price), 2),
                         source=snap_source,  # type: ignore[arg-type]
                         updated_at=now,
                         reason=None if snap_source == "FYERS_QUOTE" else "Using cached price",
                         is_stale=snap_source != "FYERS_QUOTE",
-                        last_successful_at=snap.fetched_at,
+                        last_successful_at=fetched_at,
                     )
         except Exception:
             pass
@@ -796,13 +799,18 @@ class PaperTradingService:
             from ..db.session import main_event_loop
 
             future = asyncio.run_coroutine_threadsafe(
-                self.fyers_service.fetch_ltp(normalized_symbol),
+                self.fyers_service.fetch_ltp(
+                    normalized_symbol,
+                    allow_yfinance=False,
+                    pg_ttl_sec=_QUOTE_LIVE_TTL_SEC,
+                ),
                 main_event_loop,
             )
-            # Bound tightly: FYERS path already has PG LTP cache; long waits block Order UI.
+            # One fresh broker print. PG is only a 1s coalescing layer on this path.
             ltp = future.result(timeout=3)
             if ltp is not None and float(ltp) > 0:
                 source = "FYERS_QUOTE"
+                fresh_broker = True
             else:
                 ltp = None
         except Exception as e:
@@ -825,11 +833,36 @@ class PaperTradingService:
             )
             ltp = None
 
-        # 2) Stale in-process snapshot before expensive candle OHLCV
+        # 2) Last live print, then chart snapshot, before expensive candle OHLCV
         if ltp is None:
             try:
-                import time as _mono
+                with _price_snapshot_cache_lock:
+                    live = _live_quote_cache.get(normalized_symbol)
+                if live and live[0] and float(live[0]) > 0:
+                    ltp = float(live[0])
+                    source = (
+                        live[1]
+                        if live[1] in {"FYERS_QUOTE", "CANDLE_FALLBACK", "NO_DATA", "TEST_MOCK"}
+                        else "CANDLE_FALLBACK"
+                    )
+                    reason = reason or (
+                        "Quote Provider Timeout"
+                        if exception_name in {"TimeoutError", "CancelledError", "FuturesTimeoutError"}
+                        else "Using last successful price"
+                    )
+                    is_stale = True
+                    last_successful_at = live[2]
+                    self.logger.info(
+                        "QUOTE_LAST_KNOWN_PRICE | symbol=%s | ltp=%s | age_source=%s",
+                        normalized_symbol,
+                        ltp,
+                        source,
+                    )
+            except Exception:
+                pass
 
+        if ltp is None:
+            try:
                 with _price_snapshot_cache_lock:
                     cached_entry = _price_snapshot_cache.get(normalized_symbol)
                 if cached_entry:
@@ -920,8 +953,16 @@ class PaperTradingService:
                 reason,
             )
         else:
-            reason = None
-            is_stale = False
+            if fresh_broker and source == "FYERS_QUOTE":
+                reason = None
+                is_stale = False
+            else:
+                is_stale = True
+                reason = reason or (
+                    "Using last successful price"
+                    if source == "FYERS_QUOTE"
+                    else "Live quote unavailable; using fallback price"
+                )
             self.logger.info(
                 "PAPER_PRICE_UPDATE | symbol=%s | ltp=%s | source=%s",
                 normalized_symbol,
@@ -948,25 +989,33 @@ class PaperTradingService:
             reason,
         )
 
-        # Seed snapshot cache on successful live/candle prices for future failover
-        if ltp and float(ltp) > 0 and source != "NO_DATA":
+        # Remember a real broker print for the short desk TTL. A candle fallback
+        # is cached the same way so an outage does not refetch OHLCV every poll.
+        # A last-known FYERS print is not re-stamped — that would hide its age.
+        # Chart snapshots keep their candles and TTL; only the print moves.
+        cache_print = bool(ltp and float(ltp) > 0 and source != "NO_DATA" and (fresh_broker or source != "FYERS_QUOTE"))
+        if cache_print:
             try:
                 import time as _mono
 
-                snap = PriceSnapshot(
-                    symbol=normalized_symbol,
-                    current_price=float(ltp),
-                    candles=[],
-                    ema_20=None,
-                    supertrend=None,
-                    source=source,
-                    fetched_at=last_successful_at or now,
-                )
                 with _price_snapshot_cache_lock:
-                    # Only overwrite with fresher live data; keep last known if degraded re-hit
+                    if len(_live_quote_cache) > 64:
+                        cutoff = _mono.monotonic() - 120.0
+                        for stale_key in [
+                            key for key, entry in _live_quote_cache.items() if entry[3] < cutoff
+                        ]:
+                            _live_quote_cache.pop(stale_key, None)
+                    _live_quote_cache[normalized_symbol] = (
+                        float(ltp),
+                        source,
+                        now,
+                        _mono.monotonic(),
+                    )
                     existing = _price_snapshot_cache.get(normalized_symbol)
-                    if not existing or source == "FYERS_QUOTE" or not existing[0].current_price:
-                        _price_snapshot_cache[normalized_symbol] = (snap, _mono.monotonic())
+                    if fresh_broker and existing and existing[0].current_price:
+                        existing[0].current_price = float(ltp)
+                        existing[0].source = source
+                        existing[0].fetched_at = now
             except Exception:
                 pass
 

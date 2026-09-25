@@ -1,5 +1,6 @@
 import pandas as pd
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 import time
 import random
 import asyncio
@@ -17,6 +18,12 @@ from ..models.market_data import HistoricalCandle
 from ..utils import get_logger, safe_int
 
 logger = get_logger("app.market_data")
+
+_IST = ZoneInfo("Asia/Kolkata")
+# Rewrite the boundary bar when the missing window is short. A mid-session
+# scan stores a forming daily candle; the next day's first scan must replace
+# that print with the completed bar instead of starting strictly after it.
+_REWRITE_BOUNDARY_DAYS = 10
 
 # Bound concurrent writers so we never thrash the asyncpg pool (pool_size=20).
 # Each upsert opens one session; keep well below pool to leave headroom for
@@ -432,9 +439,9 @@ class MarketDataService:
         self,
         symbols: list[str],
         timeframe: str,
-    ) -> dict[str, tuple[int, datetime | None, str | None]]:
+    ) -> dict[str, tuple[int, datetime | None, str | None, datetime | None]]:
         """
-        Return {universe_symbol: (row_count, latest_timestamp, stored_db_symbol)} for a universe.
+        Return {universe_symbol: (row_count, latest_timestamp, stored_db_symbol, updated_at)} for a universe.
 
         Resolves symbol-format drift (RELIANCE vs RELIANCE-EQ vs NSE:RELIANCE-EQ) so a warm
         cache is not treated as a miss and forced through FYERS.  The 3rd element is the
@@ -443,8 +450,8 @@ class MarketDataService:
         if not symbols:
             return {}
 
-        meta: dict[str, tuple[int, datetime | None, str | None]] = {
-            symbol: (0, None, None) for symbol in symbols
+        meta: dict[str, tuple[int, datetime | None, str | None, datetime | None]] = {
+            symbol: (0, None, None, None) for symbol in symbols
         }
         # Map every DB variant -> original universe symbol(s)
         variant_to_universe: dict[str, list[str]] = {}
@@ -457,7 +464,7 @@ class MarketDataService:
         unique_variants = list(dict.fromkeys(all_variants))
 
         chunk_size = 300
-        db_meta: dict[str, tuple[int, datetime | None]] = {}
+        db_meta: dict[str, tuple[int, datetime | None, datetime | None]] = {}
         db_symbol_names: dict[str, str] = {}
         for i in range(0, len(unique_variants), chunk_size):
             chunk = unique_variants[i : i + chunk_size]
@@ -467,6 +474,7 @@ class MarketDataService:
                         HistoricalCandle.symbol,
                         func.count(HistoricalCandle.timestamp),
                         func.max(HistoricalCandle.timestamp),
+                        func.max(HistoricalCandle.updated_at),
                     )
                     .where(
                         HistoricalCandle.symbol.in_(chunk),
@@ -475,23 +483,23 @@ class MarketDataService:
                     .group_by(HistoricalCandle.symbol)
                 )
                 rows = (await db.execute(stmt)).all()
-            for symbol, count, latest in rows:
-                db_meta[symbol] = (int(count or 0), latest)
+            for symbol, count, latest, updated_at in rows:
+                db_meta[symbol] = (int(count or 0), latest, updated_at)
                 db_symbol_names[symbol] = symbol
 
         # Prefer the variant with the richest history for each universe symbol
-        for db_symbol, (count, latest) in db_meta.items():
+        for db_symbol, (count, latest, updated_at) in db_meta.items():
             for universe_symbol in variant_to_universe.get(db_symbol, []):
-                prev_count, _, _ = meta[universe_symbol]
+                prev_count = meta[universe_symbol][0]
                 if count > prev_count:
-                    meta[universe_symbol] = (count, latest, db_symbol)
+                    meta[universe_symbol] = (count, latest, db_symbol, updated_at)
         return meta
 
     async def resolve_stored_symbol_map(
         self,
         symbols: list[str],
         timeframe: str,
-        meta_result: dict[str, tuple[int, datetime | None, str | None]] | None = None,
+        meta_result: dict[str, tuple] | None = None,
     ) -> dict[str, str]:
         """
         Map universe symbol -> best matching stored HistoricalCandle.symbol (if any).
@@ -502,9 +510,9 @@ class MarketDataService:
             return {}
         if meta_result is not None:
             return {
-                sym: db_sym
-                for sym, (_, _, db_sym) in meta_result.items()
-                if db_sym is not None
+                sym: row[2]
+                for sym, row in meta_result.items()
+                if len(row) > 2 and row[2] is not None
             }
         variant_to_universe: dict[str, list[str]] = {}
         unique_variants: list[str] = []
@@ -748,3 +756,244 @@ class MarketDataService:
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         staleness_minutes = (now - latest_no_tz).total_seconds() / 60.0
         return staleness_minutes <= max_staleness_minutes
+
+
+def candle_session_date(ts: datetime | date | None) -> date | None:
+    """NSE session date for a stored daily candle. Naive timestamps are UTC."""
+    if ts is None:
+        return None
+    try:
+        if pd.isna(ts):
+            return None
+    except TypeError:
+        pass
+    if isinstance(ts, datetime):
+        pass
+    elif isinstance(ts, date):
+        return ts
+    elif hasattr(ts, "to_pydatetime"):
+        ts = ts.to_pydatetime()
+    else:
+        return None
+    if not isinstance(ts, datetime):
+        return None
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return ts.astimezone(_IST).date()
+
+
+def required_scanner_session(now: datetime | None = None) -> date:
+    """Latest daily session Run Scanner must hold before it can skip Fyers.
+
+    After the NSE cash open, that session is today so the scan sees the
+    forming (or just-closed) bar. Before the open, and on non-trading days,
+    it is the last completed session.
+    """
+    from .trading_hours_service import OPEN_TIME, TradingHoursService, trading_hours
+    from .market_data_ingestion.calendar_utils import expected_last_completed_session
+
+    th = trading_hours if trading_hours is not None else TradingHoursService()
+    ist = th._to_ist(now)
+    if th.is_trading_day(ist) and ist.time() >= OPEN_TIME:
+        return ist.date()
+    return expected_last_completed_session(ist)
+
+
+def _ist_calendar_day(ts: datetime | None) -> date | None:
+    if ts is None:
+        return None
+    return candle_session_date(ts)
+
+
+def cache_covers_required_session(
+    count: int,
+    latest: datetime | None,
+    required_history: int,
+    now: datetime | None = None,
+    *,
+    required_session: date | None = None,
+) -> bool:
+    """True when stored daily history already reaches the session the scan needs."""
+    if count < required_history or latest is None:
+        return False
+    session = candle_session_date(latest)
+    if session is None:
+        return False
+    target = required_session or required_scanner_session(now)
+    return session >= target
+
+
+def symbol_needs_daily_fyers_fetch(
+    count: int,
+    latest: datetime | None,
+    required_history: int,
+    *,
+    updated_at: datetime | None = None,
+    now: datetime | None = None,
+    required_session: date | None = None,
+) -> bool:
+    """True when this Run Scanner click must pull daily bars from Fyers.
+
+    The first scan of an IST calendar day refreshes every name and stores the
+    result. Later scans that day reuse the database once the required session
+    is present and this symbol was written today.
+    """
+    from .trading_hours_service import TradingHoursService, trading_hours
+
+    if not cache_covers_required_session(
+        count,
+        latest,
+        required_history,
+        now,
+        required_session=required_session,
+    ):
+        return True
+    th = trading_hours if trading_hours is not None else TradingHoursService()
+    today = th._to_ist(now).date()
+    written_on = _ist_calendar_day(updated_at)
+    return written_on is None or written_on < today
+
+
+def incremental_history_window(
+    last_session: date | None,
+    *,
+    today: date,
+    target: date,
+    refresh_latest: bool,
+) -> tuple[date, date, str] | None:
+    """Inclusive Fyers history window, or None when the cache can be reused.
+
+    A short gap includes the last stored session so a forming bar saved earlier
+    is replaced by the completed print. Long gaps stay incremental.
+    """
+    if last_session is None:
+        start = today - timedelta(days=364)
+        return start, today, "full_backfill"
+    if last_session >= target and not refresh_latest:
+        return None
+    gap_days = (max(target, today) - last_session).days
+    if refresh_latest or gap_days <= _REWRITE_BOUNDARY_DAYS:
+        return last_session, today, "daily_refresh" if refresh_latest else "incremental"
+    return last_session + timedelta(days=1), today, "incremental"
+
+
+def session_bar_is_final(session: date, now: datetime | None = None) -> bool:
+    """False for today's forming cash bar. Completed sessions are safe to store as EOD."""
+    from .trading_hours_service import CLOSE_TIME, TradingHoursService, trading_hours
+
+    th = trading_hours if trading_hours is not None else TradingHoursService()
+    ist = th._to_ist(now)
+    if session < ist.date():
+        return True
+    if session > ist.date():
+        return False
+    if not th.is_trading_day(ist):
+        return True
+    return ist.time() >= CLOSE_TIME
+
+
+def strategy_rows_from_scan_frames(
+    pending: list[tuple[str, str, pd.DataFrame]],
+    *,
+    now: datetime | None = None,
+) -> list[dict]:
+    """Map scanner OHLCV frames onto ``daily_ohlcv`` rows.
+
+    Today's forming bar stays in the candle cache the scanner scores. It is
+    not written into the EOD store until the cash session has closed.
+    """
+    from ..utils import safe_int
+    from ..utils.symbol import strategy_daily_symbol
+
+    deduped: dict[tuple[date, str], dict] = {}
+    for symbol, timeframe, frame in pending:
+        if str(timeframe).upper() not in {"1D", "D", "1d"}:
+            continue
+        if frame is None or getattr(frame, "empty", True):
+            continue
+        store_symbol = strategy_daily_symbol(symbol)
+        if not store_symbol:
+            continue
+        for ts, row in frame.iterrows():
+            session = candle_session_date(ts)
+            if session is None or not session_bar_is_final(session, now):
+                continue
+            deduped[(session, store_symbol)] = {
+                "trade_date": session,
+                "symbol": store_symbol,
+                "open": float(row["open"]),
+                "high": float(row["high"]),
+                "low": float(row["low"]),
+                "close": float(row["close"]),
+                "volume": safe_int(row.get("volume"), symbol=store_symbol, field="volume") or 0,
+                "source": "FYERS",
+            }
+    return [deduped[key] for key in sorted(deduped)]
+
+
+async def persist_fyers_scan_bars(
+    pending: list[tuple[str, str, pd.DataFrame]],
+    *,
+    refresh_index: bool = False,
+    now: datetime | None = None,
+) -> dict:
+    """Store Fyers bars fetched for Run Scanner into ``daily_ohlcv`` and ``index_ohlcv``."""
+    rows = strategy_rows_from_scan_frames(pending, now=now)
+    saved = {
+        "daily_upserted": 0,
+        "daily_rejected": 0,
+        "index_upserted": 0,
+        "index_fetched": 0,
+    }
+    if rows:
+        from .market_data_ingestion.repository import upsert_daily_bars
+
+        chunk = 400
+        for i in range(0, len(rows), chunk):
+            accepted, rejected = await upsert_daily_bars(rows[i : i + chunk])
+            saved["daily_upserted"] += int(accepted or 0)
+            saved["daily_rejected"] += int(rejected or 0)
+        logger.info(
+            "SCANNER_DAILY_OHLCV_STORED | rows=%s | upserted=%s | rejected=%s",
+            len(rows),
+            saved["daily_upserted"],
+            saved["daily_rejected"],
+        )
+
+    if refresh_index or rows:
+        try:
+            from .market_data_ingestion.providers.fyers_eod import FyersEodProvider
+            from .market_data_ingestion.repository import upsert_index_bars
+            from .trading_hours_service import TradingHoursService, trading_hours
+
+            th = trading_hours if trading_hours is not None else TradingHoursService()
+            today = th._to_ist(now).date()
+            if rows:
+                start = min(r["trade_date"] for r in rows)
+                end = max(r["trade_date"] for r in rows)
+            else:
+                start = end = required_scanner_session(now)
+            if end > today:
+                end = today
+            if start > end:
+                start = end
+            index_rows = await FyersEodProvider().fetch_index_range(start, end)
+            saved["index_fetched"] = len(index_rows)
+            final_index = [
+                row
+                for row in index_rows
+                if isinstance(row.get("trade_date"), date)
+                and session_bar_is_final(row["trade_date"], now)
+            ]
+            if final_index:
+                saved["index_upserted"] = int(await upsert_index_bars(final_index) or 0)
+            logger.info(
+                "SCANNER_INDEX_OHLCV_STORED | fetched=%s | upserted=%s | from=%s | to=%s",
+                saved["index_fetched"],
+                saved["index_upserted"],
+                start.isoformat(),
+                end.isoformat(),
+            )
+        except Exception as exc:
+            logger.warning("SCANNER_INDEX_OHLCV_FAILED | err=%s", type(exc).__name__)
+    return saved

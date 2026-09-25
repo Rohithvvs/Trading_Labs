@@ -79,6 +79,20 @@ def ohlcv_symbol_variants(symbol: str) -> list[str]:
     return out
 
 
+def strategy_daily_symbol(symbol: str) -> str:
+    """Identity used by ``daily_ohlcv``: ``INFY-EQ``, not ``INFY`` or ``NSE:INFY-EQ``."""
+    raw = (symbol or "").strip().upper()
+    if not raw:
+        return ""
+    if ":" in raw:
+        raw = raw.split(":", 1)[1]
+    if raw.endswith(_INDEX_SUFFIX):
+        return raw
+    if any(raw.endswith(suf) for suf in _EQUITY_SERIES_SUFFIXES):
+        return raw
+    return f"{raw}-EQ"
+
+
 def preferred_ohlcv_store_symbol(symbols: list[str]) -> str | None:
     """Pick the daily_ohlcv identity when several alias forms are present."""
     if not symbols:

@@ -22,7 +22,7 @@ from ....config.settings import settings
 logger = logging.getLogger("app.strategies.w52.session")
 
 _QUOTE_CHUNK = 50
-_HISTORY_CONCURRENCY = 10
+_HISTORY_CONCURRENCY = 15
 
 
 def _num(*values: Any) -> float | None:

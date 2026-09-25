@@ -388,6 +388,8 @@ export function PaperTradingPage({
   const quoteInFlightRef = useRef(false);
   const quoteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const prevQuoteSymbolRef = useRef<string | null>(null);
+  /** Latest desk print. The 10s dashboard refresh must not overwrite a newer tick. */
+  const liveQuoteRef = useRef<{ symbol: string; price: number; at: number } | null>(null);
   const [accountSummary, setAccountSummary] = useState<any | null>(
     () => getCached(CACHE_KEYS.paperAccount),
   );
@@ -469,12 +471,17 @@ export function PaperTradingPage({
             fetchPaperTrades().catch(() => null),
           ]);
           if (dash) {
-            setDashboard({
-              ...dash,
-              positions: positions ?? dash.positions,
-              open_orders: pending ?? dash.open_orders,
-              trades: trades ?? dash.trades,
-            });
+            setDashboard(
+              applyDashboardKeepingLiveQuote(
+                {
+                  ...dash,
+                  positions: positions ?? dash.positions,
+                  open_orders: pending ?? dash.open_orders,
+                  trades: trades ?? dash.trades,
+                },
+                liveQuoteRef.current,
+              ),
+            );
           } else if (positions || pending || trades) {
             setDashboard((current) =>
               current
@@ -596,7 +603,7 @@ export function PaperTradingPage({
             fetchPaperTradingEngineStatus().catch(() => null),
           ]);
           if (!mounted) return;
-          if (dash) setDashboard(dash);
+          if (dash) setDashboard(applyDashboardKeepingLiveQuote(dash, liveQuoteRef.current));
           if (summary) setAccountSummary(summary);
           if (engStatus) setEngineStatus(engStatus);
           if (engHealth) {
@@ -648,6 +655,7 @@ export function PaperTradingPage({
       // Symbol switch: drop prior LTP so we never show the wrong instrument's price.
       setLastSuccessfulPrice(null);
       setLastQuoteAt(null);
+      liveQuoteRef.current = null;
       prevQuoteSymbolRef.current = selectedSymbol;
     }
     setQuoteFeedStatus((prev) => (prev === "live" || prev === "degraded" ? prev : "connecting"));
@@ -655,7 +663,7 @@ export function PaperTradingPage({
 
     const BACKOFF_MS = [1000, 2000, 5000, 10000];
     const MAX_RETRIES = BACKOFF_MS.length;
-    const LIVE_INTERVAL_MS = 2000;
+    const LIVE_INTERVAL_MS = 1000;
 
     const scheduleNext = (delayMs: number) => {
       if (cancelled) return;
@@ -789,7 +797,7 @@ export function PaperTradingPage({
     try {
       invalidatePaperCaches();
       const response = await fetchPaperTradingDashboard(symbol ?? selectedSymbol, { force: true });
-      setDashboard(response);
+      setDashboard(applyDashboardKeepingLiveQuote(response, liveQuoteRef.current));
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Failed to load paper trading workspace.");
     } finally {
@@ -927,14 +935,16 @@ export function PaperTradingPage({
         );
       }
 
-      const quote = await fetchPaperQuote(symbol);
+      const quote = await fetchPaperQuote(symbol, { force: true });
       const price = Number(quote.current_price);
       const hasPrice = Number.isFinite(price) && price > 0;
 
       if (hasPrice) {
+        const at = Date.now();
+        liveQuoteRef.current = { symbol: quote.symbol, price, at };
         setDashboard((current) => updateDashboardQuote(current, quote.symbol, price));
         setLastSuccessfulPrice(price);
-        setLastQuoteAt(Date.now());
+        setLastQuoteAt(at);
       }
 
       if (quote.source === "FYERS_QUOTE" && hasPrice && !quote.is_stale) {
@@ -1628,7 +1638,9 @@ export function PaperTradingPage({
         {listTab === "account" ? (
           <AccountPanel
             onAccountUpdate={(a) => setAccountSummary(a)}
-            onDashboardUpdate={(d) => setDashboard(d)}
+            onDashboardUpdate={(d) =>
+              setDashboard(applyDashboardKeepingLiveQuote(d, liveQuoteRef.current))
+            }
           />
         ) : null}
         {listTab === "watchlist" ? (
@@ -2395,14 +2407,14 @@ const PositionsTable = memo(function PositionsTable({
             <th>Qty</th>
             <th>Avg entry <InfoTooltip content={TOOLTIPS.PAPER_TRADING.AVG_ENTRY} /></th>
             <th>Current <InfoTooltip content={TOOLTIPS.PAPER_TRADING.CURRENT_PRICE} /></th>
+            <th>Stop <InfoTooltip content={TOOLTIPS.PAPER_TRADING.STOP_COL} /></th>
+            <th>Target <InfoTooltip content={TOOLTIPS.PAPER_TRADING.TARGET_COL} /></th>
+            <th>R:R <InfoTooltip content={TOOLTIPS.PAPER_TRADING.RR_COL} /></th>
             <th>Break-Even</th>
             <th>Gross P&amp;L</th>
             <th>Taxes &amp; Charges</th>
             <th>Net Unrealized <InfoTooltip content={TOOLTIPS.PAPER_TRADING.UNREALIZED_COL} /></th>
             <th>% Net Return <InfoTooltip content={TOOLTIPS.PAPER_TRADING.PERCENT_PNL} /></th>
-            <th>Stop <InfoTooltip content={TOOLTIPS.PAPER_TRADING.STOP_COL} /></th>
-            <th>Target <InfoTooltip content={TOOLTIPS.PAPER_TRADING.TARGET_COL} /></th>
-            <th>R:R <InfoTooltip content={TOOLTIPS.PAPER_TRADING.RR_COL} /></th>
             <th>Status</th>
             <th>Open Time</th>
             <th>Action</th>
@@ -2425,14 +2437,14 @@ const PositionsTable = memo(function PositionsTable({
                 <td className="number-cell">{position.qty}</td>
                 <td className="number-cell">{position.avg_entry_price.toFixed(2)}</td>
                 <td className="number-cell">{position.current_price?.toFixed(2) ?? "--"}</td>
+                <td className="number-cell">{position.stop_loss?.toFixed(2) ?? "--"}</td>
+                <td className="number-cell">{position.target?.toFixed(2) ?? "--"}</td>
+                <td className="number-cell">{position.risk_reward_ratio?.toFixed(2) ?? "--"}</td>
                 <td className="number-cell" style={{ color: '#3b82f6', fontWeight: 600 }}>{position.break_even_price?.toFixed(2) ?? "--"}</td>
                 <td className={`number-cell ${grossPnl >= 0 ? "text-positive" : "text-negative"}`}>{formatCurrency(grossPnl)}</td>
                 <td className="number-cell" style={{ color: '#f59e0b' }}>₹{totalCharges.toFixed(2)}</td>
                 <td className={`number-cell ${netPnl >= 0 ? "text-positive" : "text-negative"}`} style={{ fontWeight: 600 }}>{formatCurrency(netPnl)}</td>
                 <td className={`number-cell ${netReturnPct >= 0 ? "text-positive" : "text-negative"}`}>{netReturnPct.toFixed(2)}%</td>
-                <td className="number-cell">{position.stop_loss?.toFixed(2) ?? "--"}</td>
-                <td className="number-cell">{position.target?.toFixed(2) ?? "--"}</td>
-                <td className="number-cell">{position.risk_reward_ratio?.toFixed(2) ?? "--"}</td>
                 <td>{formatLifecycle(position.lifecycle_state, position.paused_reason)}</td>
                 <td>{position.created_at ? new Date(position.created_at).toLocaleString() : "--"}</td>
                 <td style={{ display: 'flex', gap: 8 }}>
@@ -3283,6 +3295,11 @@ function updateDashboardQuote(
         unrealized_pnl_percent: roundMoney(unrealizedPnlPercent),
       };
     }),
+    open_orders: dashboard.open_orders
+      ? dashboard.open_orders.map((order) =>
+          order.symbol === symbol ? { ...order, last_seen_ltp: currentPrice } : order,
+        )
+      : dashboard.open_orders,
     selected_workspace:
       dashboard.selected_workspace?.symbol === symbol
         ? {
@@ -3291,6 +3308,16 @@ function updateDashboardQuote(
           }
         : dashboard.selected_workspace,
   };
+}
+
+function applyDashboardKeepingLiveQuote<T extends PaperTradingDashboardResponse>(
+  dash: T,
+  live: { symbol: string; price: number; at: number } | null,
+): T {
+  if (!live || !(live.price > 0) || Date.now() - live.at > 3000) {
+    return dash;
+  }
+  return (updateDashboardQuote(dash, live.symbol, live.price) ?? dash) as T;
 }
 
 function roundMoney(value: number) {

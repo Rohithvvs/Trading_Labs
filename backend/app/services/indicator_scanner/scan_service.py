@@ -256,8 +256,15 @@ async def fetch_current_indicator_market_data(
     scan time (the 6-minute runs) without changing the last 1D bar.
     """
     from ...services.market_data_ingestion.session_repair import repair_scan_market_history
+    from ..daily_scan_sync_service import sync_daily_market_data_for_scan
 
     report: dict[str, Any] = {}
+    try:
+        report["daily_sync"] = await sync_daily_market_data_for_scan(store_symbols or symbols)
+    except Exception as exc:
+        logger.warning("INDICATOR_SCAN_DAILY_SYNC_FAILED | err=%s", exc)
+        report["daily_sync"] = {"status": "FAILED", "error": type(exc).__name__}
+
     try:
         report["ensure"] = await ensure_universe_market_data(
             store_symbols or symbols,

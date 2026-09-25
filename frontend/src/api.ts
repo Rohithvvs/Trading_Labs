@@ -467,12 +467,14 @@ export async function fetchPaperQuote(
       }
       return response.json() as Promise<PaperQuoteResponse>;
     },
-    // Short TTL: poller revalidates; SWR avoids blank quote on navigation.
+    // Desk poller forces a refresh about once a second. This TTL only covers
+    // callers that do not force; keep it inside the same window so a shared
+    // quote cannot sit 3s behind the broker print.
     {
       force: opts?.force,
       swr: !opts?.force,
       softTimeoutMs: 2000,
-      ttlMs: 3 * 1000,
+      ttlMs: 1000,
     },
   );
 }

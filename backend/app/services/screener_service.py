@@ -403,7 +403,13 @@ class ScreenerService:
 
         self.logger.debug("MEMORY_AUDIT stage=scanner_start rss_mb=%.1f", get_rss_mb())
 
-        from .market_data_service import MarketDataService
+        from .market_data_service import (
+            MarketDataService,
+            cache_covers_required_session,
+            persist_fyers_scan_bars,
+            required_scanner_session,
+            symbol_needs_daily_fyers_fetch,
+        )
         from ..config import settings as app_settings
         md_service = MarketDataService()
         required_history = self.technical_service.get_required_candle_count(AnalysisMode.swing)
@@ -439,27 +445,44 @@ class ScreenerService:
                 "eta_sec": 0,
             })
 
-            # Partition: ready (fresh complete) vs needs API
+            # Partition: already refreshed today vs must pull the latest session from Fyers.
+            # A 48-hour "fresh enough" check skipped today's bar whenever yesterday's
+            # candle was still inside that window, so the first Run Scanner of the day
+            # scored stale OHLC and never stored the new session.
+            target_session = required_scanner_session()
+
+            def _meta_parts(symbol: str) -> tuple[int, datetime | None, datetime | None]:
+                row = meta.get(symbol) or (0, None, None, None)
+                updated_at = row[3] if len(row) > 3 else None
+                return int(row[0] or 0), row[1], updated_at
+
             cache_hit_symbols: list[str] = []
             needs_fetch: list[str] = []
             for symbol in symbols:
-                count, latest, _ = meta.get(symbol, (0, None, None))
-                if MarketDataService.is_daily_cache_fresh_enough(count, latest, required_history):
-                    cache_hit_symbols.append(symbol)
-                else:
+                count, latest, updated_at = _meta_parts(symbol)
+                if symbol_needs_daily_fyers_fetch(
+                    count,
+                    latest,
+                    required_history,
+                    updated_at=updated_at,
+                    required_session=target_session,
+                ):
                     if count < required_history:
                         scanner_metrics["incomplete_history"] += 1
                         scanner_metrics["forced_rebuilds"] += 1
                     needs_fetch.append(symbol)
+                else:
+                    cache_hit_symbols.append(symbol)
 
             self.logger.info(
-                "SCANNER_CACHE_PARTITION | stage=%s | total=%s | cache_hits=%s | needs_fetch=%s | workers=%s | meta_ms=%.0f",
+                "SCANNER_CACHE_PARTITION | stage=%s | total=%s | cache_hits=%s | needs_fetch=%s | workers=%s | meta_ms=%.0f | target_session=%s",
                 stage_name,
                 len(symbols),
                 len(cache_hit_symbols),
                 len(needs_fetch),
                 max_workers,
                 stage_timings["meta_ms"],
+                target_session.isoformat(),
             )
             scan_log.info(
                 "CACHE PARTITION | stage=%s | cache_hits=%s | needs_fetch=%s | workers=%s",
@@ -473,7 +496,7 @@ class ScreenerService:
             # Also pre-load any partial history for needs_fetch so incremental merge is local.
             # CRITICAL: only load the last N bars needed for indicators (not multi-year history).
             # Full-table load was ~120s of the 240s screener phase for 755 symbols.
-            preload_symbols = list(dict.fromkeys(cache_hit_symbols + [s for s in needs_fetch if meta.get(s, (0, None))[0] > 0]))
+            preload_symbols = list(dict.fromkeys(cache_hit_symbols + [s for s in needs_fetch if _meta_parts(s)[0] > 0]))
             history_bar_limit = max(required_history + 20, MINIMUM_SWING_CANDLES + 20)
             if preload_symbols:
                 load_t0 = time.perf_counter()
@@ -517,12 +540,18 @@ class ScreenerService:
                 if symbol in seen_fetch:
                     continue
                 df = symbol_frames.get(symbol)
-                count, latest, _ = meta.get(symbol, (0, None, None))
+                count, latest, updated_at = _meta_parts(symbol)
                 if (
                     df is not None
                     and not df.empty
                     and len(df) >= required_history
-                    and MarketDataService.is_daily_cache_fresh_enough(len(df), latest, required_history)
+                    and not symbol_needs_daily_fyers_fetch(
+                        count,
+                        latest,
+                        required_history,
+                        updated_at=updated_at,
+                        required_session=target_session,
+                    )
                 ):
                     continue
                 seen_fetch.add(symbol)
@@ -545,7 +574,13 @@ class ScreenerService:
                     try:
                         # Acquire rate limiter token to avoid FYERS 429 responses
                         await _rate_limiter.acquire()
-                        count, latest_timestamp, _ = meta.get(symbol, (0, None, None))
+                        count, latest_timestamp, _updated_at = _meta_parts(symbol)
+                        refresh_latest = cache_covers_required_session(
+                            count,
+                            latest_timestamp,
+                            required_history,
+                            required_session=target_session,
+                        )
                         async with frames_lock:
                             existing = symbol_frames.get(symbol)
                             if existing is not None and not existing.empty:
@@ -574,7 +609,9 @@ class ScreenerService:
 
                         new_candles = await loop.run_in_executor(
                             self.fyers_service._network_pool,
-                            lambda s=symbol, c=dummy_cache: self.fyers_service.fetch_incremental_ohlcv(s, c),
+                            lambda s=symbol, c=dummy_cache, refresh=refresh_latest: self.fyers_service.fetch_incremental_ohlcv(
+                                s, c, refresh_latest=refresh
+                            ),
                         )
 
                         if not dummy_cache and new_candles:
@@ -644,7 +681,7 @@ class ScreenerService:
                                 eta_sec = int((elapsed / max(1, done)) * remaining) if done > 0 else 0
                                 _progress(
                                     {
-                                        "stage": f"Fetching Historical OHLCV Data... ({done}/{total})",
+                                        "stage": f"Fetching latest OHLC from Fyers... ({done}/{total})",
                                         "progress": min(pct, 54),
                                         "current_symbol": symbol,
                                         "worker_id": worker_id,
@@ -657,7 +694,7 @@ class ScreenerService:
 
             if needs_fetch:
                 fetch_t0 = time.perf_counter()
-                _progress(f"Fetching Historical OHLCV Data... (0/{len(needs_fetch)})", 43)
+                _progress(f"Fetching latest OHLC from Fyers... (0/{len(needs_fetch)})", 43)
                 self.logger.info(
                     "SCANNER_FYERS_POOL_START | stage=%s | symbols=%s | max_workers=%s",
                     stage_name,
@@ -679,6 +716,22 @@ class ScreenerService:
                         written,
                         (time.perf_counter() - upsert_t0) * 1000,
                     )
+                    try:
+                        stored = await persist_fyers_scan_bars(
+                            pending_upserts,
+                            refresh_index=True,
+                        )
+                        self.logger.info(
+                            "SCANNER_FYERS_STORED | stage=%s | daily_upserted=%s | index_upserted=%s",
+                            stage_name,
+                            stored.get("daily_upserted"),
+                            stored.get("index_upserted"),
+                        )
+                    except Exception:
+                        self.logger.exception(
+                            "SCANNER_FYERS_STORE_FAILED | stage=%s | candle cache was saved",
+                            stage_name,
+                        )
                 stage_timings["upsert_ms"] = (time.perf_counter() - upsert_t0) * 1000
 
                 # Drop frames that still lack required history after API

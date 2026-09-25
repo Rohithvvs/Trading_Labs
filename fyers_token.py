@@ -321,6 +321,17 @@ def load_fyers_config() -> dict:
     Raises:
         FyersConfigError: If any required env var is missing or empty.
     """
+    if "FYERS_CLIENT_ID" not in os.environ:
+        try:
+            import dotenv
+            from pathlib import Path
+            root = Path(__file__).resolve().parent
+            for env_path in (root / ".env", root / "backend" / ".env"):
+                if env_path.exists():
+                    dotenv.load_dotenv(env_path)
+        except Exception:
+            pass
+
     # Canonical key -> alternate env names (first match wins).
     key_aliases: dict[str, tuple[str, ...]] = {
         "FYERS_CLIENT_ID": ("FYERS_CLIENT_ID",),

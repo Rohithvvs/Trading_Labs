@@ -13,14 +13,13 @@ from typing import Any
 
 logger = logging.getLogger("app.market_data.source_policy")
 
-# Official EOD from FyersEodProvider (full_load, ensure, session_repair, backfill CLI).
-ALLOWED_DAILY_INDEX_SOURCES = frozenset({"FYERS"})
+# Official EOD from FyersEodProvider and live session forming bar (scanner overlay).
+ALLOWED_DAILY_INDEX_SOURCES = frozenset({"FYERS", "FYERS_LIVE_1D"})
 
 # Known cache/ACS/in-session tags that must never land in the scanner SoT.
 FORBIDDEN_DAILY_INDEX_SOURCES = frozenset(
     {
         "historical_candles",
-        "FYERS_LIVE_1D",
         "ACS",
         "acs",
         "authoritative_candle_store",

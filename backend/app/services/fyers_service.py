@@ -191,6 +191,8 @@ class FyersService:
     _ltp_source_cache: dict[str, str] = {}
     _ltp_locks: dict[str, "asyncio.Lock"] = {}
     _ltp_cache: dict[str, tuple[dict, float]] = {}
+    # Fresh broker prints only (not PG hits). Callers pass pg_ttl_sec as the max age.
+    _ltp_mem: dict[str, tuple[float, float]] = {}
     _CACHE_EVICT_INTERVAL = 300  # seconds between eviction sweeps
     _cache_last_evict: float = 0.0
     _network_pool = __import__("concurrent.futures").futures.ThreadPoolExecutor(
@@ -225,6 +227,11 @@ class FyersService:
             cls._ltp_cache.pop(k, None)
             cls._ltp_source_cache.pop(k, None)
             cls._ltp_locks.pop(k, None)
+
+        mono = time.monotonic()
+        expired_mem = [k for k, v in cls._ltp_mem.items() if mono - v[1] >= 30.0]
+        for k in expired_mem:
+            cls._ltp_mem.pop(k, None)
 
     def __init__(self) -> None:
         self.logger = get_logger("app.fyers")
@@ -296,6 +303,26 @@ class FyersService:
         """
         cache_key = self._cache_symbol(symbol)
 
+        def _mem_ltp(max_age: float) -> float | None:
+            """Broker print younger than the caller's TTL. PG rows are not stored here,
+            so a 15s database hit cannot be replayed as a 1s-fresh desk quote."""
+            if max_age <= 0:
+                return None
+            entry = FyersService._ltp_mem.get(cache_key)
+            if not entry:
+                return None
+            val, ts = entry
+            if val is None or float(val) <= 0:
+                return None
+            if time.monotonic() - ts < max_age:
+                FyersService._ltp_source_cache[cache_key] = "MEM_CACHE"
+                return float(val)
+            return None
+
+        mem = _mem_ltp(pg_ttl_sec)
+        if mem is not None:
+            return mem
+
         # Helper to check DB cache
         async def _check_db(max_age_sec: float):
             async with AsyncSessionLocal() as db:
@@ -341,7 +368,10 @@ class FyersService:
             FyersService._ltp_locks[cache_key] = asyncio.Lock()
 
         async with FyersService._ltp_locks[cache_key]:
-            # 3. Double-check cache inside lock
+            # 3. Double-check memory and DB inside the lock (coalesce stampedes).
+            mem2 = _mem_ltp(pg_ttl_sec)
+            if mem2 is not None:
+                return mem2
             cached2 = await _check_db(pg_ttl_sec)
             if cached2 is not False:
                 return cached2
@@ -371,6 +401,7 @@ class FyersService:
                             {"s": cache_key, "ltp": float(ltp)},
                         )
                         await db.commit()
+                    FyersService._ltp_mem[cache_key] = (float(ltp), time.monotonic())
                     FyersService._ltp_source_cache[cache_key] = "FYERS_PRIMARY"
                     return ltp
 
@@ -1396,44 +1427,57 @@ class FyersService:
         except (TypeError, ValueError):
             return None
 
-    def fetch_incremental_ohlcv(self, symbol: str, cached_candles: list[OHLCVPoint]) -> list[OHLCVPoint]:
+    def fetch_incremental_ohlcv(
+        self,
+        symbol: str,
+        cached_candles: list[OHLCVPoint],
+        *,
+        refresh_latest: bool = False,
+    ) -> list[OHLCVPoint]:
         """
         Fetch only missing daily candles from FYERS.
 
         True incremental rules (never re-download a full year when only a few bars are missing):
         - Empty cache  → request last 365 calendar days once
-        - Partial cache → request strictly from (last_cached_date + 1 day) through today
-        - Already current (last bar is today) → no API call
+        - Short gap    → include the last stored session so a forming bar is replaced
+        - Already current for this IST day and not the day's first refresh → no API call
         """
         import time
-        from datetime import date, timedelta
-        
-        today_dt = date.today()
+
+        from .market_data_service import candle_session_date, incremental_history_window, required_scanner_session
+        from ..utils.datetime_utils import ist_now
+
+        today_ist = ist_now().date()
+        target = required_scanner_session()
         max_retries = max(1, int(getattr(settings, "scanner_max_retries", 3) or 3))
 
         if self._is_blacklisted(symbol):
             self.logger.info("Skipping blacklisted symbol (incremental): %s", symbol)
             return []
 
-        if not cached_candles:
-            # Cold symbol: one full-history window is required to bootstrap indicators.
-            last_cached_dt = today_dt - timedelta(days=365)
-            range_from_str = (last_cached_dt + timedelta(days=1)).isoformat()
-            mode = "full_backfill"
-        else:
-            last_cached_dt = max(p.timestamp.date() for p in cached_candles)
-            if last_cached_dt >= today_dt:
-                return []
-            # Always true-incremental from the day after the last stored bar.
-            range_from_str = (last_cached_dt + timedelta(days=1)).isoformat()
-            mode = "incremental"
-
-        today_str = today_dt.isoformat()
+        last_session = None
+        if cached_candles:
+            sessions = [candle_session_date(p.timestamp) for p in cached_candles]
+            sessions = [item for item in sessions if item is not None]
+            last_session = max(sessions) if sessions else None
+        window = incremental_history_window(
+            last_session,
+            today=today_ist,
+            target=target,
+            refresh_latest=refresh_latest or not cached_candles,
+        )
+        if window is None:
+            return []
+        range_from, range_to, mode = window
+        if range_from > range_to:
+            return []
+        range_from_str = range_from.isoformat()
+        today_str = range_to.isoformat()
         self.logger.debug(
             "INCREMENTAL FETCH | symbol=%s | mode=%s | last_cached=%s | range_from=%s | range_to=%s",
             symbol,
             mode,
-            last_cached_dt if cached_candles else "none",
+            last_session.isoformat() if last_session else "none",
             range_from_str,
             today_str,
         )

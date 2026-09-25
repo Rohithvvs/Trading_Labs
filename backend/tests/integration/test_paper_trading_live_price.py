@@ -10,8 +10,12 @@ from backend.app.models import FyersToken
 @pytest.fixture(autouse=True)
 def clear_token_cache():
     token_service._clear_token_cache()
+    from backend.app.services import paper_trading_service as pts
+
+    pts._live_quote_cache.clear()
     yield
     token_service._clear_token_cache()
+    pts._live_quote_cache.clear()
 
 @pytest.fixture
 def mock_session_local():
@@ -25,7 +29,7 @@ def test_quote_endpoint_returns_numeric_float_not_coroutine():
     service = PaperTradingService(MagicMock())
     service._validate_symbol = MagicMock()
     
-    async def mock_fetch_ltp(symbol):
+    async def mock_fetch_ltp(symbol, **_kwargs):
         return 150.75
         
     service.fyers_service = MagicMock()
@@ -88,7 +92,7 @@ def test_valid_token_live_quote_request_returns_price(mock_session_local):
     service = PaperTradingService(MagicMock())
     service._validate_symbol = MagicMock()
     
-    async def mock_fetch_ltp(symbol):
+    async def mock_fetch_ltp(symbol, **_kwargs):
         return 120.50
         
     service.fyers_service = MagicMock()
@@ -121,29 +125,68 @@ def test_cache_expired_token_refreshes_from_db(mock_session_local):
     assert token_service._CACHED_TOKEN == "refreshed_token"
 
 def test_ui_polling_path_succeeds_repeatedly():
-    """Scenario 4: UI polling path succeeds repeatedly."""
+    """Scenario 4: UI polling path succeeds repeatedly once the short memo expires."""
+    from backend.app.services import paper_trading_service as pts
+
     service = PaperTradingService(MagicMock())
     service._validate_symbol = MagicMock()
-    
-    call_count = 0
-    async def mock_fetch_ltp(symbol):
-        return 0.0 # dummy
-        
+
+    async def mock_fetch_ltp(symbol, **_kwargs):
+        return 0.0  # dummy
+
     service.fyers_service = MagicMock()
     service.fyers_service.fetch_ltp = mock_fetch_ltp
-    service.fyers_service.fetch_ohlcv.return_value = [] # Ensure fallback to 0.0
-    
+    service.fyers_service.fetch_ohlcv.return_value = []  # Ensure fallback to 0.0
+
     with patch("asyncio.run_coroutine_threadsafe") as mock_run:
         mock_future = MagicMock()
         mock_future.result.side_effect = [101.0, 102.0, 103.0, 104.0, 105.0]
         mock_run.return_value = mock_future
-    
+
         for i in range(5):
+            pts._live_quote_cache.clear()
             quote = service.get_quote("RELIANCE-EQ")
             assert isinstance(quote.current_price, float)
             assert quote.current_price == 101.0 + i
-    
+
     assert mock_run.call_count == 5
+
+
+def test_get_quote_reuses_subsecond_print_without_second_broker_call():
+    """Bursts inside the desk TTL share one broker print."""
+    service = PaperTradingService(MagicMock())
+    service._validate_symbol = MagicMock()
+
+    recorded: list[dict] = []
+
+    def fake_fetch_ltp(symbol, **kwargs):
+        recorded.append(kwargs)
+
+        async def _go():
+            return 250.0
+
+        return _go()
+
+    service.fyers_service = MagicMock()
+    service.fyers_service.fetch_ltp = fake_fetch_ltp
+
+    with patch("asyncio.run_coroutine_threadsafe") as mock_run:
+        mock_future = MagicMock()
+        mock_future.result.return_value = 250.0
+        mock_run.return_value = mock_future
+
+        first = service.get_quote("INFY")
+        second = service.get_quote("INFY")
+        pending = mock_run.call_args[0][0]
+        pending.close()
+
+    assert first.current_price == 250.0
+    assert second.current_price == 250.0
+    assert second.source == "FYERS_QUOTE"
+    assert second.is_stale is False
+    assert mock_run.call_count == 1
+    assert recorded[0]["allow_yfinance"] is False
+    assert recorded[0]["pg_ttl_sec"] == pytest.approx(0.75)
 
 def test_scanner_and_paper_trading_both_work_after_ttl_expiration(mock_session_local):
     """Scenario 5: Scanner and Paper Trading both work after token TTL expiration."""

@@ -142,6 +142,8 @@ class Settings(BaseSettings):
     fyers_app_id: str = ""
     fyers_access_token: str = ""
     fyers_secret_id: str = ""
+    fyers_client_id: str = ""
+    fyers_totp_secret: str = ""
     fyers_pin: str = ""
     fyers_redirect_uri: str = ""
     mongo_url: str = ""
