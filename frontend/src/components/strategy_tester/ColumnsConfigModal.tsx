@@ -13,10 +13,16 @@ const ALL_COLUMNS: { key: string; label: string }[] = [
   { key: "symbol", label: "Symbol" },
   { key: "company", label: "Company Name" },
   { key: "signal", label: "Signal" },
-  { key: "entry_price", label: "Entry (Window Start)" },
-  { key: "exit_price", label: "Exit (Close)" },
-  { key: "return_pct", label: "Return % (Hold Return)" },
+  { key: "entry", label: "Entry Price" },
+  { key: "stop_loss", label: "Stop Loss" },
+  { key: "target", label: "Target" },
+  { key: "rr", label: "RR (Risk / Reward)" },
+  { key: "return_pct", label: "Return %" },
   { key: "evaluation_date", label: "Scan Date" },
+  { key: "pass_count", label: "Passed Filters Count" },
+  { key: "fail_count", label: "Failed Filters Count" },
+  { key: "primary_failure", label: "Primary Failure Reason" },
+  { key: "window_start", label: "Window Start (Close 1Y Ago)" },
   { key: "high_252", label: "Prior 252-Session High" },
   { key: "rsi", label: "RSI" },
   { key: "sma_20", label: "SMA 20" },
@@ -24,9 +30,6 @@ const ALL_COLUMNS: { key: string; label: string }[] = [
   { key: "sma_200", label: "SMA 200" },
   { key: "volume", label: "Volume" },
   { key: "avg_volume", label: "Avg Volume" },
-  { key: "pass_count", label: "Passed Filters Count" },
-  { key: "fail_count", label: "Failed Filters Count" },
-  { key: "primary_failure", label: "Primary Failure Reason" },
 ];
 
 export const ColumnsConfigModal: React.FC<ColumnsConfigModalProps> = ({
@@ -60,7 +63,10 @@ export const ColumnsConfigModal: React.FC<ColumnsConfigModalProps> = ({
 
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 6 }}>
             {ALL_COLUMNS.map((col) => {
-              const isChecked = visibleColumns.has(col.key);
+              const isChecked =
+                visibleColumns.has(col.key) ||
+                (col.key === "entry" && (visibleColumns.has("exit_price") || visibleColumns.has("entry_price"))) ||
+                (col.key === "rr" && visibleColumns.has("risk_reward"));
               return (
                 <label
                   key={col.key}

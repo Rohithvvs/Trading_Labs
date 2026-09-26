@@ -137,6 +137,34 @@ describe("indicatorScanDetail", () => {
     // Risk and reward calculations
     expect(plan.riskAmount).toBeCloseTo(112.08);
     expect(plan.rewardAmount).toBeCloseTo(224.16);
+    expect(plan.riskReward).toBe(2.0);
+    expect(plan.rr).toBe(2.0);
     expect(plan.position).toBe("LONG");
+  });
+
+  it("maps AETHER stock setup with entry, stop loss, target, and 1:2 RR", () => {
+    const stock = mapIndicatorResultToStock({
+      symbol: "AETHER",
+      display_name: "Aether Industries Ltd.",
+      status: "ok",
+      matched: true,
+      as_of: "2026-09-25",
+      outputs: {
+        Close: 1767.00,
+        "SMA 50": 1197.63,
+        "SMA 150": 1050.00,
+        "SMA 200": 980.00,
+        "Mom 252": 1.4008,
+      },
+      ohlcv: { close: 1767.00 },
+      indicator_name: "Top 5: Minervini Stage-2 VCP [SCAN]",
+    });
+
+    expect(stock.entry).toBe(1767.00);
+    expect(stock.stop_loss).toBe(1197.63);
+    expect(stock.target).toBe(2905.74);
+    expect(stock.rr).toBe(2.0);
+    expect(stock.risk_reward).toBe(2.0);
+    expect(stock.return_pct).toBeCloseTo(140.08);
   });
 });

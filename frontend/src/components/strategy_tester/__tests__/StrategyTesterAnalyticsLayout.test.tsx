@@ -2,7 +2,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import React from "react";
 import { describe, expect, it, vi } from "vitest";
 import type { StrategyResultRow } from "../../../api_strategy_tester";
-import { AllStockResultsTable } from "../AllStockResultsTable";
+import { AllStockResultsTable, formatRR, getRowTradeLevels } from "../AllStockResultsTable";
 import { FilterFunnelCard } from "../FilterFunnelCard";
 import { SignalDistributionCard } from "../SignalDistributionCard";
 import { TopReturnsCard } from "../TopReturnsCard";
@@ -412,5 +412,104 @@ describe("TopReturnsCard - Top 5 Positive and Negative", () => {
     expect(rows[2].textContent).toContain("-20.00%");
     expect(rows[3].textContent).toContain("Z");
     expect(rows[3].textContent).toContain("-10.00%");
+  });
+
+  it("formats RR ratio correctly with formatRR", () => {
+    expect(formatRR(2.0)).toBe("1:2");
+    expect(formatRR(2.5)).toBe("1:2.5");
+    expect(formatRR(1.85)).toBe("1:1.85");
+    expect(formatRR(null)).toBe("—");
+    expect(formatRR(undefined)).toBe("—");
+    expect(formatRR(0)).toBe("—");
+  });
+
+  it("calculates trade levels correctly with getRowTradeLevels", () => {
+    const levels = getRowTradeLevels({
+      symbol: "AETHER",
+      rank: 2,
+      status: "ok",
+      signal: "MATCH",
+      close: 1767.0,
+      exit_price: 1767.0,
+      entry_price: 1653.0,
+      sma_50: 1197.63,
+      return_pct: 140.08,
+      filters_passed: 11,
+      filters_failed: 0,
+      passed_filters: [],
+      failed_filters: [],
+    });
+
+    expect(levels.entry).toBe(1767.0);
+    expect(levels.stopLoss).toBe(1197.63);
+    expect(levels.target).toBe(2905.74);
+    expect(levels.rr).toBe(2.0);
+  });
+
+  it("renders Entry, Stop Loss, Target, and RR in AllStockResultsTable in scanner mode", () => {
+    const aetherRow: StrategyResultRow = {
+      rank: 2,
+      symbol: "AETHER",
+      company: "Aether Industries Ltd.",
+      status: "ok",
+      signal: "MATCH",
+      entry: 1767.0,
+      close: 1767.0,
+      exit_price: 1767.0,
+      entry_price: 1653.0,
+      stop_loss: 1197.63,
+      target: 2905.74,
+      rr: 2.0,
+      return_pct: 140.08,
+      evaluation_date: "2026-09-25",
+      filters_passed: 11,
+      filters_failed: 0,
+      passed_filters: [],
+      failed_filters: [],
+    };
+
+    render(
+      <AllStockResultsTable
+        results={[aetherRow]}
+        totalResults={1}
+        selectedSymbol={null}
+        searchQuery=""
+        signalFilter="ALL"
+        returnFilter="ALL"
+        sortColumn="rank"
+        sortDirection="asc"
+        currentPage={1}
+        pageSize={25}
+        variant="scanner"
+        onSearchChange={vi.fn()}
+        onSignalFilterChange={vi.fn()}
+        onReturnFilterChange={vi.fn()}
+        onSortChange={vi.fn()}
+        onPageChange={vi.fn()}
+        onPageSizeChange={vi.fn()}
+        onStockSelect={vi.fn()}
+        onColumnsClick={vi.fn()}
+        onExportClick={vi.fn()}
+      />
+    );
+
+    const headers = screen.getAllByRole("columnheader").map((th) => th.textContent);
+    expect(headers).toContain("Entry");
+    expect(headers).toContain("Stop Loss");
+    expect(headers).toContain("Target");
+    expect(headers).toContain("RR");
+    expect(headers).toContain("Return %");
+    expect(headers).toContain("Scan Date");
+    expect(headers).toContain("Pass");
+    expect(headers).toContain("Primary Failure");
+
+    // Old "Exit" column should not be present in default scanner mode
+    expect(headers).not.toContain("Exit");
+
+    const row = screen.getByTestId("indicator-row-AETHER");
+    expect(row.textContent).toContain("₹1,767.00");
+    expect(row.textContent).toContain("₹1,197.63");
+    expect(row.textContent).toContain("₹2,905.74");
+    expect(row.textContent).toContain("1:2");
   });
 });

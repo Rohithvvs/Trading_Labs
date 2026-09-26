@@ -147,8 +147,13 @@ export type StrategyResultRow = {
   company?: string | null;
   status: string;
   signal: string | null;
+  entry?: number | null;
   entry_price: number | null;
   exit_price: number | null;
+  stop_loss?: number | null;
+  target?: number | null;
+  rr?: number | null;
+  risk_reward?: number | null;
   return_pct: number | null;
   return_bucket?: string | null;
   return_formula?: string | null;
@@ -185,6 +190,10 @@ export type StrategyResultRow = {
   error_detail?: string | null;
   source?: string;
   strategy_name?: string;
+  stop_loss?: number | null;
+  target?: number | null;
+  risk_reward?: number | null;
+  rr?: number | null;
 };
 
 export type HistoryRow = {

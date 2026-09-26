@@ -44,6 +44,57 @@ export function formatVolume(val: number | null | undefined): string {
   return val.toLocaleString("en-IN");
 }
 
+export function formatRR(val: number | null | undefined): string {
+  if (val == null || Number.isNaN(val) || val <= 0) return "—";
+  return `1:${Number(val.toFixed(2))}`;
+}
+
+export function getRowTradeLevels(row: StrategyResultRow) {
+  const entry =
+    row.entry ??
+    row.candidate_entry_price ??
+    row.close ??
+    row.exit_price ??
+    row.entry_price ??
+    null;
+
+  const sma50Val =
+    row.sma_50 ??
+    (row.indicators as any)?.sma_50 ??
+    (row.indicators as any)?.["SMA 50"];
+
+  const atrVal =
+    (row.indicators as any)?.atr ??
+    (row.indicators as any)?.["ATR"];
+
+  const derivedStopLoss =
+    entry != null
+      ? sma50Val != null && sma50Val < entry
+        ? Math.round(sma50Val * 100) / 100
+        : atrVal != null && atrVal > 0 && entry - 1.5 * atrVal > 0
+          ? Math.round((entry - 1.5 * atrVal) * 100) / 100
+          : Math.round(entry * 0.95 * 100) / 100
+      : null;
+
+  const stopLoss = row.stop_loss ?? derivedStopLoss;
+
+  const derivedTarget =
+    entry != null && stopLoss != null
+      ? Math.round((entry + 2 * Math.abs(entry - stopLoss)) * 100) / 100
+      : null;
+
+  const target = row.target ?? derivedTarget;
+
+  const risk = entry != null && stopLoss != null ? Math.abs(entry - stopLoss) : null;
+  const reward = entry != null && target != null ? Math.abs(target - entry) : null;
+  const rr =
+    row.rr ??
+    row.risk_reward ??
+    (risk && risk > 0 && reward != null ? Math.round((reward / risk) * 100) / 100 : null);
+
+  return { entry, stopLoss, target, rr };
+}
+
 const signalOrderWeight = (sig: string | null | undefined, variant: "strategy" | "scanner" = "strategy"): number => {
   const s = (sig || "").toUpperCase();
   if (variant === "scanner") {
@@ -90,6 +141,16 @@ export const AllStockResultsTable: React.FC<AllStockResultsTableProps> = ({
 }) => {
   const isColVisible = (colKey: string) => {
     if (!visibleColumns) return true;
+    if (colKey === "entry") {
+      return (
+        visibleColumns.has("entry") ||
+        visibleColumns.has("exit_price") ||
+        visibleColumns.has("entry_price")
+      );
+    }
+    if (colKey === "rr") {
+      return visibleColumns.has("rr") || visibleColumns.has("risk_reward");
+    }
     return visibleColumns.has(colKey);
   };
 
@@ -135,15 +196,30 @@ export const AllStockResultsTable: React.FC<AllStockResultsTableProps> = ({
           ? a.symbol.localeCompare(b.symbol)
           : b.symbol.localeCompare(a.symbol);
       }
-      if (sortColumn === "entry_price") {
-        const pA = a.entry_price ?? 0;
-        const pB = b.entry_price ?? 0;
+      if (sortColumn === "entry" || sortColumn === "entry_price" || sortColumn === "exit_price") {
+        const pA = getRowTradeLevels(a).entry ?? 0;
+        const pB = getRowTradeLevels(b).entry ?? 0;
         return sortDirection === "asc" ? pA - pB : pB - pA;
       }
-      if (sortColumn === "exit_price") {
-        const pA = a.exit_price ?? 0;
-        const pB = b.exit_price ?? 0;
-        return sortDirection === "asc" ? pA - pB : pB - pA;
+      if (sortColumn === "stop_loss") {
+        const sA = getRowTradeLevels(a).stopLoss ?? 0;
+        const sB = getRowTradeLevels(b).stopLoss ?? 0;
+        return sortDirection === "asc" ? sA - sB : sB - sA;
+      }
+      if (sortColumn === "target") {
+        const tA = getRowTradeLevels(a).target ?? 0;
+        const tB = getRowTradeLevels(b).target ?? 0;
+        return sortDirection === "asc" ? tA - tB : tB - tA;
+      }
+      if (sortColumn === "rr" || sortColumn === "risk_reward") {
+        const rA = getRowTradeLevels(a).rr ?? 0;
+        const rB = getRowTradeLevels(b).rr ?? 0;
+        return sortDirection === "asc" ? rA - rB : rB - rA;
+      }
+      if (sortColumn === "window_start") {
+        const wA = a.entry_price ?? 0;
+        const wB = b.entry_price ?? 0;
+        return sortDirection === "asc" ? wA - wB : wB - wA;
       }
       return 0;
     });
@@ -452,10 +528,15 @@ export const AllStockResultsTable: React.FC<AllStockResultsTableProps> = ({
               {isColVisible("symbol") && <th className="sortable" onClick={() => onSortChange("symbol")}>Symbol</th>}
               {isColVisible("company") && <th>Company</th>}
               {isColVisible("signal") && <th className="sortable" onClick={() => onSortChange("signal")}>Signal</th>}
-              {isColVisible("entry_price") && <th className="sortable" style={{ textAlign: "right" }} onClick={() => onSortChange("entry_price")}>{variant === "scanner" ? "Entry" : "Window Start"}</th>}
-              {isColVisible("exit_price") && <th className="sortable" style={{ textAlign: "right" }} onClick={() => onSortChange("exit_price")}>{variant === "scanner" ? "Exit" : "Close"}</th>}
+              {isColVisible("entry") && <th className="sortable" style={{ textAlign: "right" }} onClick={() => onSortChange("entry")}>Entry</th>}
+              {isColVisible("stop_loss") && <th className="sortable" style={{ textAlign: "right" }} onClick={() => onSortChange("stop_loss")}>Stop Loss</th>}
+              {isColVisible("target") && <th className="sortable" style={{ textAlign: "right" }} onClick={() => onSortChange("target")}>Target</th>}
+              {isColVisible("rr") && <th className="sortable" style={{ textAlign: "right" }} onClick={() => onSortChange("rr")}>RR</th>}
               {isColVisible("return_pct") && <th className="sortable" style={{ textAlign: "right" }} onClick={() => onSortChange("return_pct")}>{variant === "scanner" ? "Return %" : "Hold Return %"}</th>}
               {isColVisible("evaluation_date") && <th className="sortable" onClick={() => onSortChange("evaluation_date")}>Scan Date</th>}
+              {isColVisible("pass_count") && <th style={{ textAlign: "right" }}>Pass</th>}
+              {isColVisible("primary_failure") && <th>Primary Failure</th>}
+              {isColVisible("window_start") && <th className="sortable" style={{ textAlign: "right" }} onClick={() => onSortChange("window_start")}>Window Start</th>}
               {isColVisible("high_252") && <th className="sortable" style={{ textAlign: "right" }} onClick={() => onSortChange("high_252")}>Prior 252 High</th>}
               {isColVisible("rsi") && <th style={{ textAlign: "right" }}>RSI</th>}
               {isColVisible("sma_20") && <th style={{ textAlign: "right" }}>SMA 20</th>}
@@ -463,9 +544,7 @@ export const AllStockResultsTable: React.FC<AllStockResultsTableProps> = ({
               {isColVisible("sma_200") && <th style={{ textAlign: "right" }}>SMA 200</th>}
               {isColVisible("volume") && <th style={{ textAlign: "right" }}>Volume</th>}
               {isColVisible("avg_volume") && <th style={{ textAlign: "right" }}>Avg Volume</th>}
-              {isColVisible("pass_count") && <th style={{ textAlign: "right" }}>Pass</th>}
               {isColVisible("fail_count") && <th style={{ textAlign: "right" }}>Fail</th>}
-              {isColVisible("primary_failure") && <th>Primary Failure</th>}
             </tr>
           </thead>
           <tbody>
@@ -481,6 +560,7 @@ export const AllStockResultsTable: React.FC<AllStockResultsTableProps> = ({
                 const returnPct = row.return_pct ?? 0;
                 const isPos = returnPct > 0;
                 const isNeg = returnPct < 0;
+                const levels = getRowTradeLevels(row);
 
                 return (
                   <tr
@@ -511,14 +591,24 @@ export const AllStockResultsTable: React.FC<AllStockResultsTableProps> = ({
                         </span>
                       </td>
                     )}
-                    {isColVisible("entry_price") && (
+                    {isColVisible("entry") && (
                       <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
-                        {formatINR(row.entry_price)}
+                        {formatINR(levels.entry)}
                       </td>
                     )}
-                    {isColVisible("exit_price") && (
+                    {isColVisible("stop_loss") && (
                       <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
-                        {formatINR(row.close ?? row.exit_price)}
+                        {formatINR(levels.stopLoss)}
+                      </td>
+                    )}
+                    {isColVisible("target") && (
+                      <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
+                        {formatINR(levels.target)}
+                      </td>
+                    )}
+                    {isColVisible("rr") && (
+                      <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums", fontWeight: 600 }}>
+                        {formatRR(levels.rr)}
                       </td>
                     )}
                     {isColVisible("return_pct") && (
@@ -536,6 +626,29 @@ export const AllStockResultsTable: React.FC<AllStockResultsTableProps> = ({
                     {isColVisible("evaluation_date") && (
                       <td style={{ color: "#94a3b8", fontVariantNumeric: "tabular-nums" }}>
                         {row.evaluation_date || row.indicators?.evaluation_date || "—"}
+                      </td>
+                    )}
+                    {isColVisible("pass_count") && (
+                      <td style={{ textAlign: "right", color: "#4ade80", fontWeight: 600 }}>
+                        {row.filters_passed ?? row.pass_count ?? 0}
+                      </td>
+                    )}
+                    {isColVisible("primary_failure") && (
+                      <td style={{ color: "#94a3b8", fontSize: "0.72rem" }}>
+                        {row.primary_failure_reason ||
+                          row.primary_failure ||
+                          (variant === "scanner"
+                            ? row.signal === "MATCH" || row.signal === "MATCHED"
+                              ? "None"
+                              : "—"
+                            : row.signal === "BUY"
+                              ? "None"
+                              : "—")}
+                      </td>
+                    )}
+                    {isColVisible("window_start") && (
+                      <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
+                        {formatINR(row.entry_price)}
                       </td>
                     )}
                     {isColVisible("high_252") && (
@@ -573,27 +686,9 @@ export const AllStockResultsTable: React.FC<AllStockResultsTableProps> = ({
                         {formatVolume(row.avg_volume)}
                       </td>
                     )}
-                    {isColVisible("pass_count") && (
-                      <td style={{ textAlign: "right", color: "#4ade80", fontWeight: 600 }}>
-                        {row.filters_passed ?? row.pass_count ?? 0}
-                      </td>
-                    )}
                     {isColVisible("fail_count") && (
                       <td style={{ textAlign: "right", color: "#f87171", fontWeight: 600 }}>
                         {row.filters_failed ?? row.fail_count ?? 0}
-                      </td>
-                    )}
-                    {isColVisible("primary_failure") && (
-                      <td style={{ color: "#94a3b8", fontSize: "0.72rem" }}>
-                        {row.primary_failure_reason ||
-                          row.primary_failure ||
-                          (variant === "scanner"
-                            ? row.signal === "MATCH" || row.signal === "MATCHED"
-                              ? "None"
-                              : "—"
-                            : row.signal === "BUY"
-                              ? "None"
-                              : "—")}
                       </td>
                     )}
                   </tr>

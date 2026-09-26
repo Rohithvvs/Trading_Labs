@@ -261,18 +261,17 @@ export const StrategyTesterPageInner: React.FC = () => {
             "symbol",
             "company",
             "signal",
+            "entry",
+            "stop_loss",
+            "target",
+            "rr",
+            "return_pct",
             "evaluation_date",
-            "exit_price",
-            "high_252",
-            "volume",
-            "avg_volume",
             "pass_count",
-            "fail_count",
             "primary_failure",
           ],
     );
     columns.add("evaluation_date");
-    columns.add("high_252");
     return columns;
   });
 
@@ -814,13 +813,13 @@ export const StrategyTesterPageInner: React.FC = () => {
         "symbol",
         "company",
         "signal",
+        "entry",
+        "stop_loss",
+        "target",
+        "rr",
+        "return_pct",
         "evaluation_date",
-        "exit_price",
-        "high_252",
-        "volume",
-        "avg_volume",
         "pass_count",
-        "fail_count",
         "primary_failure",
       ])
     );
