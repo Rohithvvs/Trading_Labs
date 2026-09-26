@@ -213,7 +213,7 @@
   flex-direction: column;
   gap: 12px;
   padding-top: var(--space-3);
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  border-top: 1px solid var(--border);
 }
 
 .sidebar-universe-card {
@@ -224,7 +224,7 @@
 
 .sidebar-universe-label {
   font-size: 0.75rem;
-  color: #64748b;
+  color: var(--text-muted);
   font-weight: 500;
 }
 
@@ -233,13 +233,13 @@
   align-items: center;
   gap: 10px;
   padding: 8px 10px;
-  background: #0d1527;
-  border: 1px solid #1e293b;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
   border-radius: 8px;
 }
 
 .sidebar-universe-icon {
-  color: #38bdf8;
+  color: var(--accent);
   display: flex;
   align-items: center;
 }
@@ -247,12 +247,12 @@
 .sidebar-universe-count {
   font-size: 0.85rem;
   font-weight: 600;
-  color: #f1f5f9;
+  color: var(--text);
 }
 
 .sidebar-universe-name {
   font-size: 0.7rem;
-  color: #64748b;
+  color: var(--text-muted);
 }
 
 .sidebar-theme-card {
@@ -264,7 +264,7 @@
 
 .sidebar-theme-title {
   font-size: 0.75rem;
-  color: #64748b;
+  color: var(--text-muted);
   font-weight: 500;
 }
 
@@ -274,8 +274,8 @@
   gap: 2px;
   padding: 2px 4px;
   border-radius: 9999px;
-  background: #0d1527;
-  border: 1px solid #1e293b;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
   cursor: pointer;
 }
 
@@ -283,13 +283,13 @@
   font-size: 0.75rem;
   padding: 2px 8px;
   border-radius: 9999px;
-  color: #64748b;
+  color: var(--text-muted);
   transition: all 0.15s ease;
 }
 
 .sidebar-theme-icon.is-active {
-  background: #1e293b;
-  color: #38bdf8;
+  background: var(--surface-3);
+  color: var(--accent);
 }
 
 .sidebar-user-card {
@@ -297,15 +297,16 @@
   align-items: center;
   gap: 10px;
   padding: 8px 10px;
-  background: #0d1527;
-  border: 1px solid #1e293b;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
   border-radius: 8px;
   cursor: pointer;
-  transition: border-color 0.15s ease;
+  transition: border-color 0.15s ease, background 0.15s ease;
 }
 
 .sidebar-user-card:hover {
-  border-color: #334155;
+  border-color: var(--border-strong);
+  background: var(--surface-hover);
 }
 
 .sidebar-user-avatar {
@@ -331,7 +332,7 @@
 .sidebar-user-name {
   font-size: 0.8rem;
   font-weight: 600;
-  color: #f1f5f9;
+  color: var(--text);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -339,14 +340,14 @@
 
 .sidebar-user-email {
   font-size: 0.65rem;
-  color: #64748b;
+  color: var(--text-muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .sidebar-user-chevron {
-  color: #64748b;
+  color: var(--text-muted);
   font-size: 0.75rem;
 }
 

@@ -1459,30 +1459,70 @@ html.light .strategy-comparison-page,
 :root[data-theme="light"] .sc-leaderboard,
 :root[data-theme="light"] .sc-head-menu,
 :root[data-theme="light"] .sc-drawer-card,
-:root[data-theme="light"] .sc-quick-nav,
 :root[data-theme="light"] .sc-metric-card,
 :root[data-theme="light"] .sc-venn-panel,
+:root[data-theme="light"] .sc-venn-section,
 html.light .sc-radar-panel,
 html.light .sc-radar-body,
 html.light .sc-leaderboard,
 html.light .sc-head-menu,
 html.light .sc-drawer-card,
-html.light .sc-quick-nav,
 html.light .sc-metric-card,
-html.light .sc-venn-panel {
+html.light .sc-venn-panel,
+html.light .sc-venn-section {
   background: var(--sc-card) !important;
   border-color: var(--sc-border) !important;
   color: var(--sc-text) !important;
 }
 
+:root[data-theme="light"] .sc-quick-nav,
+html.light .sc-quick-nav {
+  background: rgba(255, 255, 255, 0.94) !important;
+  border-color: var(--sc-border) !important;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08) !important;
+}
+
+:root[data-theme="light"] .sc-quick-nav button,
+html.light .sc-quick-nav button {
+  background: var(--sc-input) !important;
+  border-color: var(--sc-border) !important;
+  color: var(--sc-muted) !important;
+}
+
+:root[data-theme="light"] .sc-quick-nav button:hover,
+html.light .sc-quick-nav button:hover {
+  background: var(--sc-hover) !important;
+  color: var(--sc-accent) !important;
+  border-color: var(--sc-accent) !important;
+}
+
+:root[data-theme="light"] .sc-quick-nav .sc-quick-nav-highlight,
+html.light .sc-quick-nav .sc-quick-nav-highlight {
+  background: rgba(234, 179, 8, 0.15) !important;
+  border-color: rgba(234, 179, 8, 0.6) !important;
+  color: #b45309 !important;
+  box-shadow: none !important;
+}
+
+:root[data-theme="light"] .sc-btn--venn-cta,
+html.light .sc-btn--venn-cta {
+  background: rgba(234, 179, 8, 0.14) !important;
+  border-color: #d97706 !important;
+  color: #b45309 !important;
+}
+
 :root[data-theme="light"] .sc-radar-head,
 :root[data-theme="light"] .sc-lb-table thead th,
+:root[data-theme="light"] .sc-lb-table thead th.sc-lb-sticky,
 :root[data-theme="light"] .sc-lb-row--section,
 :root[data-theme="light"] .sc-search-wrap,
+:root[data-theme="light"] .sc-table th,
 html.light .sc-radar-head,
 html.light .sc-lb-table thead th,
+html.light .sc-lb-table thead th.sc-lb-sticky,
 html.light .sc-lb-row--section,
-html.light .sc-search-wrap {
+html.light .sc-search-wrap,
+html.light .sc-table th {
   background: var(--sc-input) !important;
   border-color: var(--sc-border) !important;
   color: var(--sc-text) !important;
@@ -1490,21 +1530,36 @@ html.light .sc-search-wrap {
 
 :root[data-theme="light"] .sc-radar-head-cell,
 :root[data-theme="light"] .sc-lb-table td,
+:root[data-theme="light"] .sc-lb-table td.sc-lb-sticky,
 :root[data-theme="light"] .sc-radar-legend-name,
 :root[data-theme="light"] .sc-title,
 :root[data-theme="light"] .sc-venn-multi-card-title,
+:root[data-theme="light"] .sc-table td,
 html.light .sc-radar-head-cell,
 html.light .sc-lb-table td,
+html.light .sc-lb-table td.sc-lb-sticky,
 html.light .sc-radar-legend-name,
 html.light .sc-title,
-html.light .sc-venn-multi-card-title {
+html.light .sc-venn-multi-card-title,
+html.light .sc-table td {
+  background: var(--sc-card) !important;
   color: var(--sc-text) !important;
-  border-color: var(--sc-border) !important;
+  border-color: var(--sc-border-subtle) !important;
+}
+
+:root[data-theme="light"] .sc-lb-rank,
+html.light .sc-lb-rank {
+  background: var(--sc-input) !important;
+  color: var(--sc-text) !important;
 }
 
 :root[data-theme="light"] .sc-lb-row:hover td,
+:root[data-theme="light"] .sc-lb-table tbody tr:hover td,
+:root[data-theme="light"] .sc-lb-table tbody tr:hover td.sc-lb-sticky,
 :root[data-theme="light"] .sc-radar-head-cell:hover:not(.sc-radar-head-cell--empty),
 html.light .sc-lb-row:hover td,
+html.light .sc-lb-table tbody tr:hover td,
+html.light .sc-lb-table tbody tr:hover td.sc-lb-sticky,
 html.light .sc-radar-head-cell:hover:not(.sc-radar-head-cell--empty) {
   background: var(--sc-hover) !important;
 }
@@ -1514,12 +1569,150 @@ html.light .sc-radar-head-cell:hover:not(.sc-radar-head-cell--empty) {
 :root[data-theme="light"] .sc-kicker,
 :root[data-theme="light"] .sc-subtitle,
 :root[data-theme="light"] .sc-section-note,
+:root[data-theme="light"] .sc-venn-caption,
+:root[data-theme="light"] .sc-venn-stat-label,
+:root[data-theme="light"] .sc-venn-stat-card small,
 html.light .sc-head-run,
 html.light .sc-head-trigger--empty,
 html.light .sc-kicker,
 html.light .sc-subtitle,
-html.light .sc-section-note {
+html.light .sc-section-note,
+html.light .sc-venn-caption,
+html.light .sc-venn-stat-label,
+html.light .sc-venn-stat-card small {
   color: var(--sc-muted) !important;
+}
+
+:root[data-theme="light"] .sc-venn-canvas-wrap,
+html.light .sc-venn-canvas-wrap {
+  background: var(--sc-input) !important;
+  border-color: var(--sc-border) !important;
+}
+
+:root[data-theme="light"] .sc-venn-stat-card,
+html.light .sc-venn-stat-card {
+  background: var(--sc-input) !important;
+  border-color: var(--sc-border) !important;
+}
+
+:root[data-theme="light"] .sc-venn-stat-value,
+html.light .sc-venn-stat-value {
+  color: var(--sc-text) !important;
+}
+
+:root[data-theme="light"] .sc-venn-stat-card--consensus,
+html.light .sc-venn-stat-card--consensus {
+  background: rgba(234, 179, 8, 0.1) !important;
+  border-color: rgba(234, 179, 8, 0.4) !important;
+}
+
+:root[data-theme="light"] .sc-venn-stat-card--consensus .sc-venn-stat-value,
+html.light .sc-venn-stat-card--consensus .sc-venn-stat-value {
+  color: #d97706 !important;
+}
+
+:root[data-theme="light"] .sc-venn-stat-card--union,
+html.light .sc-venn-stat-card--union {
+  background: rgba(37, 99, 235, 0.08) !important;
+  border-color: rgba(37, 99, 235, 0.35) !important;
+}
+
+:root[data-theme="light"] .sc-venn-stat-card--union .sc-venn-stat-value,
+html.light .sc-venn-stat-card--union .sc-venn-stat-value {
+  color: #2563eb !important;
+}
+
+:root[data-theme="light"] .sc-venn-tab,
+html.light .sc-venn-tab {
+  background: var(--sc-input) !important;
+  border-color: var(--sc-border) !important;
+  color: var(--sc-muted) !important;
+}
+
+:root[data-theme="light"] .sc-venn-tab:hover,
+html.light .sc-venn-tab:hover {
+  background: var(--sc-hover) !important;
+  color: var(--sc-text) !important;
+}
+
+:root[data-theme="light"] .sc-venn-tab--active,
+html.light .sc-venn-tab--active {
+  background: var(--sc-card) !important;
+  color: var(--sc-text) !important;
+  border-color: var(--sc-accent) !important;
+}
+
+:root[data-theme="light"] .sc-venn-tab-badge,
+html.light .sc-venn-tab-badge {
+  background: var(--sc-hover) !important;
+  color: var(--sc-text) !important;
+}
+
+:root[data-theme="light"] .sc-venn-active-desc,
+html.light .sc-venn-active-desc {
+  background: var(--sc-input) !important;
+  border-color: var(--sc-border) !important;
+  color: var(--sc-text) !important;
+}
+
+:root[data-theme="light"] .sc-stock-card,
+html.light .sc-stock-card {
+  background: var(--sc-card) !important;
+  border-color: var(--sc-border) !important;
+}
+
+:root[data-theme="light"] .sc-stock-card:hover,
+html.light .sc-stock-card:hover {
+  background: var(--sc-hover) !important;
+  border-color: var(--sc-accent) !important;
+}
+
+:root[data-theme="light"] .sc-stock-card-sym,
+html.light .sc-stock-card-sym {
+  color: var(--sc-text) !important;
+}
+
+:root[data-theme="light"] .sc-stock-slot-badge,
+html.light .sc-stock-slot-badge {
+  background: var(--sc-input) !important;
+}
+
+:root[data-theme="light"] .sc-pine-col pre,
+html.light .sc-pine-col pre {
+  background: var(--sc-input) !important;
+  border-color: var(--sc-border) !important;
+  color: var(--sc-text) !important;
+}
+
+:root[data-theme="light"] .sc-chip,
+html.light .sc-chip {
+  background: rgba(37, 99, 235, 0.1) !important;
+  color: #1d4ed8 !important;
+}
+
+:root[data-theme="light"] .sc-skeleton,
+html.light .sc-skeleton {
+  background: linear-gradient(90deg, #f1f5f9, #e2e8f0, #f1f5f9) !important;
+}
+
+:root[data-theme="light"] .sc-math-op,
+html.light .sc-math-op {
+  color: #d97706 !important;
+}
+
+:root[data-theme="light"] .sc-venn-svg text[fill="#ffffff"],
+html.light .sc-venn-svg text[fill="#ffffff"] {
+  fill: var(--sc-text) !important;
+}
+
+:root[data-theme="light"] .sc-venn-svg text[fill="#fef08a"],
+html.light .sc-venn-svg text[fill="#fef08a"] {
+  fill: #854d0e !important;
+}
+
+:root[data-theme="light"] .sc-venn-svg text[fill="#94a3b8"],
+html.light .sc-venn-svg text[fill="#94a3b8"] {
+  fill: var(--sc-muted) !important;
 }
 
 

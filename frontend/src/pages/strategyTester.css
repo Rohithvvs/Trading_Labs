@@ -3155,4 +3155,284 @@ html.light .ind-pill input[type="date"] {
   color: #0f172a !important;
 }
 
+/* Strategy Builder, Filter Items & Logic */
+:root[data-theme="light"] .st-filter-item,
+html.light .st-filter-item {
+  background: var(--st-bg-input) !important;
+  border-color: var(--st-border) !important;
+  color: var(--st-text-main) !important;
+}
+
+:root[data-theme="light"] .st-filter-num,
+html.light .st-filter-num {
+  color: var(--st-text-muted) !important;
+}
+
+:root[data-theme="light"] .st-logic-row,
+html.light .st-logic-row {
+  border-bottom-color: var(--st-border-subtle) !important;
+  color: var(--st-text-muted) !important;
+}
+
+:root[data-theme="light"] .st-builder-meta-row span:last-child,
+html.light .st-builder-meta-row span:last-child {
+  color: var(--st-text-main) !important;
+}
+
+/* Dark & Reset Buttons */
+:root[data-theme="light"] .st-btn-dark,
+html.light .st-btn-dark {
+  background: var(--st-bg-card) !important;
+  border-color: var(--st-border) !important;
+  color: var(--st-text-main) !important;
+}
+
+:root[data-theme="light"] .st-btn-dark:hover:not(:disabled),
+html.light .st-btn-dark:hover:not(:disabled) {
+  background: var(--st-bg-hover) !important;
+  border-color: var(--st-border-active) !important;
+  color: var(--st-border-active) !important;
+}
+
+:root[data-theme="light"] .st-btn-reset,
+html.light .st-btn-reset {
+  background: var(--st-bg-card) !important;
+  border-color: var(--st-border) !important;
+  color: var(--st-text-muted) !important;
+}
+
+:root[data-theme="light"] .st-btn-reset:hover:not(:disabled),
+html.light .st-btn-reset:hover:not(:disabled) {
+  background: var(--st-bg-hover) !important;
+  color: var(--st-text-main) !important;
+}
+
+/* Pagination */
+:root[data-theme="light"] .st-page-num-btn,
+html.light .st-page-num-btn {
+  background: var(--st-bg-card) !important;
+  border-color: var(--st-border) !important;
+  color: var(--st-text-main) !important;
+}
+
+:root[data-theme="light"] .st-page-num-btn:hover:not(:disabled),
+html.light .st-page-num-btn:hover:not(:disabled) {
+  background: var(--st-bg-hover) !important;
+  color: var(--st-border-active) !important;
+}
+
+:root[data-theme="light"] .st-page-num-btn.is-active,
+html.light .st-page-num-btn.is-active {
+  background: var(--st-border-active) !important;
+  border-color: var(--st-border-active) !important;
+  color: #ffffff !important;
+}
+
+/* Signal Pills & Results Controls */
+:root[data-theme="light"] .st-signal-pill,
+html.light .st-signal-pill {
+  background: var(--st-bg-card) !important;
+  border-color: var(--st-border) !important;
+  color: var(--st-text-main) !important;
+}
+
+:root[data-theme="light"] .st-signal-pill:hover,
+html.light .st-signal-pill:hover {
+  background: var(--st-bg-hover) !important;
+  border-color: var(--st-border-active) !important;
+}
+
+:root[data-theme="light"] .st-pill-count,
+html.light .st-pill-count {
+  background: var(--st-bg-hover) !important;
+  color: var(--st-text-main) !important;
+}
+
+:root[data-theme="light"] .st-results-title,
+html.light .st-results-title {
+  color: var(--st-text-main) !important;
+}
+
+:root[data-theme="light"] .st-search-box,
+html.light .st-search-box {
+  background: var(--st-bg-input) !important;
+  border-color: var(--st-border) !important;
+  color: var(--st-text-main) !important;
+}
+
+:root[data-theme="light"] .st-search-box input,
+html.light .st-search-box input {
+  color: var(--st-text-main) !important;
+}
+
+:root[data-theme="light"] .st-select-small,
+html.light .st-select-small {
+  background: var(--st-bg-input) !important;
+  border-color: var(--st-border) !important;
+  color: var(--st-text-main) !important;
+}
+
+:root[data-theme="light"] .st-btn-small,
+html.light .st-btn-small {
+  background: var(--st-bg-input) !important;
+  border-color: var(--st-border) !important;
+  color: var(--st-text-main) !important;
+}
+
+:root[data-theme="light"] .st-btn-small:hover,
+html.light .st-btn-small:hover {
+  background: var(--st-bg-hover) !important;
+  border-color: var(--st-border) !important;
+  color: var(--st-text-main) !important;
+}
+
+:root[data-theme="light"] .st-config-box,
+html.light .st-config-box {
+  background: var(--st-bg-input) !important;
+  border-color: var(--st-border) !important;
+  color: var(--st-text-main) !important;
+}
+
+:root[data-theme="light"] .st-config-box select,
+:root[data-theme="light"] .st-config-box input,
+html.light .st-config-box select,
+html.light .st-config-box input {
+  color: var(--st-text-main) !important;
+}
+
+:root[data-theme="light"] .st-config-desc strong,
+html.light .st-config-desc strong {
+  color: var(--st-text-main) !important;
+}
+
+/* Progress bar & Run summary */
+:root[data-theme="light"] .st-progress-bar-wrap,
+html.light .st-progress-bar-wrap {
+  background: var(--st-border-subtle) !important;
+}
+
+:root[data-theme="light"] .st-run-meta-list span.val,
+html.light .st-run-meta-list span.val {
+  color: var(--st-text-main) !important;
+}
+
+:root[data-theme="light"] .st-summary-val,
+html.light .st-summary-val {
+  color: var(--st-text-main) !important;
+}
+
+:root[data-theme="light"] .st-signal-chips,
+html.light .st-signal-chips {
+  border-top-color: var(--st-border-subtle) !important;
+}
+
+/* Analytics tables, Donut legend & text */
+:root[data-theme="light"] .st-donut-center-num,
+html.light .st-donut-center-num {
+  color: var(--st-text-main) !important;
+}
+
+:root[data-theme="light"] .st-legend-text,
+html.light .st-legend-text {
+  color: var(--st-text-main) !important;
+}
+
+:root[data-theme="light"] .st-legend-text strong,
+html.light .st-legend-text strong {
+  color: var(--st-text-main) !important;
+}
+
+:root[data-theme="light"] .st-micro-table th,
+html.light .st-micro-table th {
+  border-bottom-color: var(--st-border) !important;
+  color: var(--st-text-muted) !important;
+}
+
+:root[data-theme="light"] .st-micro-table td,
+html.light .st-micro-table td {
+  border-bottom-color: var(--st-border-subtle) !important;
+  color: var(--st-text-main) !important;
+}
+
+:root[data-theme="light"] .st-funnel-stage-name,
+html.light .st-funnel-stage-name {
+  color: var(--st-text-main) !important;
+}
+
+:root[data-theme="light"] .st-funnel-stage-count,
+html.light .st-funnel-stage-count {
+  color: var(--st-text-muted) !important;
+}
+
+/* Modals & Pine Editor */
+:root[data-theme="light"] .st-modal-card,
+html.light .st-modal-card {
+  background: var(--st-bg-card) !important;
+  border-color: var(--st-border) !important;
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1) !important;
+}
+
+:root[data-theme="light"] .st-modal-header h2,
+html.light .st-modal-header h2 {
+  color: var(--st-text-main) !important;
+}
+
+:root[data-theme="light"] .st-modal-tabs-header,
+html.light .st-modal-tabs-header {
+  background: var(--st-bg-input) !important;
+  border-bottom-color: var(--st-border) !important;
+}
+
+:root[data-theme="light"] .st-modal-tab-btn,
+html.light .st-modal-tab-btn {
+  color: var(--st-text-muted) !important;
+}
+
+:root[data-theme="light"] .st-modal-tab-btn:hover,
+html.light .st-modal-tab-btn:hover {
+  color: var(--st-text-main) !important;
+}
+
+:root[data-theme="light"] .st-modal-tab-btn.is-active,
+html.light .st-modal-tab-btn.is-active {
+  color: var(--st-border-active) !important;
+  border-bottom-color: var(--st-border-active) !important;
+}
+
+:root[data-theme="light"] .st-pine-version-badge,
+html.light .st-pine-version-badge {
+  background: var(--st-bg-input) !important;
+  border-color: var(--st-border) !important;
+  color: var(--st-text-muted) !important;
+}
+
+:root[data-theme="light"] .pine-editor-container,
+html.light .pine-editor-container {
+  background: #f8fafc !important;
+  border-color: var(--st-border) !important;
+}
+
+:root[data-theme="light"] .pine-line-numbers,
+html.light .pine-line-numbers {
+  background: #f1f5f9 !important;
+  border-right-color: var(--st-border) !important;
+  color: #94a3b8 !important;
+}
+
+:root[data-theme="light"] .pine-highlight-overlay,
+html.light .pine-highlight-overlay {
+  color: #1e293b !important;
+}
+
+:root[data-theme="light"] .sig-btn-ghost,
+html.light .sig-btn-ghost {
+  border-color: var(--st-border) !important;
+  color: var(--st-text-muted) !important;
+}
+
+:root[data-theme="light"] .pulse-menu-divider,
+html.light .pulse-menu-divider {
+  background: var(--st-border-subtle) !important;
+}
+
 
