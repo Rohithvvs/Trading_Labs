@@ -39,6 +39,7 @@ class StrategyEvaluationResult:
     filter_details: list[dict[str, Any]]
     indicators: dict[str, float | None]
     primary_failure_reason: str | None
+    rr: float | None = None
     error_detail: str | None = None
     candle_count: int = 0
 
@@ -51,6 +52,7 @@ class StrategyEvaluationResult:
             "signal": self.signal,
             "entry_price": self.entry_price,
             "exit_price": self.exit_price,
+            "rr": self.rr or self.indicators.get("rr") or (2.0 if self.entry_price else None),
             "return_pct": self.return_pct,
             "return_bucket": self.return_bucket,
             "return_formula": self.return_formula,
