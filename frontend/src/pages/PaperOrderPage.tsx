@@ -426,8 +426,8 @@ export function PaperOrderPage() {
       totalCharges = Number(chargePreview.charges.total_charges) || 0;
       breakEvenPrice = Number(chargePreview.break_even_price ?? chargePreview.assumptions?.break_even_price) || 0;
     } else if (turnover > 0 && qty > 0) {
-      // Local fallback calculation matching INDIA_EQUITY_DELIVERY_DEFAULT
-      brokerage = 0;
+      // Local fallback calculation matching INDIA_EQUITY_DELIVERY_DEFAULT (Rs 20 flat brokerage)
+      brokerage = 20.00;
       stt = Math.round(turnover * 0.0010 * 100) / 100;
       exchangeTurnover = Math.round(turnover * 0.0000307 * 100) / 100;
       sebiTurnover = Math.round(turnover * 0.0000010 * 100) / 100;
@@ -437,7 +437,7 @@ export function PaperOrderPage() {
       dpCharges = 0;
       totalCharges = Math.round((brokerage + stt + exchangeTurnover + sebiTurnover + gst + stampDuty + dpCharges) * 100) / 100;
       if (ticket.side === "BUY") {
-        const estSellCharges = Math.round(turnover * 0.0010363 * 100) / 100;
+        const estSellCharges = Math.round((turnover * 0.0010363 + 23.60) * 100) / 100;
         breakEvenPrice = Math.round(((turnover + totalCharges + estSellCharges) / qty) * 100) / 100;
       } else {
         breakEvenPrice = entry;
@@ -445,7 +445,7 @@ export function PaperOrderPage() {
     }
 
     if (ticket.side === "BUY" && breakEvenPrice <= 0 && turnover > 0 && qty > 0) {
-      const estSellCharges = Math.round(turnover * 0.0010363 * 100) / 100;
+      const estSellCharges = Math.round((turnover * 0.0010363 + 23.60) * 100) / 100;
       breakEvenPrice = Math.round(((turnover + totalCharges + estSellCharges) / qty) * 100) / 100;
     }
 
@@ -2045,7 +2045,7 @@ export function PaperOrderPage() {
               </div>
             ) : null}
             <p className="helper-text" style={{ marginTop: 12 }}>
-              Guideline: risk no more than {(maxRiskPercent * 100).toFixed(1)}% per trade. Charges include STT (0.1%), NSE exchange fee, SEBI turnover fee, Stamp Duty &amp; 18% GST on services.
+              Guideline: risk no more than {(maxRiskPercent * 100).toFixed(1)}% per trade. Charges include ₹20 brokerage, STT (0.1%), NSE exchange fee, SEBI turnover fee, Stamp Duty &amp; 18% GST on services.
             </p>
           </section>
 

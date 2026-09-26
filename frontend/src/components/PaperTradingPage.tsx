@@ -2295,28 +2295,19 @@ function OrderTicketCard({
                 Strategy: {ticket.sourceStrategy || extractStrategyFromNotes(ticket.notes)}
               </p>
             ) : null}
-            <p>Brokerage: ₹0 (paper trade)</p>
-            <p>
-              STT: ₹0.1% on sell side = ₹{(ticket.side === 'SELL' ? ((entryReference ?? 0) * ticket.qty * 0.001).toFixed(2) : '0.00')}
-            </p>
-            <p>
-              Total estimated charges: ₹{(ticket.side === 'SELL' ? ((entryReference ?? 0) * ticket.qty * 0.001).toFixed(2) : '0.00')}
-            </p>
-            <p>
-              Estimated total {ticket.side === 'BUY' ? 'cost' : 'proceeds'}: ₹{ticket.side === 'BUY' ? ((entryReference ?? 0) * ticket.qty + 0).toFixed(2) : ((entryReference ?? 0) * ticket.qty - ((entryReference ?? 0) * ticket.qty * 0.001)).toFixed(2)}
-            </p>
             {(() => {
               const turnover = (entryReference ?? 0) * ticket.qty;
+              const brokerage = 20.0;
               const stt = turnover * 0.0010;
               const exch = turnover * 0.0000307;
               const sebi = turnover * 0.0000010;
-              const gst = (exch + sebi) * 0.18;
+              const gst = (brokerage + exch + sebi) * 0.18;
               const stamp = ticket.side === 'BUY' ? turnover * 0.00015 : 0;
-              const totalCharges = stt + exch + sebi + gst + stamp;
+              const totalCharges = brokerage + stt + exch + sebi + gst + stamp;
               const netTotal = ticket.side === 'BUY' ? turnover + totalCharges : Math.max(0, turnover - totalCharges);
               return (
                 <div style={{ fontSize: '0.9rem', display: 'flex', flexDirection: 'column', gap: 4, marginTop: 8, marginBottom: 8, background: 'var(--card-bg, #1a1e29)', padding: 10, borderRadius: 6 }}>
-                  <div>Brokerage: ₹0.00 (Zero Brokerage)</div>
+                  <div>Brokerage: ₹{brokerage.toFixed(2)} (Flat per Trade)</div>
                   <div>STT (0.10%): ₹{stt.toFixed(2)}</div>
                   <div>Exchange &amp; Statutory Taxes: ₹{(exch + sebi + gst + stamp).toFixed(2)}</div>
                   <div style={{ fontWeight: 600 }}>Total Estimated Charges: ₹{totalCharges.toFixed(2)}</div>

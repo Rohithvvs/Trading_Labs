@@ -83,7 +83,7 @@ def upgrade() -> None:
                 ) VALUES (
                     'Default NSE Equity Delivery', 'DEFAULT', 'NSE', 'EQUITY_DELIVERY', 'INR', true, true, 1,
                     :now, 'ROUND_HALF_UP', 2,
-                    'ZERO', 0, 0, 0,
+                    'FLAT_PER_EXECUTED_ORDER', 0, 20.00, 20.00,
                     0.10, 0.10,
                     0.00307, 0.00307,
                     0.00010, 0, 0,

@@ -17,7 +17,7 @@ def test_default_buy_delivery_charges():
         price=500,
     )
     assert res.turnover == Decimal("50000.00")
-    assert res.brokerage == Decimal("0.00")
+    assert res.brokerage == Decimal("20.00")
     # STT: 0.10% of 50000 = 50.00
     assert res.stt == Decimal("50.00")
     # NSE Exchange fee: 0.00307% of 50000 = 1.535 -> 1.54
@@ -26,16 +26,16 @@ def test_default_buy_delivery_charges():
     assert res.sebi_charges == Decimal("0.05")
     # Clearing charges: 0
     assert res.clearing_charges == Decimal("0.00")
-    # Taxable base: 0 + 1.54 + 0.05 = 1.59
-    # GST: 18% of 1.59 = 0.2862 -> 0.29
-    assert res.gst == Decimal("0.29")
+    # Taxable base: Brokerage (20.00) + 1.54 + 0.05 = 21.59
+    # GST: 18% of 21.59 = 3.8862 -> 3.89
+    assert res.gst == Decimal("3.89")
     # Stamp duty: 0.015% of 50000 = 7.50
     assert res.stamp_duty == Decimal("7.50")
     # DP charges on BUY: 0
     assert res.dp_charges == Decimal("0.00")
-    # Total charges: 50.00 + 1.54 + 0.05 + 0.29 + 7.50 = 59.38
-    assert res.total_charges == Decimal("59.38")
-    assert res.effective_total == Decimal("50059.38")
+    # Total charges: 20.00 + 50.00 + 1.54 + 0.05 + 3.89 + 7.50 = 82.98
+    assert res.total_charges == Decimal("82.98")
+    assert res.effective_total == Decimal("50082.98")
 
 
 def test_default_sell_delivery_charges():
@@ -46,23 +46,23 @@ def test_default_sell_delivery_charges():
         price=550,
     )
     assert res.turnover == Decimal("55000.00")
-    assert res.brokerage == Decimal("0.00")
+    assert res.brokerage == Decimal("20.00")
     # STT: 0.10% of 55000 = 55.00
     assert res.stt == Decimal("55.00")
     # NSE Exchange fee: 0.00307% of 55000 = 1.6885 -> 1.69
     assert res.exchange_charges == Decimal("1.69")
     # SEBI fee: 0.00010% of 55000 = 0.055 -> 0.06
     assert res.sebi_charges == Decimal("0.06")
-    # GST base: 1.69 + 0.06 = 1.75
-    # GST: 18% of 1.75 = 0.315 -> 0.32
-    assert res.gst == Decimal("0.32")
+    # GST base: Brokerage (20.00) + 1.69 + 0.06 = 21.75
+    # GST: 18% of 21.75 = 3.915 -> 3.92
+    assert res.gst == Decimal("3.92")
     # Stamp duty on SELL: 0
     assert res.stamp_duty == Decimal("0.00")
     # Default profile DP charges = 0
     assert res.dp_charges == Decimal("0.00")
-    # Total charges: 55.00 + 1.69 + 0.06 + 0.32 = 57.07
-    assert res.total_charges == Decimal("57.07")
-    assert res.effective_total == Decimal("54942.93")
+    # Total charges: 20.00 + 55.00 + 1.69 + 0.06 + 3.92 = 80.67
+    assert res.total_charges == Decimal("80.67")
+    assert res.effective_total == Decimal("54919.33")
 
 
 def test_flat_brokerage_with_dp_charges():
