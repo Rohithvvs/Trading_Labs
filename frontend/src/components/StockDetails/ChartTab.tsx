@@ -59,7 +59,7 @@ export const ChartTab: React.FC<ChartTabProps> = ({
                 <XAxis dataKey="date" tick={{ fill: "#64748b", fontSize: 11 }} />
                 <YAxis domain={["auto", "auto"]} tick={{ fill: "#64748b", fontSize: 11 }} orientation="right" />
                 <Tooltip
-                  contentStyle={{ background: "#091022", borderColor: "#1e293b", borderRadius: 8, fontSize: 12, color: "#f8fafc" }}
+                  contentStyle={{ background: "var(--st-bg-card, #091022)", borderColor: "var(--st-border, #1e293b)", borderRadius: 8, fontSize: 12, color: "var(--st-text-main, #f8fafc)" }}
                 />
                 <Line type="monotone" dataKey="close" stroke="#38bdf8" strokeWidth={2} dot={false} name="Close" />
                 <Line type="monotone" dataKey="sma_20" stroke="#eab308" strokeWidth={1.5} dot={false} name="SMA 20" />

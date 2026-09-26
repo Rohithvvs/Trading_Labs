@@ -1431,3 +1431,95 @@
   .sc-venn-layout { grid-template-columns: 1fr; }
 }
 
+/* ==========================================================================
+   Light Theme Adaptations for Strategy Comparison
+   ========================================================================== */
+
+:root[data-theme="light"] .strategy-comparison-page,
+html.light .strategy-comparison-page,
+[data-theme="light"] .strategy-comparison-page,
+[data-theme-active="light"] .strategy-comparison-page {
+  --sc-bg: #f8fafc;
+  --sc-card: #ffffff;
+  --sc-input: #f1f5f9;
+  --sc-hover: #e2e8f0;
+  --sc-border: #e2e8f0;
+  --sc-border-subtle: #edf2f7;
+  --sc-text: #0f172a;
+  --sc-muted: #64748b;
+  --sc-subtle: #94a3b8;
+  --sc-accent: #2563eb;
+  --sc-green: #16a34a;
+  --sc-red: #dc2626;
+  --sc-warn: #d97706;
+}
+
+:root[data-theme="light"] .sc-radar-panel,
+:root[data-theme="light"] .sc-radar-body,
+:root[data-theme="light"] .sc-leaderboard,
+:root[data-theme="light"] .sc-head-menu,
+:root[data-theme="light"] .sc-drawer-card,
+:root[data-theme="light"] .sc-quick-nav,
+:root[data-theme="light"] .sc-metric-card,
+:root[data-theme="light"] .sc-venn-panel,
+html.light .sc-radar-panel,
+html.light .sc-radar-body,
+html.light .sc-leaderboard,
+html.light .sc-head-menu,
+html.light .sc-drawer-card,
+html.light .sc-quick-nav,
+html.light .sc-metric-card,
+html.light .sc-venn-panel {
+  background: var(--sc-card) !important;
+  border-color: var(--sc-border) !important;
+  color: var(--sc-text) !important;
+}
+
+:root[data-theme="light"] .sc-radar-head,
+:root[data-theme="light"] .sc-lb-table thead th,
+:root[data-theme="light"] .sc-lb-row--section,
+:root[data-theme="light"] .sc-search-wrap,
+html.light .sc-radar-head,
+html.light .sc-lb-table thead th,
+html.light .sc-lb-row--section,
+html.light .sc-search-wrap {
+  background: var(--sc-input) !important;
+  border-color: var(--sc-border) !important;
+  color: var(--sc-text) !important;
+}
+
+:root[data-theme="light"] .sc-radar-head-cell,
+:root[data-theme="light"] .sc-lb-table td,
+:root[data-theme="light"] .sc-radar-legend-name,
+:root[data-theme="light"] .sc-title,
+:root[data-theme="light"] .sc-venn-multi-card-title,
+html.light .sc-radar-head-cell,
+html.light .sc-lb-table td,
+html.light .sc-radar-legend-name,
+html.light .sc-title,
+html.light .sc-venn-multi-card-title {
+  color: var(--sc-text) !important;
+  border-color: var(--sc-border) !important;
+}
+
+:root[data-theme="light"] .sc-lb-row:hover td,
+:root[data-theme="light"] .sc-radar-head-cell:hover:not(.sc-radar-head-cell--empty),
+html.light .sc-lb-row:hover td,
+html.light .sc-radar-head-cell:hover:not(.sc-radar-head-cell--empty) {
+  background: var(--sc-hover) !important;
+}
+
+:root[data-theme="light"] .sc-head-run,
+:root[data-theme="light"] .sc-head-trigger--empty,
+:root[data-theme="light"] .sc-kicker,
+:root[data-theme="light"] .sc-subtitle,
+:root[data-theme="light"] .sc-section-note,
+html.light .sc-head-run,
+html.light .sc-head-trigger--empty,
+html.light .sc-kicker,
+html.light .sc-subtitle,
+html.light .sc-section-note {
+  color: var(--sc-muted) !important;
+}
+
+

@@ -52,6 +52,9 @@ function boundsForRange(
   return { start: isoDay(start), end };
 }
 
+// Module-level cache for benchmark data to eliminate redundant network fetches
+let cachedNiftyData: { label: string; close: number }[] | null = null;
+
 export const BacktestTab: React.FC<BacktestTabProps> = ({
   symbol,
   stock,
@@ -96,19 +99,20 @@ export const BacktestTab: React.FC<BacktestTabProps> = ({
     setCurrentEndDate(end);
   };
 
-  // NIFTY 500 benchmark data
-  const [niftyData, setNiftyData] = useState<{ label: string; close: number }[]>([]);
+  // NIFTY 500 benchmark data (cached in memory)
+  const [niftyData, setNiftyData] = useState<{ label: string; close: number }[]>(() => cachedNiftyData || []);
 
   useEffect(() => {
+    if (cachedNiftyData && cachedNiftyData.length > 0) return;
     fetchSymbolDetail("NIFTY 500")
       .then((res: any) => {
         if (res?.ohlcv) {
-          setNiftyData(
-            res.ohlcv.map((c: any) => ({
-              label: new Date(c.timestamp).toISOString().split("T")[0],
-              close: c.close,
-            })),
-          );
+          const parsed = res.ohlcv.map((c: any) => ({
+            label: new Date(c.timestamp).toISOString().split("T")[0],
+            close: c.close,
+          }));
+          cachedNiftyData = parsed;
+          setNiftyData(parsed);
         }
       })
       .catch(() => {});
@@ -477,15 +481,12 @@ export const BacktestTab: React.FC<BacktestTabProps> = ({
     runId,
   ]);
 
-  if (isLoading || kernelLoading) {
-    return (
-      <div className="st-card st-card-full st-tab-loading" data-testid="backtest-loading">
-        Loading backtest...
-      </div>
-    );
-  }
+  const isDataLoading =
+    Boolean(isLoading) ||
+    Boolean(kernelLoading) ||
+    (candles.length === 0 && history.length === 0 && !kernelDash && !symbolDetail?.backtest_extras);
 
-  if (error && !stock && history.length === 0 && !kernelDash) {
+  if (error && !stock && history.length === 0 && !kernelDash && !isDataLoading) {
     return (
       <div className="st-card st-card-full st-tab-error" data-testid="backtest-error">
         <p>{error || kernelError || "Unable to load backtest data."}</p>
@@ -498,7 +499,7 @@ export const BacktestTab: React.FC<BacktestTabProps> = ({
     );
   }
 
-  if (!stock && history.length === 0 && !kernelDash && !symbolDetail) {
+  if (!stock && history.length === 0 && !kernelDash && !symbolDetail && !isDataLoading) {
     return (
       <div className="st-card st-card-full" data-testid="card-detail-backtest">
         <div className="st-tab-empty" data-testid="backtest-empty-state">
@@ -517,7 +518,7 @@ export const BacktestTab: React.FC<BacktestTabProps> = ({
         startDate={currentStartDate}
         endDate={currentEndDate}
         onCustomRange={handleCustomRange}
-        loading={isLoading || kernelLoading}
+        loading={isDataLoading}
         loadError={error || kernelError}
         symbol={symbol}
         strategyName={strategyName}

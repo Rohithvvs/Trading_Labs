@@ -35,7 +35,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({
       {/* 1. Trade Plan */}
       <div className="st-overview-section">
         <div style={{ marginBottom: 10, display: "flex", alignItems: "center", gap: 8 }}>
-          <h2 style={{ fontSize: "1rem", fontWeight: 700, color: "#f8fafc", margin: 0, textTransform: "uppercase", letterSpacing: "0.04em" }}>
+          <h2 style={{ fontSize: "1rem", fontWeight: 700, color: "var(--st-text-main)", margin: 0, textTransform: "uppercase", letterSpacing: "0.04em" }}>
             Trade Plan
           </h2>
         </div>
@@ -55,7 +55,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({
       {/* 2. Technicals */}
       <div className="st-overview-section">
         <div style={{ marginBottom: 10, display: "flex", alignItems: "center", gap: 8 }}>
-          <h2 style={{ fontSize: "1rem", fontWeight: 700, color: "#f8fafc", margin: 0, textTransform: "uppercase", letterSpacing: "0.04em" }}>
+          <h2 style={{ fontSize: "1rem", fontWeight: 700, color: "var(--st-text-main)", margin: 0, textTransform: "uppercase", letterSpacing: "0.04em" }}>
             Technicals
           </h2>
         </div>

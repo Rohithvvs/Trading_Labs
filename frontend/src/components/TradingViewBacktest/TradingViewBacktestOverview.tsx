@@ -133,7 +133,9 @@ export const TradingViewBacktestOverview: React.FC<TradingViewBacktestOverviewPr
     });
   }, [model, initialCapital]);
 
-  const scriptStatus: TvScriptStatus = loading
+  const isStillLoading = loading || (model == null && performancePoints.length === 0);
+
+  const scriptStatus: TvScriptStatus = isStillLoading
     ? "running"
     : model?.unavailable_reason
       ? "error"
@@ -171,14 +173,14 @@ export const TradingViewBacktestOverview: React.FC<TradingViewBacktestOverviewPr
         <TvKeyStats
           stats={keyStats}
           currency={currency}
-          loading={loading}
+          loading={isStillLoading}
         />
 
         {/* Performance chart */}
         <TvPerformanceChart
           points={performancePoints}
           currency={currency}
-          loading={loading}
+          loading={isStillLoading}
           onOpenSettings={onOpenConfigModal}
         />
       </div>
@@ -194,7 +196,7 @@ export const TradingViewBacktestOverview: React.FC<TradingViewBacktestOverviewPr
           initialCapital={initialCapital}
           currency={currency}
           symbol={symbol}
-          loading={loading}
+          loading={isStillLoading}
         />
       </div>
     </div>

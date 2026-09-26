@@ -309,10 +309,10 @@ export const StockDetailsPage: React.FC = () => {
     }
   }, [activeTab, resolvedRunId, symbol, stock?.entry_price, candles.length]);
 
-  // Fetch history when history or backtest tab is active
+  // Prefetch history in parallel as soon as runId and symbol are available
   useEffect(() => {
     if (isIndicatorScanId(resolvedRunId)) return;
-    if ((activeTab === "history" || activeTab === "backtest") && resolvedRunId && symbol && history.length === 0) {
+    if (resolvedRunId && symbol && history.length === 0) {
       setLoadingHistory(true);
       fetchStrategyResultHistory(resolvedRunId, symbol)
         .then((res) => {
@@ -588,7 +588,7 @@ export const StockDetailsPage: React.FC = () => {
           startDate={runStatus?.start_date}
           endDate={runStatus?.end_date}
           initialCapital={runStatus?.initial_capital}
-          isLoading={loadingHistory && history.length === 0 && !stock}
+          isLoading={loadingCandles || loadingHistory || (loadingSymbolDetail && !symbolDetail)}
           error={symbolDetailError}
           onRetry={fetchEnrichedDetail}
         />

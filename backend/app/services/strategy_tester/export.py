@@ -18,6 +18,7 @@ RESULT_COLUMNS = [
     "status",
     "entry_price",
     "exit_price",
+    "rr",
     "return_pct",
     "rsi",
     "sma_20",

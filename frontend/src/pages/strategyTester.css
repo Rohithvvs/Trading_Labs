@@ -2948,3 +2948,211 @@ select option,
   margin: 4px 6px;
 }
 
+/* ==========================================================================
+   Light Theme Adaptations for Strategy Tester & Stock Details
+   ========================================================================== */
+
+:root[data-theme="light"],
+html.light,
+[data-theme="light"],
+[data-theme-active="light"] {
+  --st-bg-page: #f8fafc;
+  --st-bg-card: #ffffff;
+  --st-bg-input: #f1f5f9;
+  --st-bg-hover: #e2e8f0;
+  --st-border: #e2e8f0;
+  --st-border-subtle: #edf2f7;
+  --st-border-active: #2563eb;
+  --st-blue-glow: rgba(37, 99, 235, 0.12);
+  --st-cyan: #0284c7;
+  --st-teal: #0d9488;
+  --st-green: #16a34a;
+  --st-green-bg: rgba(22, 163, 74, 0.12);
+  --st-green-border: rgba(22, 163, 74, 0.35);
+  --st-yellow: #d97706;
+  --st-yellow-bg: rgba(217, 119, 6, 0.12);
+  --st-yellow-border: rgba(217, 119, 6, 0.35);
+  --st-red: #dc2626;
+  --st-red-bg: rgba(220, 38, 38, 0.12);
+  --st-red-border: rgba(220, 38, 38, 0.35);
+  --st-gray: #64748b;
+  --st-gray-bg: rgba(100, 116, 139, 0.1);
+  --st-text-main: #0f172a;
+  --st-text-muted: #64748b;
+  --st-text-subtle: #94a3b8;
+}
+
+:root[data-theme="light"] .st-page-header-title,
+:root[data-theme="light"] .st-strategy-title,
+:root[data-theme="light"] .st-card-title,
+:root[data-theme="light"] .st-stock-hero-title,
+:root[data-theme="light"] .st-hero-metric-val,
+:root[data-theme="light"] .st-news-headline,
+:root[data-theme="light"] .ind-custom-dd-item-title,
+:root[data-theme="light"] .st-filter-eval-name,
+:root[data-theme="light"] .ind-observe-summary h3,
+:root[data-theme="light"] .sig-manual-setup-title,
+html.light .st-page-header-title,
+html.light .st-strategy-title,
+html.light .st-card-title,
+html.light .st-stock-hero-title,
+html.light .st-hero-metric-val,
+html.light .st-news-headline,
+html.light .ind-custom-dd-item-title,
+html.light .st-filter-eval-name,
+html.light .ind-observe-summary h3,
+html.light .sig-manual-setup-title {
+  color: var(--st-text-main) !important;
+}
+
+:root[data-theme="light"] .ind-pill,
+:root[data-theme="light"] .ind-col-chip,
+:root[data-theme="light"] .st-back-btn,
+:root[data-theme="light"] .ind-custom-dd-trigger,
+html.light .ind-pill,
+html.light .ind-col-chip,
+html.light .st-back-btn,
+html.light .ind-custom-dd-trigger {
+  background: var(--st-bg-card) !important;
+  border-color: var(--st-border) !important;
+  color: var(--st-text-main) !important;
+}
+
+:root[data-theme="light"] .ind-pill:hover,
+:root[data-theme="light"] .ind-col-chip:hover,
+:root[data-theme="light"] .st-back-btn:hover,
+:root[data-theme="light"] .ind-custom-dd-trigger:hover,
+html.light .ind-pill:hover,
+html.light .ind-col-chip:hover,
+html.light .st-back-btn:hover,
+html.light .ind-custom-dd-trigger:hover {
+  background: var(--st-bg-hover) !important;
+  border-color: var(--st-border-active) !important;
+  color: var(--st-border-active) !important;
+}
+
+:root[data-theme="light"] .ind-pill.is-open,
+:root[data-theme="light"] .ind-pill.has-filter,
+html.light .ind-pill.is-open,
+html.light .ind-pill.has-filter {
+  background: rgba(37, 99, 235, 0.08) !important;
+  border-color: var(--st-border-active) !important;
+  color: var(--st-border-active) !important;
+}
+
+:root[data-theme="light"] .ind-pill-add,
+html.light .ind-pill-add {
+  background: var(--st-bg-hover) !important;
+  color: var(--st-text-main) !important;
+  border: 1px solid var(--st-border) !important;
+}
+
+:root[data-theme="light"] .st-hero-metric-box,
+:root[data-theme="light"] .st-filter-eval-item,
+:root[data-theme="light"] .st-news-item,
+:root[data-theme="light"] .st-condition-item,
+:root[data-theme="light"] .ind-filter-chip,
+:root[data-theme="light"] .ind-custom-dd-search-wrap,
+:root[data-theme="light"] .sig-setup-control,
+:root[data-theme="light"] .sig-setup-input,
+:root[data-theme="light"] .sig-cond-trigger,
+:root[data-theme="light"] .st-bar-info,
+html.light .st-hero-metric-box,
+html.light .st-filter-eval-item,
+html.light .st-news-item,
+html.light .st-condition-item,
+html.light .ind-filter-chip,
+html.light .ind-custom-dd-search-wrap,
+html.light .sig-setup-control,
+html.light .sig-setup-input,
+html.light .sig-cond-trigger,
+html.light .st-bar-info {
+  background: var(--st-bg-input) !important;
+  border-color: var(--st-border) !important;
+  color: var(--st-text-main) !important;
+}
+
+:root[data-theme="light"] .st-stock-hero-icon,
+html.light .st-stock-hero-icon {
+  background: var(--st-bg-input) !important;
+}
+
+:root[data-theme="light"] .st-hero-metrics-grid,
+html.light .st-hero-metrics-grid {
+  border-top-color: var(--st-border) !important;
+}
+
+:root[data-theme="light"] .ind-custom-dd-menu,
+:root[data-theme="light"] .sig-manual-setup,
+:root[data-theme="light"] .pulse-menu,
+:root[data-theme="light"] .sig-cond-menu,
+html.light .ind-custom-dd-menu,
+html.light .sig-manual-setup,
+html.light .pulse-menu,
+html.light .sig-cond-menu {
+  background: var(--st-bg-card) !important;
+  border-color: var(--st-border) !important;
+  color: var(--st-text-main) !important;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.12) !important;
+}
+
+:root[data-theme="light"] .ind-custom-dd-item:hover,
+:root[data-theme="light"] .sig-cond-option:hover,
+:root[data-theme="light"] .pulse-menu-item:hover,
+html.light .ind-custom-dd-item:hover,
+html.light .sig-cond-option:hover,
+html.light .pulse-menu-item:hover {
+  background: var(--st-bg-hover) !important;
+}
+
+:root[data-theme="light"] .ind-custom-dd-search-input,
+:root[data-theme="light"] .sig-cond-option,
+:root[data-theme="light"] .pulse-menu-item,
+:root[data-theme="light"] .st-detail-kv-row span:last-child,
+html.light .ind-custom-dd-search-input,
+html.light .sig-cond-option,
+html.light .pulse-menu-item,
+html.light .st-detail-kv-row span:last-child {
+  color: var(--st-text-main) !important;
+}
+
+:root[data-theme="light"] .st-main-table th,
+html.light .st-main-table th {
+  background: var(--st-bg-input) !important;
+  border-bottom-color: var(--st-border) !important;
+  color: var(--st-text-muted) !important;
+}
+
+:root[data-theme="light"] .st-main-table td,
+html.light .st-main-table td {
+  border-bottom-color: var(--st-border-subtle) !important;
+  color: var(--st-text-main) !important;
+}
+
+:root[data-theme="light"] select,
+html.light select,
+[data-theme="light"] select {
+  color-scheme: light !important;
+}
+
+:root[data-theme="light"] select option,
+:root[data-theme="light"] .ind-pill select option,
+:root[data-theme="light"] .st-select-small option,
+:root[data-theme="light"] .ind-filter-chip select option,
+:root[data-theme="light"] .ind-editor select option,
+html.light select option,
+html.light .ind-pill select option,
+html.light .st-select-small option,
+html.light .ind-filter-chip select option,
+html.light .ind-editor select option {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+}
+
+:root[data-theme="light"] .ind-pill input[type="date"],
+html.light .ind-pill input[type="date"] {
+  color-scheme: light !important;
+  color: #0f172a !important;
+}
+
+
