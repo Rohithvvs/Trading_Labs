@@ -1030,7 +1030,36 @@ def result_payload(row) -> dict[str, Any]:
         close_t252 = round(close_val / (1.0 + float(momentum)), 2)
         outputs["Close t-252"] = close_t252
     payload["close_t252"] = close_t252 if isinstance(close_t252, (int, float)) else None
-    payload["entry_price"] = close_t252 if isinstance(close_t252, (int, float)) else None
+    candidate_entry = (
+        close_t252
+        if isinstance(close_t252, (int, float))
+        else outputs.get("Entry Price")
+        if isinstance(outputs.get("Entry Price"), (int, float))
+        else ohlcv.get("open")
+        if isinstance(ohlcv.get("open"), (int, float))
+        else close_val
+    )
+    payload["candidate_entry_price"] = candidate_entry
+    payload["entry_price"] = candidate_entry
+
+    rr_val = None
+    if isinstance(outputs.get("RR"), (int, float)):
+        rr_val = float(outputs["RR"])
+    elif isinstance(outputs.get("Risk Reward"), (int, float)):
+        rr_val = float(outputs["Risk Reward"])
+    elif (
+        isinstance(outputs.get("Target"), (int, float))
+        and isinstance(outputs.get("Stop Loss"), (int, float))
+        and isinstance(candidate_entry, (int, float))
+    ):
+        risk = abs(float(candidate_entry) - float(outputs["Stop Loss"]))
+        reward = abs(float(outputs["Target"]) - float(candidate_entry))
+        if risk > 0:
+            rr_val = round(reward / risk, 2)
+    elif isinstance(candidate_entry, (int, float)) and candidate_entry > 0:
+        rr_val = 2.0
+    payload["rr"] = rr_val
+
     failed_names = payload["failed_filters"]
     payload["primary_failure_reason"] = (
         None
@@ -1104,9 +1133,10 @@ def symbol_detail_payload(run, row) -> dict[str, Any]:
             "filter_results": filter_results,
             "signal": "MATCH" if row.matched else "REJECT",
             "company": row.display_name,
-            "entry_price": close_t252 if isinstance(close_t252, (int, float)) else None,
+            "entry_price": payload.get("entry_price"),
             "exit_price": close_val if isinstance(close_val, (int, float)) else None,
-            "candidate_entry_price": close_val,
+            "candidate_entry_price": payload.get("candidate_entry_price") or close_val,
+            "rr": payload.get("rr"),
             "close_t252": close_t252 if isinstance(close_t252, (int, float)) else None,
             "return_pct": return_pct,
             "close": close_val,

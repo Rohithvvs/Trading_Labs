@@ -111,30 +111,47 @@ export function mapIndicatorResultToStock(
   const passed = filterResults.filter((item) => item.passed).map((item) => item.name);
   const failed = filterResults.filter((item) => !item.passed).map((item) => item.name);
 
-  const derivedStopLoss =
-    close != null
-      ? sma50 != null && sma50 < close
-        ? Math.round(sma50 * 100) / 100
-        : atr != null && atr > 0 && close - 1.5 * atr > 0
-          ? Math.round((close - 1.5 * atr) * 100) / 100
-          : Math.round(close * 0.95 * 100) / 100
-      : null;
+  const entryPrice =
+    num(row.entry_price) ??
+    num(outputs["Entry Price"]) ??
+    num(outputs["entry_price"]) ??
+    num(outputs["Entry"]) ??
+    num(outputs["entry"]) ??
+    num(outputs["Buy Price"]) ??
+    num(outputs["buy_price"]) ??
+    num(outputs["Signal Price"]) ??
+    closeT252 ??
+    num((row as any).candidate_entry_price) ??
+    num(row.ohlcv?.open) ??
+    close;
 
-  const stopLoss = (row as any).stop_loss ?? derivedStopLoss;
+  const exitPrice = num(row.exit_price) ?? close;
 
-  const derivedTarget =
-    close != null && stopLoss != null
-      ? Math.round((close + 2 * Math.abs(close - stopLoss)) * 100) / 100
-      : null;
+  const plan = resolveTradePlanDetails({
+    stock: {
+      ...row,
+      entry_price: entryPrice,
+      exit_price: exitPrice,
+      close,
+      indicators,
+    } as any,
+    scan,
+  });
 
-  const target = (row as any).target ?? derivedTarget;
-
-  const risk = close != null && stopLoss != null ? Math.abs(close - stopLoss) : null;
-  const reward = close != null && target != null ? Math.abs(target - close) : null;
-  const riskReward =
-    (row as any).rr ??
-    (row as any).risk_reward ??
-    (risk && risk > 0 && reward != null ? Math.round((reward / risk) * 100) / 100 : null);
+  const rawRR =
+    num(row.rr) ??
+    num((row as any).risk_reward) ??
+    num((row as any).riskReward) ??
+    num((row as any).risk_reward_ratio) ??
+    num(outputs["RR"]) ??
+    num(outputs["rr"]) ??
+    num(outputs["Risk Reward"]) ??
+    num(outputs["Risk/Reward"]) ??
+    num(outputs["risk_reward"]) ??
+    num(outputs["risk_reward_ratio"]) ??
+    (plan.riskAmount && plan.riskAmount > 0 && plan.rewardAmount != null && plan.rewardAmount > 0
+      ? Math.round((plan.rewardAmount / plan.riskAmount) * 100) / 100
+      : (entryPrice != null && entryPrice > 0 ? 2.0 : null));
 
   return {
     rank: 1,
@@ -151,14 +168,10 @@ export function mapIndicatorResultToStock(
             : "REJECT"
           : "REJECT"),
     evaluation_date: row.evaluation_date || row.as_of || null,
-    entry_price: row.entry_price ?? closeT252,
-    exit_price: row.exit_price ?? close,
+    entry_price: entryPrice,
+    exit_price: exitPrice,
+    rr: rawRR,
     candidate_entry_price: close,
-    entry: (row as any).entry ?? close,
-    stop_loss: stopLoss,
-    target,
-    rr: riskReward,
-    risk_reward: riskReward,
     return_pct: returnPct,
     close,
     volume: num(row.ohlcv?.volume),
@@ -254,8 +267,6 @@ export type ResolvedTradePlan = {
   riskPct: number | null;
   rewardAmount: number | null;
   rewardPct: number | null;
-  riskReward: number | null;
-  rr: number | null;
   isIndicatorScan: boolean;
 };
 
@@ -361,11 +372,6 @@ export function resolveTradePlanDetails(options: ResolveTradePlanOptions): Resol
       ? (rewardAmount / displayEntryPrice) * 100
       : null;
 
-  const riskReward =
-    riskAmount != null && riskAmount > 0 && rewardAmount != null
-      ? Math.round((rewardAmount / riskAmount) * 100) / 100
-      : null;
-
   return {
     signal,
     position,
@@ -379,8 +385,6 @@ export function resolveTradePlanDetails(options: ResolveTradePlanOptions): Resol
     riskPct,
     rewardAmount,
     rewardPct,
-    riskReward,
-    rr: riskReward,
     isIndicatorScan,
   };
 }

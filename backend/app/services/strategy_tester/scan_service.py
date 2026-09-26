@@ -1111,14 +1111,17 @@ def history_row(run) -> dict[str, Any]:
 
 def result_payload(row) -> dict[str, Any]:
     indicators = row.indicators or {}
+    entry_price = getattr(row, "entry_price", None) or indicators.get("entry_price") or indicators.get("close") or getattr(row, "exit_price", None)
+    rr = getattr(row, "rr", None) or indicators.get("rr") or (2.0 if entry_price else None)
     return {
         "rank": row.rank,
         "symbol": row.symbol,
         "company": row.company,
         "status": row.status,
         "signal": row.signal,
-        "entry_price": row.entry_price,
+        "entry_price": entry_price,
         "exit_price": row.exit_price,
+        "rr": rr,
         "return_pct": row.return_pct,
         "return_bucket": row.return_bucket,
         "return_formula": row.return_formula,

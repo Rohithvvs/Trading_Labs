@@ -457,7 +457,7 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
   const [topNegativeRows, setTopNegativeRows] = useState<RankedReturn[]>([]);
   const [columnsOpen, setColumnsOpen] = useState(false);
   const [visibleColumns, setVisibleColumns] = useState<Set<string>>(
-    () => new Set(["rank", "symbol", "company", "signal", "entry", "stop_loss", "target", "rr", "return_pct", "evaluation_date", "pass_count", "primary_failure"]),
+    () => new Set(["rank", "symbol", "company", "signal", "entry_price", "exit_price", "rr", "return_pct", "evaluation_date", "pass_count", "primary_failure"]),
   );
   const [busy, setBusy] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -1300,6 +1300,7 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
         evaluation_date: null,
         entry_price: null,
         exit_price: null,
+        rr: null,
         return_pct: 0,
         close: null,
         volume: null,
@@ -1893,7 +1894,7 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
           });
         }}
         onResetColumns={() =>
-          setVisibleColumns(new Set(["rank", "symbol", "company", "signal", "entry", "stop_loss", "target", "rr", "return_pct", "evaluation_date", "pass_count", "primary_failure"]))
+          setVisibleColumns(new Set(["rank", "symbol", "company", "signal", "entry_price", "exit_price", "rr", "return_pct", "evaluation_date", "pass_count", "primary_failure"]))
         }
       />
 
