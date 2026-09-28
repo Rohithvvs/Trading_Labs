@@ -363,6 +363,44 @@ def collect_entry_terms(compiled: CompiledIndicator) -> list[Expr]:
     return combined
 
 
+def is_benchmark_or_market_name(label: str) -> bool:
+    low = (label or "").lower()
+    return any(kw in low for kw in ("nifty", "benchmark", "market", "cnx500", "sensex", "index"))
+
+
+def is_benchmark_or_market_condition(
+    expr: Expr,
+    by_name: dict[str, Expr],
+    label: str = "",
+) -> bool:
+    if label and is_benchmark_or_market_name(label):
+        return True
+    return _has_benchmark_reference(expr, by_name, set())
+
+
+def _has_benchmark_reference(expr: Expr, by_name: dict[str, Expr], visited: set[str]) -> bool:
+    if isinstance(expr, Ident):
+        low = expr.name.lower()
+        if any(kw in low for kw in ("nifty", "benchmark", "market", "cnx500", "sensex")):
+            return True
+        if expr.name in by_name and expr.name not in visited:
+            visited.add(expr.name)
+            return _has_benchmark_reference(by_name[expr.name], by_name, visited)
+        return False
+    if isinstance(expr, Call):
+        qname = qualified_call_name(expr)
+        if qname == "request.security":
+            return True
+        return any(_has_benchmark_reference(arg, by_name, visited) for arg in expr.args)
+    if isinstance(expr, BinaryOp):
+        return _has_benchmark_reference(expr.left, by_name, visited) or _has_benchmark_reference(expr.right, by_name, visited)
+    if isinstance(expr, UnaryOp):
+        return _has_benchmark_reference(expr.expr, by_name, visited)
+    if isinstance(expr, Index):
+        return _has_benchmark_reference(expr.target, by_name, visited)
+    return False
+
+
 def strategy_entry_terms(compiled: CompiledIndicator) -> list[Expr]:
     """Leaves of the selected strategy's entry AND-tree. Never the collapsed Signal = 1 plot."""
     by_name = {stmt.name: stmt.expr for stmt in compiled.assignments}
@@ -378,9 +416,16 @@ def strategy_entry_terms(compiled: CompiledIndicator) -> list[Expr]:
             continue
         seen.add(key)
         primary.append(term)
-    if primary:
-        return primary
-    return collect_entry_terms(compiled)
+    terms = primary if primary else collect_entry_terms(compiled)
+    stock_terms: list[Expr] = []
+    market_terms: list[Expr] = []
+    for term in terms:
+        name = label_condition(term, by_name, constants)
+        if is_benchmark_or_market_condition(term, by_name, name):
+            market_terms.append(term)
+        else:
+            stock_terms.append(term)
+    return stock_terms + market_terms
 
 
 def entry_condition_defs(compiled: CompiledIndicator) -> list[dict[str, Any]]:
@@ -436,7 +481,12 @@ def _named_condition_defs(raw: Any) -> list[dict[str, Any]]:
             continue
         seen.add(key)
         rows.append({"id": cond_id, "name": name})
-    return rows
+    stock = [r for r in rows if not is_benchmark_or_market_name(r["name"])]
+    market = [r for r in rows if is_benchmark_or_market_name(r["name"])]
+    ordered = stock + market
+    for idx, r in enumerate(ordered, start=1):
+        r["id"] = f"c{idx}"
+    return ordered
 
 
 def is_aggregate_signal_filter(item: dict[str, Any] | None) -> bool:

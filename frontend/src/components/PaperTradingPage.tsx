@@ -2308,9 +2308,47 @@ function OrderTicketCard({
               return (
                 <div style={{ fontSize: '0.9rem', display: 'flex', flexDirection: 'column', gap: 4, marginTop: 8, marginBottom: 8, background: 'var(--card-bg, #1a1e29)', padding: 10, borderRadius: 6 }}>
                   <div>Brokerage: ₹{brokerage.toFixed(2)} (Flat per Trade)</div>
-                  <div>STT (0.10%): ₹{stt.toFixed(2)}</div>
-                  <div>Exchange &amp; Statutory Taxes: ₹{(exch + sebi + gst + stamp).toFixed(2)}</div>
-                  <div style={{ fontWeight: 600 }}>Total Estimated Charges: ₹{totalCharges.toFixed(2)}</div>
+                  <div style={{ fontWeight: 600, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <span>
+                      Total Estimated Charges: ₹{totalCharges.toFixed(2)}
+                      <InfoTooltip
+                        position="top"
+                        maxWidth="260px"
+                        ariaLabel="Estimated charges breakdown"
+                        content={
+                          <div style={{ display: "flex", flexDirection: "column", gap: "4px", minWidth: "190px", textAlign: "left" }}>
+                            <div style={{ fontWeight: 650, fontSize: "12px", borderBottom: "1px solid rgba(255,255,255,0.12)", paddingBottom: "4px", marginBottom: "2px", color: "var(--text-primary, #f1f5f9)" }}>
+                              Order Charges Breakdown
+                            </div>
+                            <div style={{ display: "flex", justifyContent: "space-between", gap: "12px" }}>
+                              <span style={{ color: "var(--text-muted, #94a3b8)" }}>Brokerage:</span>
+                              <span style={{ fontWeight: 600 }}>₹{brokerage.toFixed(2)}</span>
+                            </div>
+                            <div style={{ display: "flex", justifyContent: "space-between", gap: "12px" }}>
+                              <span style={{ color: "var(--text-muted, #94a3b8)" }}>STT (0.10%):</span>
+                              <span style={{ fontWeight: 600 }}>₹{stt.toFixed(2)}</span>
+                            </div>
+                            <div style={{ display: "flex", justifyContent: "space-between", gap: "12px" }}>
+                              <span style={{ color: "var(--text-muted, #94a3b8)" }}>Exchange &amp; SEBI:</span>
+                              <span style={{ fontWeight: 600 }}>₹{(exch + sebi).toFixed(2)}</span>
+                            </div>
+                            <div style={{ display: "flex", justifyContent: "space-between", gap: "12px" }}>
+                              <span style={{ color: "var(--text-muted, #94a3b8)" }}>GST (18%):</span>
+                              <span style={{ fontWeight: 600 }}>₹{gst.toFixed(2)}</span>
+                            </div>
+                            <div style={{ display: "flex", justifyContent: "space-between", gap: "12px" }}>
+                              <span style={{ color: "var(--text-muted, #94a3b8)" }}>{ticket.side === 'BUY' ? "Stamp Duty:" : "DP Charges:"}</span>
+                              <span style={{ fontWeight: 600 }}>₹{stamp.toFixed(2)}</span>
+                            </div>
+                            <div style={{ borderTop: "1px dashed rgba(255,255,255,0.12)", paddingTop: "4px", marginTop: "2px", display: "flex", justifyContent: "space-between", gap: "12px", fontWeight: 700 }}>
+                              <span>Total:</span>
+                              <span>₹{totalCharges.toFixed(2)}</span>
+                            </div>
+                          </div>
+                        }
+                      />
+                    </span>
+                  </div>
                   <div style={{ fontWeight: 700, marginTop: 4, color: 'var(--text-highlight, #fff)' }}>
                     Estimated {ticket.side === 'BUY' ? 'Total Net Outlay' : 'Net Proceeds'}: ₹{netTotal.toFixed(2)}
                   </div>
@@ -2355,7 +2393,36 @@ function PositionCard({ position, selectedSymbol, onSelect, onClose, onExit }: {
         <div className="paper-card__field"><span className="paper-card__field-label">Avg</span><span className="paper-card__field-value">{position.avg_entry_price.toFixed(2)}</span></div>
         <div className="paper-card__field"><span className="paper-card__field-label">Break-Even</span><span className="paper-card__field-value" style={{ color: '#3b82f6' }}>{position.break_even_price?.toFixed(2) ?? "--"}</span></div>
         <div className="paper-card__field"><span className="paper-card__field-label">Current</span><span className="paper-card__field-value">{position.current_price?.toFixed(2) ?? "--"}</span></div>
-        <div className="paper-card__field"><span className="paper-card__field-label">Charges</span><span className="paper-card__field-value" style={{ color: '#f59e0b' }}>₹{totalCharges.toFixed(2)}</span></div>
+        <div className="paper-card__field">
+          <span className="paper-card__field-label">
+            Charges
+            <InfoTooltip
+              position="top"
+              maxWidth="260px"
+              ariaLabel={`Charges breakdown for ${position.symbol}`}
+              content={
+                <div style={{ display: "flex", flexDirection: "column", gap: "4px", minWidth: "180px", textAlign: "left" }}>
+                  <div style={{ fontWeight: 650, fontSize: "12px", borderBottom: "1px solid rgba(255,255,255,0.12)", paddingBottom: "4px", marginBottom: "2px", color: "var(--text-primary, #f1f5f9)" }}>
+                    {position.symbol} Charges
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: "12px" }}>
+                    <span style={{ color: "var(--text-muted, #94a3b8)" }}>Entry Incurred:</span>
+                    <span style={{ fontWeight: 600 }}>₹{(position.total_buy_charges ?? 0).toFixed(2)}</span>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: "12px" }}>
+                    <span style={{ color: "var(--text-muted, #94a3b8)" }}>Est. Exit:</span>
+                    <span style={{ fontWeight: 600 }}>₹{(position.estimated_exit_charges ?? 0).toFixed(2)}</span>
+                  </div>
+                  <div style={{ borderTop: "1px dashed rgba(255,255,255,0.12)", paddingTop: "4px", marginTop: "2px", display: "flex", justifyContent: "space-between", gap: "12px", fontWeight: 700 }}>
+                    <span>Total:</span>
+                    <span>₹{totalCharges.toFixed(2)}</span>
+                  </div>
+                </div>
+              }
+            />
+          </span>
+          <span className="paper-card__field-value" style={{ color: '#f59e0b' }}>₹{totalCharges.toFixed(2)}</span>
+        </div>
         <div className="paper-card__field"><span className="paper-card__field-label">Stop</span><span className="paper-card__field-value">{position.stop_loss?.toFixed(2) ?? "--"}</span></div>
         <div className="paper-card__field"><span className="paper-card__field-label">Target</span><span className="paper-card__field-value">{position.target?.toFixed(2) ?? "--"}</span></div>
         <div className="paper-card__field"><span className="paper-card__field-label">R:R</span><span className="paper-card__field-value">{position.risk_reward_ratio?.toFixed(2) ?? "--"}</span></div>
@@ -2403,7 +2470,49 @@ const PositionsTable = memo(function PositionsTable({
             <th>R:R <InfoTooltip content={TOOLTIPS.PAPER_TRADING.RR_COL} /></th>
             <th>Break-Even</th>
             <th>Gross P&amp;L</th>
-            <th>Taxes &amp; Charges</th>
+            <th>
+              Taxes &amp; Charges
+              <InfoTooltip
+                position="top"
+                maxWidth="320px"
+                ariaLabel="Taxes and statutory charges breakdown"
+                content={
+                  <div style={{ display: "flex", flexDirection: "column", gap: "6px", minWidth: "220px", textAlign: "left" }}>
+                    <div style={{ fontWeight: 650, fontSize: "12px", borderBottom: "1px solid rgba(255,255,255,0.12)", paddingBottom: "4px", marginBottom: "2px", color: "var(--text-primary, #f1f5f9)" }}>
+                      Taxes &amp; Charges Breakdown
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: "16px" }}>
+                      <span style={{ color: "var(--text-muted, #94a3b8)" }}>Brokerage</span>
+                      <span style={{ fontWeight: 600 }}>₹20.00 / executed order</span>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: "16px" }}>
+                      <span style={{ color: "var(--text-muted, #94a3b8)" }}>Securities Transaction Tax (STT)</span>
+                      <span style={{ fontWeight: 600 }}>0.1% (Delivery Buy &amp; Sell)</span>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: "16px" }}>
+                      <span style={{ color: "var(--text-muted, #94a3b8)" }}>Exchange Turnover Charges</span>
+                      <span style={{ fontWeight: 600 }}>0.00307% (NSE)</span>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: "16px" }}>
+                      <span style={{ color: "var(--text-muted, #94a3b8)" }}>SEBI Turnover Charges</span>
+                      <span style={{ fontWeight: 600 }}>0.0001% (₹10 / crore)</span>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: "16px" }}>
+                      <span style={{ color: "var(--text-muted, #94a3b8)" }}>Stamp Duty</span>
+                      <span style={{ fontWeight: 600 }}>0.015% (Buy side only)</span>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: "16px" }}>
+                      <span style={{ color: "var(--text-muted, #94a3b8)" }}>GST</span>
+                      <span style={{ fontWeight: 600 }}>18% on (Brokerage + Exch + SEBI)</span>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: "16px" }}>
+                      <span style={{ color: "var(--text-muted, #94a3b8)" }}>DP Charges</span>
+                      <span style={{ fontWeight: 600 }}>₹15.93 / scrip on Sell</span>
+                    </div>
+                  </div>
+                }
+              />
+            </th>
             <th>Net Unrealized <InfoTooltip content={TOOLTIPS.PAPER_TRADING.UNREALIZED_COL} /></th>
             <th>% Net Return <InfoTooltip content={TOOLTIPS.PAPER_TRADING.PERCENT_PNL} /></th>
             <th>Status</th>
@@ -2433,7 +2542,33 @@ const PositionsTable = memo(function PositionsTable({
                 <td className="number-cell">{position.risk_reward_ratio?.toFixed(2) ?? "--"}</td>
                 <td className="number-cell" style={{ color: '#3b82f6', fontWeight: 600 }}>{position.break_even_price?.toFixed(2) ?? "--"}</td>
                 <td className={`number-cell ${grossPnl >= 0 ? "text-positive" : "text-negative"}`}>{formatCurrency(grossPnl)}</td>
-                <td className="number-cell" style={{ color: '#f59e0b' }}>₹{totalCharges.toFixed(2)}</td>
+                <td className="number-cell" style={{ color: '#f59e0b', whiteSpace: 'nowrap' }}>
+                  ₹{totalCharges.toFixed(2)}
+                  <InfoTooltip
+                    position="top"
+                    maxWidth="280px"
+                    ariaLabel={`Taxes and charges breakdown for ${position.symbol}`}
+                    content={
+                      <div style={{ display: "flex", flexDirection: "column", gap: "4px", minWidth: "190px", textAlign: "left" }}>
+                        <div style={{ fontWeight: 650, fontSize: "12px", borderBottom: "1px solid rgba(255,255,255,0.12)", paddingBottom: "4px", marginBottom: "2px", color: "var(--text-primary, #f1f5f9)" }}>
+                          {position.symbol} Taxes &amp; Charges
+                        </div>
+                        <div style={{ display: "flex", justifyContent: "space-between", gap: "12px" }}>
+                          <span style={{ color: "var(--text-muted, #94a3b8)" }}>Entry Incurred:</span>
+                          <span style={{ fontWeight: 600 }}>₹{(position.total_buy_charges ?? 0).toFixed(2)}</span>
+                        </div>
+                        <div style={{ display: "flex", justifyContent: "space-between", gap: "12px" }}>
+                          <span style={{ color: "var(--text-muted, #94a3b8)" }}>Est. Exit Charges:</span>
+                          <span style={{ fontWeight: 600 }}>₹{(position.estimated_exit_charges ?? 0).toFixed(2)}</span>
+                        </div>
+                        <div style={{ borderTop: "1px dashed rgba(255,255,255,0.12)", paddingTop: "4px", marginTop: "2px", display: "flex", justifyContent: "space-between", gap: "12px", fontWeight: 700 }}>
+                          <span>Round-Trip Total:</span>
+                          <span>₹{totalCharges.toFixed(2)}</span>
+                        </div>
+                      </div>
+                    }
+                  />
+                </td>
                 <td className={`number-cell ${netPnl >= 0 ? "text-positive" : "text-negative"}`} style={{ fontWeight: 600 }}>{formatCurrency(netPnl)}</td>
                 <td className={`number-cell ${netReturnPct >= 0 ? "text-positive" : "text-negative"}`}>{netReturnPct.toFixed(2)}%</td>
                 <td>{formatLifecycle(position.lifecycle_state, position.paused_reason)}</td>
@@ -2675,7 +2810,49 @@ const HistoryTable = memo(function HistoryTable({ trades, selectedTrade, setSele
               <th>Exit</th>
               <th>Break-Even</th>
               <th>Gross P&amp;L</th>
-              <th>Charges</th>
+              <th>
+                Charges
+                <InfoTooltip
+                  position="top"
+                  maxWidth="320px"
+                  ariaLabel="Trade charges breakdown"
+                  content={
+                    <div style={{ display: "flex", flexDirection: "column", gap: "6px", minWidth: "220px", textAlign: "left" }}>
+                      <div style={{ fontWeight: 650, fontSize: "12px", borderBottom: "1px solid rgba(255,255,255,0.12)", paddingBottom: "4px", marginBottom: "2px", color: "var(--text-primary, #f1f5f9)" }}>
+                        Taxes &amp; Statutory Charges
+                      </div>
+                      <div style={{ display: "flex", justifyContent: "space-between", gap: "16px" }}>
+                        <span style={{ color: "var(--text-muted, #94a3b8)" }}>Brokerage</span>
+                        <span style={{ fontWeight: 600 }}>₹20.00 / executed order</span>
+                      </div>
+                      <div style={{ display: "flex", justifyContent: "space-between", gap: "16px" }}>
+                        <span style={{ color: "var(--text-muted, #94a3b8)" }}>Securities Transaction Tax (STT)</span>
+                        <span style={{ fontWeight: 600 }}>0.1% (Delivery Buy &amp; Sell)</span>
+                      </div>
+                      <div style={{ display: "flex", justifyContent: "space-between", gap: "16px" }}>
+                        <span style={{ color: "var(--text-muted, #94a3b8)" }}>Exchange Turnover Charges</span>
+                        <span style={{ fontWeight: 600 }}>0.00307% (NSE)</span>
+                      </div>
+                      <div style={{ display: "flex", justifyContent: "space-between", gap: "16px" }}>
+                        <span style={{ color: "var(--text-muted, #94a3b8)" }}>SEBI Turnover Charges</span>
+                        <span style={{ fontWeight: 600 }}>0.0001% (₹10 / crore)</span>
+                      </div>
+                      <div style={{ display: "flex", justifyContent: "space-between", gap: "16px" }}>
+                        <span style={{ color: "var(--text-muted, #94a3b8)" }}>Stamp Duty</span>
+                        <span style={{ fontWeight: 600 }}>0.015% (Buy side only)</span>
+                      </div>
+                      <div style={{ display: "flex", justifyContent: "space-between", gap: "16px" }}>
+                        <span style={{ color: "var(--text-muted, #94a3b8)" }}>GST</span>
+                        <span style={{ fontWeight: 600 }}>18% on (Brokerage + Exch + SEBI)</span>
+                      </div>
+                      <div style={{ display: "flex", justifyContent: "space-between", gap: "16px" }}>
+                        <span style={{ color: "var(--text-muted, #94a3b8)" }}>DP Charges</span>
+                        <span style={{ fontWeight: 600 }}>₹15.93 / scrip on Sell</span>
+                      </div>
+                    </div>
+                  }
+                />
+              </th>
               <th>Net P&amp;L</th>
               <th>Net %</th>
               <th>Signal</th>

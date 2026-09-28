@@ -8,6 +8,7 @@ import { useIsCompactViewport } from "../hooks/useMediaQuery";
 import { FeatureGuard } from "./FeatureGuard";
 import { displayCanonicalSymbol } from "../utils/canonicalSymbol";
 import { Sparkline, downsampleValues } from "./Sparkline";
+import { DataStatusBadge, DataStatusBanner } from "./common/DataStatusBadge";
 
 export const SCANNER_TABLE_PAGE_SIZE = 40;
 
@@ -38,6 +39,8 @@ type CandidateTableProps = {
   exportFilePrefix?: string;
   sectionLabel?: string;
   heading?: string;
+  dataSource?: string | null;
+  dataWarning?: string | null;
 };
 
 export const CandidateTable = memo(function CandidateTable({
@@ -49,7 +52,10 @@ export const CandidateTable = memo(function CandidateTable({
   exportFilePrefix = "scan_results",
   sectionLabel = "Favorites",
   heading = "Scan results",
+  dataSource,
+  dataWarning,
 }: CandidateTableProps) {
+
   const { handlePrefetch } = useResearchPrefetch();
   const isCompact = useIsCompactViewport();
   const [visibleCount, setVisibleCount] = useState(SCANNER_TABLE_PAGE_SIZE);
@@ -113,7 +119,12 @@ export const CandidateTable = memo(function CandidateTable({
     <section className="panel table-panel">
       <div className="panel-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <div>
-          <p className="section-label">{sectionLabel}</p>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <p className="section-label" style={{ margin: 0 }}>{sectionLabel}</p>
+            {dataSource || dataWarning ? (
+              <DataStatusBadge source={dataSource} warning={dataWarning} />
+            ) : null}
+          </div>
           <h2>{heading}</h2>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
@@ -133,6 +144,9 @@ export const CandidateTable = memo(function CandidateTable({
           </FeatureGuard>
         </div>
       </div>
+
+      {dataWarning ? <DataStatusBanner source={dataSource} warning={dataWarning} /> : null}
+
 
       {isCompact ? (
         <div className="candidate-cards" data-testid="candidate-cards">

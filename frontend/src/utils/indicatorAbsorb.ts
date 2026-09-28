@@ -30,6 +30,11 @@ export function isAggregateSignalFilter(filter: IndicatorFilter | null | undefin
   return looksLikeAggregateSignal(filter.field) || looksLikeAggregateSignal(describeAbsorbedFilter(filter));
 }
 
+function isMarketOrBenchmarkName(name: string): boolean {
+  const low = (name || "").toLowerCase();
+  return ["nifty", "benchmark", "market", "cnx500", "sensex", "index"].some((kw) => low.includes(kw));
+}
+
 export function absorbEntryConditions(
   parsed: { entry_conditions?: unknown } | Record<string, unknown> | null | undefined,
 ): string[] {
@@ -47,7 +52,9 @@ export function absorbEntryConditions(
     seen.add(key);
     names.push(name);
   }
-  return names;
+  const stock = names.filter((n) => !isMarketOrBenchmarkName(n));
+  const market = names.filter((n) => isMarketOrBenchmarkName(n));
+  return [...stock, ...market];
 }
 
 export function defaultColumnFilter(column: AbsorbedOutput): IndicatorFilter {

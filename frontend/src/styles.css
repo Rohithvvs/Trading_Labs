@@ -11436,5 +11436,118 @@ body {
   }
 }
 
+/* ==========================================================================
+   PUBLIC BETA: FEEDBACK, ONBOARDING, AND DATA STATUS STYLES
+   ========================================================================== */
+
+/* Persistent Floating Feedback Trigger */
+.floating-feedback-pill {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 999;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg-surface-elevated, #1e293b);
+  color: var(--text-primary, #f8fafc);
+  border: 1px solid var(--border-subtle, #334155);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.28), 0 0 0 1px rgba(56, 189, 248, 0.15);
+  padding: 8px 14px;
+  border-radius: 9999px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  backdrop-filter: blur(8px);
+}
+
+.floating-feedback-pill:hover {
+  transform: translateY(-2px);
+  background: var(--surface-hover, #283548);
+  border-color: #38bdf8;
+  box-shadow: 0 6px 20px rgba(56, 189, 248, 0.25);
+}
+
+.floating-feedback-pill:active {
+  transform: translateY(0);
+}
+
+.floating-feedback-icon {
+  font-size: 1rem;
+  line-height: 1;
+}
+
+@media (max-width: 768px) {
+  .floating-feedback-pill {
+    bottom: 74px; /* Above bottom navigation bar */
+    right: 16px;
+    padding: 8px 12px;
+  }
+  .floating-feedback-label {
+    display: none;
+  }
+  .floating-feedback-pill::after {
+    content: "Feedback";
+    font-size: 0.78rem;
+  }
+}
+
+/* Header Feedback Button */
+.app-feedback-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+}
+
+@media (max-width: 640px) {
+  .app-feedback-btn__text {
+    display: none;
+  }
+}
+
+/* Data Status Badge */
+.data-status-badge {
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+.data-status-badge--sm {
+  font-size: 0.7rem;
+  padding: 2px 6px;
+}
+
+/* Sidebar feedback item */
+.sidebar-feedback-card {
+  padding: 8px 12px;
+  border-top: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08));
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.sidebar-feedback-link {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: none;
+  border: none;
+  color: var(--text-secondary, #94a3b8);
+  font-size: 0.8rem;
+  font-weight: 500;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 4px;
+  transition: all 0.15s ease;
+  text-align: left;
+  width: 100%;
+}
+
+.sidebar-feedback-link:hover {
+  color: var(--text-primary, #ffffff);
+  background: var(--surface-hover, rgba(255, 255, 255, 0.05));
+}
+
 
 

@@ -1,5 +1,6 @@
 import React from "react";
 import type { FilterStat } from "../../api_strategy_tester";
+import { DataStatusBadge } from "../common/DataStatusBadge";
 
 interface FilterAnalyticsCardProps {
   stats?: FilterStat[];
@@ -17,11 +18,16 @@ export const FilterAnalyticsCard: React.FC<FilterAnalyticsCardProps> = ({
   stats,
   totalUniverse = 755,
 }) => {
-  const displayStats = stats && stats.length > 0 ? stats : FALLBACK_STATS;
+  const isFallback = !stats || stats.length === 0;
+  const displayStats = !isFallback ? stats : FALLBACK_STATS;
 
   return (
     <div className="st-card" data-testid="card-filter-analytics">
-      <div className="st-card-title">Filter Analytics (Independent)</div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
+        <div className="st-card-title" style={{ margin: 0 }}>Filter Analytics (Independent)</div>
+        {isFallback ? <DataStatusBadge kind="fallback" label="Sample / Fallback Data" /> : null}
+      </div>
+
 
       <table className="st-micro-table">
         <thead>

@@ -27,6 +27,8 @@ import { InfoTooltip } from "../components/InfoTooltip";
 import { TOOLTIPS } from "../constants/tooltips";
 import { CACHE_KEYS, getCached, getStaleCached } from "../utils/appCache";
 import { Skeleton } from "../components/Skeleton";
+import { simplifySignal } from "../utils/signalUtils";
+import { DataStatusBadge } from "../components/common/DataStatusBadge";
 import {
   printRankedPerfReport,
   recordCacheHit,
@@ -34,6 +36,7 @@ import {
   recordSample,
   startPaperOrderPerf,
 } from "../utils/paperOrderPerf";
+
 
 const DEFAULT_TICKET: PaperOrderTicketState = {
   symbol: "INFY",
@@ -1476,13 +1479,15 @@ export function PaperOrderPage() {
     setTicket({ ...ticket, qty });
   }
 
-  const signalLabel = String(meta.signal || ticket.sourceSignal || ticket.side || "—");
+  const rawSignal = meta.signal || ticket.sourceSignal || ticket.side || "—";
+  const signalLabel = simplifySignal(rawSignal);
   const signalClass =
-    signalLabel.toUpperCase() === "BUY"
+    signalLabel === "BUY"
       ? "paper-order-badge paper-order-badge--buy"
-      : signalLabel.toUpperCase() === "SELL"
+      : signalLabel === "SELL" || signalLabel === "REJECT"
         ? "paper-order-badge paper-order-badge--sell"
         : "paper-order-badge";
+
 
   const showHardLoadError = Boolean(loadError);
   const quoteUnavailable = quoteStatus === "error" || quoteLane === "error";
@@ -1579,15 +1584,25 @@ export function PaperOrderPage() {
               </div>
               {/* Live quote is progressive — never blocks form */}
               <div className="paper-order-summary__price-block" data-testid="paper-order-live-quote">
-                <p className="section-label">
-                  Current / Live{" "}
+                <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "2px" }}>
+                  <p className="section-label" style={{ margin: 0 }}>
+                    Current / Live
+                  </p>
+                  {quoteStatus === "degraded" ? (
+                    <DataStatusBadge kind="delayed" label="Fallback / Delayed" />
+                  ) : quoteUnavailable ? (
+                    <DataStatusBadge kind="unavailable" label="Unavailable" />
+                  ) : (
+                    <DataStatusBadge kind="live" label="Live" hideWhenLive={false} />
+                  )}
                   <LaneChip
                     state={quoteLane}
                     readyLabel={quoteStatus === "degraded" ? "Degraded" : "Live"}
                     loadingLabel="…"
                     compact
                   />
-                </p>
+                </div>
+
                 <div className="paper-order-summary__price">
                   {currentPrice != null ? (
                     `₹${currentPrice.toFixed(2)}`
@@ -2028,9 +2043,48 @@ export function PaperOrderPage() {
             <h3 className="paper-order-section-title">Risk & Transaction Cost Summary</h3>
             <div className="paper-order-risk__grid">
               <Metric label={ticket.side === "BUY" ? "Gross Order Value" : "Gross Sale Value"} value={formatInr(risk.estimatedCost)} />
-              <Metric label="Brokerage" value={formatInr(risk.brokerage)} />
-              <Metric label="Total Taxes & Charges" value={formatInr(risk.charges)} />
-              <Metric label={ticket.side === "BUY" ? "Net Outlay Required" : "Estimated Net Proceeds"} value={formatInr(risk.totalCost)} />
+              <Metric
+                label="Total Taxes & Charges"
+                value={formatInr(risk.charges)}
+                tooltip={
+                  <InfoTooltip
+                    position="top"
+                    maxWidth="300px"
+                    ariaLabel="Taxes and statutory charges breakdown"
+                    content={
+                      <div style={{ display: "flex", flexDirection: "column", gap: "6px", minWidth: "220px", textAlign: "left" }}>
+                        <div style={{ fontWeight: 650, fontSize: "12px", borderBottom: "1px solid rgba(255,255,255,0.12)", paddingBottom: "4px", marginBottom: "2px", color: "var(--text-primary, #f1f5f9)" }}>
+                          Taxes &amp; Charges Breakdown
+                        </div>
+                        <div style={{ display: "flex", justifyContent: "space-between", gap: "16px" }}>
+                          <span style={{ color: "var(--text-muted, #94a3b8)" }}>Brokerage</span>
+                          <span style={{ fontWeight: 600 }}>{formatInr(risk.brokerage)}</span>
+                        </div>
+                        <div style={{ display: "flex", justifyContent: "space-between", gap: "16px" }}>
+                          <span style={{ color: "var(--text-muted, #94a3b8)" }}>Securities Transaction Tax (STT)</span>
+                          <span style={{ fontWeight: 600 }}>{formatInr(risk.stt)}</span>
+                        </div>
+                        <div style={{ display: "flex", justifyContent: "space-between", gap: "16px" }}>
+                          <span style={{ color: "var(--text-muted, #94a3b8)" }}>Exchange &amp; SEBI Charges</span>
+                          <span style={{ fontWeight: 600 }}>{formatInr(risk.exchangeTurnover + risk.sebiTurnover)}</span>
+                        </div>
+                        <div style={{ display: "flex", justifyContent: "space-between", gap: "16px" }}>
+                          <span style={{ color: "var(--text-muted, #94a3b8)" }}>GST (18% on Services)</span>
+                          <span style={{ fontWeight: 600 }}>{formatInr(risk.gst)}</span>
+                        </div>
+                        <div style={{ display: "flex", justifyContent: "space-between", gap: "16px" }}>
+                          <span style={{ color: "var(--text-muted, #94a3b8)" }}>{ticket.side === "BUY" ? "Stamp Duty (0.015%)" : "DP Charges"}</span>
+                          <span style={{ fontWeight: 600 }}>{formatInr(ticket.side === "BUY" ? risk.stampDuty : risk.dpCharges)}</span>
+                        </div>
+                        <div style={{ borderTop: "1px dashed rgba(255,255,255,0.12)", paddingTop: "4px", marginTop: "2px", display: "flex", justifyContent: "space-between", gap: "16px", fontWeight: 700 }}>
+                          <span>Total</span>
+                          <span>{formatInr(risk.charges)}</span>
+                        </div>
+                      </div>
+                    }
+                  />
+                }
+              />
               {ticket.side === "BUY" && risk.breakEvenPrice > 0 ? (
                 <Metric label="Break-Even Exit Price" value={formatInr(risk.breakEvenPrice)} />
               ) : null}
@@ -2269,14 +2323,19 @@ const Metric = memo(function Metric({
   label,
   value,
   testId,
+  tooltip,
 }: {
-  label: string;
+  label: React.ReactNode;
   value: string;
   testId?: string;
+  tooltip?: React.ReactNode;
 }) {
   return (
     <div className="metric-tile" data-testid={testId}>
-      <span>{label}</span>
+      <span>
+        {label}
+        {tooltip}
+      </span>
       <strong>{value}</strong>
     </div>
   );

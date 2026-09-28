@@ -2,6 +2,8 @@ import React from "react";
 import type { StrategyResultRow, StrategyRunStatus } from "../../api_strategy_tester";
 import type { SymbolDetail } from "../../types";
 import { resolveTradePlanDetails } from "../../utils/indicatorScanDetail";
+import { simplifySignal } from "../../utils/signalUtils";
+import { DataStatusBadge } from "../common/DataStatusBadge";
 
 export function formatINRVal(val: number | null | undefined): string {
   if (val == null || Number.isNaN(val)) return "—";
@@ -48,10 +50,11 @@ export const StockHeader: React.FC<StockHeaderProps> = ({
     runId,
   });
 
-  const signal = (stock?.signal || plan.signal || "WATCH").toUpperCase();
+  const signal = simplifySignal(stock?.signal || plan.signal || "WATCH");
   const returnPct = stock?.return_pct ?? 0;
   const isPos = returnPct > 0;
   const isNeg = returnPct < 0;
+
 
   const isIndicatorScan = plan.isIndicatorScan;
   const entryPrice = isIndicatorScan ? plan.displayEntryPrice : (stock?.entry_price ?? null);
@@ -80,10 +83,12 @@ export const StockHeader: React.FC<StockHeaderProps> = ({
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <DataStatusBadge source={(stock as any)?.data_source || (symbolDetail as any)?.data_source} />
           <span className="st-badge-pill" title="Strategy Test Run">
             Run: {runId}
           </span>
         </div>
+
       </div>
 
       {/* 4 Metric Boxes */}

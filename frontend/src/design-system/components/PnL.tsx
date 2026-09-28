@@ -64,27 +64,33 @@ export function PnL({
   );
 }
 
+import { simplifySignal, getSignalTone, getSignalDescription } from "../../utils/signalUtils";
+
 export function SignalBadge({ signal }: { signal: string }) {
-  const s = (signal || "").toUpperCase();
-  let tone: "buy" | "sell" | "watch" | "neutral" = "neutral";
+  const display = simplifySignal(signal);
+  const tone = getSignalTone(signal);
+  const description = getSignalDescription(signal);
   let icon: ReactNode = "•";
-  if (s === "BUY" || s === "BULLISH") {
-    tone = "buy";
+
+  if (tone === "buy") {
     icon = "▲";
-  } else if (s === "SELL" || s === "REJECT" || s === "BEARISH") {
-    tone = "sell";
+  } else if (tone === "sell") {
     icon = "▼";
-  } else if (s === "WATCH" || s === "NEUTRAL" || s === "SIDEWAYS") {
-    tone = "watch";
+  } else if (tone === "watch") {
     icon = "◆";
   }
 
   return (
-    <span className={`ds-badge ds-badge--${tone}`}>
+    <span
+      className={`ds-badge ds-badge--${tone}`}
+      title={description}
+      aria-label={`${display}: ${description}`}
+    >
       <span className="ds-badge__icon" aria-hidden>
         {icon}
       </span>
-      <span>{s || "—"}</span>
+      <span>{display}</span>
     </span>
   );
 }
+

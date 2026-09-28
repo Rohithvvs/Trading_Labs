@@ -35,6 +35,9 @@ import {
 } from "./BacktestAnalyticsDashboard";
 import { asDashboardTrade, hydrateStrategyBacktest } from "../utils/strategyBacktestDashboard";
 import { displayCanonicalSymbol } from "../utils/canonicalSymbol";
+import { DataStatusBadge } from "./common/DataStatusBadge";
+import { SignalBadge } from "../design-system";
+
 
 type StockDetailPanelProps = {
   row: CandidateRow | null;
@@ -158,8 +161,16 @@ export function StockDetailPanel({ row, onBack, onSendToPaperTrading }: StockDet
             {row.companyName ? <p className="muted-copy">{row.companyName}</p> : null}
             {row.w52 ? <span className="helper-chip">52-Week High Breakout</span> : null}
             {row.ltm ? <span className="helper-chip">Long-Term Buy & Hold Momentum</span> : null}
-            <span className={`signal-badge signal-${row.signal.toLowerCase()}`}>{row.signal}</span>
+            <SignalBadge signal={row.signal} />
+            {analysis?.data_quality?.mock_warning || analysis?.data_source ? (
+              <DataStatusBadge
+                source={analysis?.data_source}
+                isMock={Boolean(analysis?.data_quality?.mock_warning)}
+                warning={analysis?.data_quality?.mock_warning ? "Mock Data Warning" : null}
+              />
+            ) : null}
           </div>
+
           <p className="detail-summary">{row.recommendationSummary}</p>
         </div>
         <div className="detail-header-metrics">
@@ -891,16 +902,21 @@ function ConfidenceBreakdown({ analysis }: { analysis?: StockAnalysisResult }) {
 function DataQualityBox({ analysis }: { analysis?: StockAnalysisResult }) {
   const quality = analysis?.data_quality ?? {};
   const mockWarning = Boolean(quality.mock_warning);
+  const source = String(quality.source ?? analysis?.data_source ?? "unknown");
   return (
       <div className={`data-quality-box ${mockWarning ? "is-risk" : "is-positive"}`}>
-        <strong>{mockWarning ? "Mock data warning" : "Data quality"}</strong>
+        <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px" }}>
+          <strong>{mockWarning ? "Mock data warning" : "Data quality"}</strong>
+          <DataStatusBadge source={source} isMock={mockWarning} />
+        </div>
         <p>
-          Source {String(quality.source ?? analysis?.data_source ?? "unknown")} | candles {String(quality.candles ?? "--")} | Candles fetched: {String(quality.candles_fetched ?? quality.candles ?? "--")} | latest {String(quality.latest_timestamp ?? "--")}
+          Source {source} | candles {String(quality.candles ?? "--")} | Candles fetched: {String(quality.candles_fetched ?? quality.candles ?? "--")} | latest {String(quality.latest_timestamp ?? "--")}
         </p>
         {mockWarning ? <p>Do not place real trades from this result until FYERS live data is confirmed.</p> : null}
       </div>
   );
 }
+
 
 function buildTechnicalChecklist(indicators: Record<string, string | number | boolean>, row: CandidateRow) {
   return [

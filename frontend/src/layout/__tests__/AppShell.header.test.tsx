@@ -58,7 +58,7 @@ describe("AppShell global header", () => {
     });
   });
 
-  it("renders Infrastructure once, left of BUY, with SELL and Paper trade", () => {
+  it("renders Infrastructure, Feedback button, and profile menu without BUY/SELL/PaperTrade", () => {
     render(
       <MemoryRouter initialEntries={["/markets"]}>
         <AppShell>
@@ -68,12 +68,37 @@ describe("AppShell global header", () => {
     );
     const infra = screen.getAllByTestId("global-infrastructure");
     expect(infra).toHaveLength(1);
-    const buy = screen.getByTestId("global-buy-cta");
-    const sell = screen.getByTestId("global-sell-cta");
-    const paper = screen.getByTestId("global-paper-cta");
-    expect(infra[0].compareDocumentPosition(buy) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(buy.compareDocumentPosition(sell) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(sell.compareDocumentPosition(paper) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByTestId("global-feedback-cta")).toBeTruthy();
+    expect(screen.getByTestId("nav-profile-menu")).toBeTruthy();
+
+    // Verify BUY, SELL, and Paper trade buttons are hidden
+    expect(screen.queryByTestId("global-buy-cta")).toBeNull();
+    expect(screen.queryByTestId("global-sell-cta")).toBeNull();
+    expect(screen.queryByTestId("global-paper-cta")).toBeNull();
+  });
+
+  it("renders top navigation bar on Strategy Tester and Strategy Comparison", () => {
+    const { rerender } = render(
+      <MemoryRouter initialEntries={["/strategy-tester"]}>
+        <AppShell>
+          <div>Strategy Tester body</div>
+        </AppShell>
+      </MemoryRouter>,
+    );
+    expect(screen.getByTestId("global-infrastructure")).toBeTruthy();
+    expect(screen.getByTestId("global-feedback-cta")).toBeTruthy();
+    expect(screen.getByTestId("nav-profile-menu")).toBeTruthy();
+
+    rerender(
+      <MemoryRouter initialEntries={["/strategy-comparison"]}>
+        <AppShell>
+          <div>Strategy Comparison body</div>
+        </AppShell>
+      </MemoryRouter>,
+    );
+    expect(screen.getByTestId("global-infrastructure")).toBeTruthy();
+    expect(screen.getByTestId("global-feedback-cta")).toBeTruthy();
+    expect(screen.getByTestId("nav-profile-menu")).toBeTruthy();
   });
 
   it("keeps Infrastructure visible when the page body changes", () => {

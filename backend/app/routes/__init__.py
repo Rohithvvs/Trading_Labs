@@ -21,6 +21,7 @@ from .features import router as features_router
 from .diagnostics import router as diagnostics_router
 from .governance import governance_router
 from .analytics import router as analytics_router
+from .feedback import router as feedback_router
 
 # Preserve existing governance command-routing router (GET /api/v1/governance/routes)
 # declared in app.governance.router; the new governance_router above extends it
@@ -55,4 +56,6 @@ api_router.include_router(diagnostics_router)
 api_router.include_router(governance_router)
 api_router.include_router(analytics_router)
 api_router.include_router(command_routing_governance_router)
+api_router.include_router(feedback_router)
+
 

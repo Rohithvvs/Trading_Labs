@@ -79,3 +79,10 @@ export function getWsBaseUrl(): string {
   }
   return "ws://127.0.0.1:8000";
 }
+
+/** Official Telegram community URLs for beta support & feedback */
+export const TELEGRAM_CHANNEL_URL =
+  import.meta.env.VITE_TELEGRAM_CHANNEL_URL || "https://t.me/TradingLabsOfficial";
+export const TELEGRAM_GROUP_URL =
+  import.meta.env.VITE_TELEGRAM_GROUP_URL || "https://t.me/TradingLabsDiscussion";
+

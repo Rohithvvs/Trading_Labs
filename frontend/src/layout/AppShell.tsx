@@ -5,9 +5,10 @@ import { useTheme } from "../hooks/useTheme";
 
 import { useFeaturePermissions } from "../hooks/useFeaturePermissions";
 import { ADMIN_NAV, RETAIL_NAV, isNavActive } from "./navConfig";
-import { ThemeToggle } from "../components/ThemeToggle";
 import { InfrastructureStatus } from "../components/InfrastructureStatus";
-import { navigateToPaperOrder } from "../utils/paperOrderNavigation";
+import { FeedbackModal } from "../components/feedback/FeedbackModal";
+import { BetaOnboardingModal, hasAcknowledgedBetaOnboarding } from "../components/onboarding/BetaOnboardingModal";
+import { GlobalDataStatusIndicator } from "../components/common/GlobalDataStatusIndicator";
 
 type Props = {
   children: ReactNode;
@@ -45,6 +46,11 @@ export function AppShell({ children, topActions, title }: Props) {
   );
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [onboardingOpen, setOnboardingOpen] = useState(() =>
+    typeof window !== "undefined" && !hasAcknowledgedBetaOnboarding(),
+  );
+
 
   // Persist collapse preference — never fight the toggle with media-query forced state
   useEffect(() => {
@@ -194,6 +200,26 @@ export function AppShell({ children, topActions, title }: Props) {
               <span className={`sidebar-theme-icon ${theme === "dark" ? "is-active" : ""}`}>●</span>
             </button>
           </div>
+          <div className="sidebar-feedback-card">
+            <button
+              type="button"
+              className="sidebar-feedback-link"
+              onClick={() => setFeedbackOpen(true)}
+              title="Send Feedback or Report a Bug"
+            >
+              <span aria-hidden>💬</span>
+              <span>Feedback / Bug</span>
+            </button>
+            <button
+              type="button"
+              className="sidebar-feedback-link"
+              onClick={() => setOnboardingOpen(true)}
+              title="Beta Disclaimers & Operating Principles"
+            >
+              <span aria-hidden>ℹ️</span>
+              <span>Beta Guide</span>
+            </button>
+          </div>
           <div
             className="sidebar-user-card"
             onClick={() => navigate("/profile")}
@@ -213,7 +239,6 @@ export function AppShell({ children, topActions, title }: Props) {
 
       {/* Main column */}
       <div className="app-main-column">
-        {!isStrategyTester ? (
         <header className="app-topbar">
           <div className="app-topbar__left">
             <button
@@ -228,40 +253,17 @@ export function AppShell({ children, topActions, title }: Props) {
           </div>
           <div className="app-topbar__actions">
             {topActions}
+            <GlobalDataStatusIndicator onOpenFeedback={() => setFeedbackOpen(true)} />
             <InfrastructureStatus variant="header" />
             <button
               type="button"
-              className="ds-btn ds-btn--buy ds-btn--sm"
-              data-testid="global-buy-cta"
-              onClick={() =>
-                navigateToPaperOrder(navigate, {
-                  side: "BUY",
-                  returnTo: `${location.pathname}${location.search || ""}`,
-                })
-              }
+              className="ds-btn ds-btn--secondary ds-btn--sm app-feedback-btn"
+              data-testid="global-feedback-cta"
+              onClick={() => setFeedbackOpen(true)}
+              title="Send Feedback or Report a Bug"
             >
-              BUY
-            </button>
-            <button
-              type="button"
-              className="ds-btn ds-btn--sell ds-btn--sm"
-              data-testid="global-sell-cta"
-              onClick={() =>
-                navigateToPaperOrder(navigate, {
-                  side: "SELL",
-                  returnTo: `${location.pathname}${location.search || ""}`,
-                })
-              }
-            >
-              SELL
-            </button>
-            <button
-              type="button"
-              className="ds-btn ds-btn--secondary ds-btn--sm"
-              data-testid="global-paper-cta"
-              onClick={() => navigate("/paper")}
-            >
-              Paper trade
+              <span aria-hidden>💬</span>
+              <span className="app-feedback-btn__text">Feedback / Bug</span>
             </button>
             <div className="nav-profile-wrap" ref={profileRef}>
               <button
@@ -279,6 +281,7 @@ export function AppShell({ children, topActions, title }: Props) {
                   {user?.full_name?.split(" ")[0] || "Profile"}
                 </span>
               </button>
+
               {profileOpen ? (
                 <div className={`nav-profile-menu ${isMobile ? "nav-profile-menu--mobile" : ""}`} role="menu">
                   <button type="button" role="menuitem" onClick={() => { setProfileOpen(false); navigate("/profile"); }}>
@@ -358,6 +361,27 @@ export function AppShell({ children, topActions, title }: Props) {
                       </button>
                     </>
                   ) : null}
+                  <div className="nav-profile-divider" />
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setProfileOpen(false);
+                      setFeedbackOpen(true);
+                    }}
+                  >
+                    💬 Send Feedback / Bug
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setProfileOpen(false);
+                      setOnboardingOpen(true);
+                    }}
+                  >
+                    ℹ️ Beta Guide & Terms
+                  </button>
                   <button
                     type="button"
                     role="menuitem"
@@ -374,10 +398,36 @@ export function AppShell({ children, topActions, title }: Props) {
             </div>
           </div>
         </header>
-        ) : null}
 
         <div className="app-content">{children}</div>
       </div>
+
+      {/* Persistent Floating Feedback Trigger Button */}
+      <button
+        type="button"
+        className="floating-feedback-pill"
+        data-testid="floating-feedback-btn"
+        aria-label="Send Feedback or Report a Bug"
+        title="Send Feedback or Report a Bug"
+        onClick={() => setFeedbackOpen(true)}
+      >
+        <span className="floating-feedback-icon" aria-hidden>💬</span>
+        <span className="floating-feedback-label">Report Bug / Feedback</span>
+      </button>
+
+      {/* Beta Onboarding Modal */}
+      <BetaOnboardingModal
+        isOpen={onboardingOpen}
+        onClose={() => setOnboardingOpen(false)}
+        onOpenFeedback={() => setFeedbackOpen(true)}
+      />
+
+      {/* Feedback & Bug Reporting Modal */}
+      <FeedbackModal
+        isOpen={feedbackOpen}
+        onClose={() => setFeedbackOpen(false)}
+        userEmail={user?.email}
+      />
 
       {/* Mobile drawer overlay */}
       {mobileMenuOpen ? (
@@ -435,3 +485,4 @@ export function AppShell({ children, topActions, title }: Props) {
     </div>
   );
 }
+

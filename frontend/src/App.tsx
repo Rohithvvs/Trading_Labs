@@ -1102,7 +1102,10 @@ export default function App() {
                     exportFilePrefix="w52-scan"
                     sectionLabel={showAllAnalyzedStocks ? "Scan results" : "Favorites"}
                     heading={showAllAnalyzedStocks ? "All analyzed stocks" : "Scan results"}
+                    dataSource={w52Payload?.data_source}
+                    dataWarning={w52Payload?.data_warning}
                   />
+
                 ) : (
                   <EmptyState
                     title={
@@ -1175,6 +1178,8 @@ export default function App() {
                     onSelect={handleSelectSymbol}
                     onBuy={sendRowToPaperTrading}
                     exportFilePrefix="ltm-scan"
+                    dataSource={ltmPayload?.data_source}
+                    dataWarning={ltmPayload?.data_warning}
                   />
                 ) : (
                   <EmptyState
@@ -1210,7 +1215,10 @@ export default function App() {
             onSelect={handleSelectSymbol}
             onBuy={sendRowToPaperTrading}
             exportFilePrefix="scan"
+            dataSource={screenerResult?.data_source}
+            dataWarning={screenerResult?.data_warning}
           />
+
         ) : screenerResult ? (
           <EmptyState
             title="No matches for these filters"

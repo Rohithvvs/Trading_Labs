@@ -19,6 +19,8 @@ import type { ProfilePreferences } from "../utils/profilePrefs";
 
 import type { ScreenerResponse, ThemeMode } from "../types";
 import { FeatureGuard } from "../components/FeatureGuard";
+import { DataStatusBadge } from "../components/common/DataStatusBadge";
+
 
 type SummaryMetric = {
   label: string;
@@ -248,8 +250,14 @@ export const MarketsPage = memo(function MarketsPage({
         <CardHeader
           label="Indices"
           title="Market summary"
-          actions={<StatusPill status={hasMarket ? "online" : "idle"} label={hasMarket ? "Quotes" : "Waiting"} />}
+          actions={
+            <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+              <DataStatusBadge source={market?.source || (!hasMarket ? "UNAVAILABLE" : "LIVE")} />
+              <StatusPill status={hasMarket ? "online" : "idle"} label={hasMarket ? "Quotes" : "Waiting"} />
+            </div>
+          }
         />
+
         {loading && !market ? (
           <MetricCardSkeleton count={4} />
         ) : !hasMarket ? (
@@ -525,8 +533,12 @@ const IndexCard = memo(function IndexCard({ item }: { item: any }) {
   const label = item.name || item.symbol || "Index";
   return (
     <article className="metric-card markets-index-card">
-      <span>{label}</span>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%" }}>
+        <span>{label}</span>
+        {item.source ? <DataStatusBadge source={item.source} size="sm" /> : null}
+      </div>
       {price !== null ? (
+
         <>
           <strong>{price}</strong>
           <PnL value={change} currency={false} percent digits={2} size="sm" />

@@ -115,6 +115,27 @@ def _get(row: dict[str, Any] | Any, key: str) -> Any:
     return getattr(row, key, None)
 
 
+def is_market_or_benchmark_name(name: str) -> bool:
+    low = (name or "").lower()
+    return any(
+        kw in low
+        for kw in (
+            "nifty",
+            "benchmark",
+            "market",
+            "cnx500",
+            "sensex",
+            "index",
+        )
+    )
+
+
+def order_conditions_stock_first(names: list[str]) -> list[str]:
+    stock = [n for n in names if not is_market_or_benchmark_name(n)]
+    market = [n for n in names if is_market_or_benchmark_name(n)]
+    return stock + market
+
+
 def _condition_names(rows: list[dict[str, Any]], defs: list[dict[str, Any]] | None) -> list[str]:
     names: list[str] = []
     seen: set[str] = set()
@@ -126,7 +147,7 @@ def _condition_names(rows: list[dict[str, Any]], defs: list[dict[str, Any]] | No
         seen.add(key)
         names.append(name)
     if names:
-        return names
+        return order_conditions_stock_first(names)
     for row in rows:
         for cond in stored_conditions(row):
             name = str(cond.get("name") or "").strip()
@@ -137,7 +158,7 @@ def _condition_names(rows: list[dict[str, Any]], defs: list[dict[str, Any]] | No
             names.append(name)
         if names:
             break
-    return names
+    return order_conditions_stock_first(names)
 
 
 def _independent_stats(ok_rows: list[dict[str, Any]], names: list[str]) -> list[dict[str, Any]]:
@@ -163,6 +184,7 @@ def _independent_stats(ok_rows: list[dict[str, Any]], names: list[str]) -> list[
                 "skipped": skipped,
                 "pass_pct": (passed / total * 100.0) if total else 0.0,
                 "fail_pct": (failed / total * 100.0) if total else 0.0,
+                "is_market_filter": is_market_or_benchmark_name(name),
             }
         )
     return stats
@@ -207,6 +229,7 @@ def _sequential_funnel(
                 "remaining": remaining,
                 "drop": max(0, prev - remaining),
                 "retention_pct": (remaining / start * 100.0) if start else 0.0,
+                "is_market_filter": is_market_or_benchmark_name(name),
             }
         )
         prev = remaining

@@ -147,9 +147,9 @@ def test_breakout_fixture_and_filters():
 
     names = [item["name"] for item in ok.conditions]
     assert names == [
-        "NIFTY 500 Close > NIFTY 500 SMA 50",
         "Close >= Prior 252 High",
         "Volume > Average Volume 20",
+        "NIFTY 500 Close > NIFTY 500 SMA 50",
     ]
     assert all(item["passed"] is True for item in ok.conditions)
     vol_by_name = {item["name"]: item["passed"] for item in no_vol.conditions}
@@ -576,3 +576,60 @@ def test_paginate_orders_match_then_reject_then_skipped():
     )
     assert skipped_total == 1
     assert skipped_only[0]["symbol"] == "SKIP1"
+
+
+def test_sequential_funnel_evaluates_stocks_before_market_gate():
+    from app.services.indicator_scanner.entry_conditions import CONDITIONS_OUTPUT_KEY
+    from app.services.indicator_scanner.scan_analytics import build_indicator_scan_analytics
+
+    # 10 stocks:
+    # - 4 pass Prior 252 High
+    # - 2 of those 4 pass Volume > Avg Volume
+    # - 0 pass Market Condition (NIFTY 500 Close > NIFTY 500 SMA 50)
+    rows = []
+    for i in range(1, 11):
+        sym = f"SYM{i}"
+        high_pass = i <= 4
+        vol_pass = i <= 2
+        mkt_pass = False  # Bear market / gate closed
+        matched = high_pass and vol_pass and mkt_pass
+        rows.append(
+            {
+                "symbol": sym,
+                "display_name": f"Company {i}",
+                "status": "ok",
+                "matched": matched,
+                "outputs": {
+                    "Close": 100.0 + i,
+                    "Close t-252": 100.0,
+                    CONDITIONS_OUTPUT_KEY: [
+                        {"name": "NIFTY 500 Close > NIFTY 500 SMA 50", "passed": mkt_pass},
+                        {"name": "Close >= Prior 252 High", "passed": high_pass},
+                        {"name": "Volume > Average Volume 20", "passed": vol_pass},
+                    ],
+                },
+                "ohlcv": {"close": 100.0 + i},
+            }
+        )
+
+    out = build_indicator_scan_analytics(rows, universe_size=10)
+    funnel = out["filter_funnel"]
+    assert funnel[0]["label"] == "Start Universe"
+    assert funnel[0]["remaining"] == 10
+
+    assert funnel[1]["label"] == "Close >= Prior 252 High"
+    assert funnel[1]["remaining"] == 4
+    assert funnel[1]["drop"] == 6
+
+    assert funnel[2]["label"] == "Volume > Average Volume 20"
+    assert funnel[2]["remaining"] == 2
+    assert funnel[2]["drop"] == 2
+
+    assert funnel[3]["label"] == "NIFTY 500 Close > NIFTY 500 SMA 50"
+    assert funnel[3]["remaining"] == 0
+    assert funnel[3]["drop"] == 2
+    assert funnel[3].get("is_market_filter") is True
+
+    assert funnel[4]["label"] == "Final MATCHED Signals"
+    assert funnel[4]["remaining"] == 0
+

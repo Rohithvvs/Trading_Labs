@@ -52,6 +52,7 @@ export const TOOLTIPS = {
     STOP_COL: "Your set stop-loss price. Position auto-exits if market hits this level.",
     TARGET_COL: "Your profit target price. Position auto-exits when reached.",
     RR_COL: "Risk/Reward ratio for this position = (Target - Entry) ÷ (Entry - Stop).",
+    TAXES_AND_CHARGES: "Includes Brokerage (₹20 flat), STT (0.1% delivery), Exchange turnover (0.00307%), SEBI turnover (0.0001%), Stamp Duty (0.015% on buy), and 18% GST on services.",
     WIN_RATE: "Percentage of closed trades that were profitable.",
     PROFIT_FACTOR: "Ratio of total wins to total losses. >1 = net profitable system.",
     BEST_TRADE: "Largest single-trade profit in account history.",

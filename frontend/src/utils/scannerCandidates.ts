@@ -1,6 +1,7 @@
 import type { CandidateRow, RecommendationPrefillRequest } from "../types";
 import { completePaperLevels } from "./paperOrderLevels";
 import { LTM_STRATEGY_ID, W52_STRATEGY_ID } from "./strategyIdentity";
+import { simplifySignal } from "./signalUtils";
 
 function pos(n: number | null | undefined): number | null {
   return n != null && Number.isFinite(Number(n)) && Number(n) > 0 ? Number(n) : null;
@@ -12,9 +13,15 @@ function momentumPercent(raw: unknown): number | null {
 }
 
 function allowedSignal(raw: unknown, extra: string[] = []): CandidateRow["signal"] {
+  const simplified = simplifySignal(raw);
+  if (simplified === "BUY" || simplified === "WATCH" || simplified === "REJECT") {
+    return simplified;
+  }
   const value = String(raw || "").toUpperCase();
-  const allowed = new Set(["BUY", "HOLD", "WATCH", "REJECT", ...extra]);
-  return (allowed.has(value) ? value : "REJECT") as CandidateRow["signal"];
+  if (extra.includes(value)) {
+    return value as CandidateRow["signal"];
+  }
+  return "REJECT";
 }
 
 const SPARKLINE_MAX_POINTS = 32;

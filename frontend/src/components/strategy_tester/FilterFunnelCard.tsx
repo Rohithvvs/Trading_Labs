@@ -1,5 +1,6 @@
 import React from "react";
 import type { FunnelStep } from "../../api_strategy_tester";
+import { DataStatusBadge } from "../common/DataStatusBadge";
 
 interface FilterFunnelCardProps {
   steps?: FunnelStep[];
@@ -33,7 +34,6 @@ function formatStepLabel(step: FunnelStep, idx: number, total: number): string {
     step.label?.toLowerCase().includes("final buy") ||
     step.label?.toLowerCase().includes("final matched")
   ) {
-    if (step.label?.toLowerCase().includes("matched")) return "Final MATCHED Signals";
     return "Final BUY Signals";
   }
   let label = step.label || `Filter ${idx}`;
@@ -50,12 +50,17 @@ export const FilterFunnelCard: React.FC<FilterFunnelCardProps> = ({
   totalUniverse: _totalUniverse = 755,
   onStepClick,
 }) => {
-  const displaySteps = steps && steps.length > 0 ? steps : FALLBACK_FUNNEL;
+  const isFallback = !steps || steps.length === 0;
+  const displaySteps = !isFallback ? steps : FALLBACK_FUNNEL;
   const numSteps = displaySteps.length;
 
   return (
     <div className="st-card st-funnel-card" data-testid="card-filter-funnel">
-      <div className="st-card-title">Filter Funnel (Sequential)</div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
+        <div className="st-card-title" style={{ margin: 0 }}>Filter Funnel (Sequential)</div>
+        {isFallback ? <DataStatusBadge kind="fallback" label="Sample / Fallback Funnel" /> : null}
+      </div>
+
 
       {displaySteps.length > 1 && (
         <div
