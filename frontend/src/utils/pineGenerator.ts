@@ -3,15 +3,19 @@ import type { ModalBuilderFilter } from "./pineParser";
 /** Map human/indicator name to standard field identifier */
 function normalizeField(raw: string): { field: string; period?: string; isBenchmark?: boolean } {
   const text = (raw || "").trim();
-  if (/^nifty\s*(500)?\s*close/i.test(text) || /benchmark\s*close/i.test(text)) {
+
+  // Benchmark patterns
+  if (/^(?:nifty\s*(?:500)?|benchmark|nse:cnx500|cnx500)\s+close/i.test(text)) {
     return { field: "BENCHMARK_CLOSE", isBenchmark: true };
   }
-  const benchIndMatch = text.match(/^(?:nifty\s*(?:500)?|benchmark)\s+(SMA|EMA|WMA|RSI|ATR|CLOSE)\s*(\d+)?/i);
+  const benchIndMatch = text.match(/^(?:nifty\s*(?:500)?|benchmark|nse:cnx500|cnx500)\s+(SMA|EMA|WMA|RSI|ATR|CLOSE)\s*(\d+)?/i);
   if (benchIndMatch) {
     const indName = benchIndMatch[1].toUpperCase();
     const period = benchIndMatch[2] || (indName === "SMA" ? "50" : "20");
     return { field: indName, period, isBenchmark: true };
   }
+
+  // Price series
   if (/^close(\[1\])?$/i.test(text) || text.toLowerCase() === "price") {
     return { field: "CLOSE" };
   }
@@ -22,28 +26,35 @@ function normalizeField(raw: string): { field: string; period?: string; isBenchm
   if (/^high$/i.test(text)) return { field: "HIGH" };
   if (/^low$/i.test(text)) return { field: "LOW" };
   if (/^volume$/i.test(text)) return { field: "VOLUME" };
-  if (/^prior\s*(\d+)?\s*high/i.test(text)) {
-    const match = text.match(/prior\s*(\d+)\s*high/i);
+
+  // Prior High / 52W High / Highest (e.g. "Highest 252 Prior", "Prior 252 High", "52W High", "ta.highest(high, 252)")
+  if (/(?:prior|highest|52w|52-week).*high/i.test(text) || /ta\.highest/i.test(text) || /^highest\s*\d+/i.test(text)) {
+    const match = text.match(/(\d+)/);
     return { field: "HIGH", period: match ? match[1] : "252" };
   }
-  if (/^prior\s*(\d+)?\s*low/i.test(text)) {
-    const match = text.match(/prior\s*(\d+)\s*low/i);
+
+  // Prior Low / 52W Low / Lowest
+  if (/(?:prior|lowest|52w|52-week).*low/i.test(text) || /ta\.lowest/i.test(text) || /^lowest\s*\d+/i.test(text)) {
+    const match = text.match(/(\d+)/);
     return { field: "LOW", period: match ? match[1] : "252" };
   }
-  if (/^average\s*volume\s*(\d+)?/i.test(text) || /^avg\s*vol(ume)?\s*(\d+)?/i.test(text)) {
+
+  // Volume SMA / Average Volume / Relative Volume (e.g. "Average Volume 20", "Volume SMA 20", "ta.sma(volume, 20)")
+  if (/volume.*sma/i.test(text) || /(?:average|avg)\s*vol/i.test(text) || /ta\.sma\s*\(\s*volume/i.test(text)) {
     const match = text.match(/(\d+)/);
     return { field: "AVG_VOLUME", period: match ? match[1] : "20" };
   }
-  if (/^relative\s*volume\s*(\d+)?/i.test(text) || /^rel\s*vol(ume)?\s*(\d+)?/i.test(text)) {
+  if (/rel(?:ative)?\s*vol/i.test(text)) {
     const match = text.match(/(\d+)/);
     return { field: "REL_VOLUME", period: match ? match[1] : "20" };
   }
 
-  // Check for Indicator + Period (e.g. "SMA 50", "EMA 20", "RSI 14", "WMA 20", "ATR 14")
-  const indMatch = text.match(/^(SMA|EMA|WMA|RSI|ATR|VWAP|HV|MACD)\s*(\d+)?/i);
+  // Check for Indicator + Period (e.g. "SMA 50", "ta.sma(close, 50)", "EMA 20", "RSI 14", "WMA 20", "ATR 14")
+  const indMatch = text.match(/(?:ta\.)?(SMA|EMA|WMA|RSI|ATR|VWAP|HV|MACD)\s*(?:\([^)]*\)|[_\s]*(\d+))?/i);
   if (indMatch) {
     const indName = indMatch[1].toUpperCase();
-    const period = indMatch[2] || (indName === "RSI" || indName === "ATR" ? "14" : indName === "SMA" ? "50" : "20");
+    const periodMatch = text.match(/(\d+)/);
+    const period = periodMatch ? periodMatch[1] : (indName === "RSI" || indName === "ATR" ? "14" : indName === "SMA" ? "50" : "20");
     return { field: indName, period };
   }
 
@@ -133,16 +144,35 @@ export function conditionStringToFilter(condStr: string, idx = 0): ModalBuilderF
 
 /** Convert array of condition strings or objects into ModalBuilderFilter[] */
 export function entryConditionsToFilters(
-  conditions: Array<{ name?: string; id?: string } | string> | null | undefined
+  conditions: Array<{ name?: string; id?: string; field?: string; operator?: string; [key: string]: any } | string> | null | undefined
 ): ModalBuilderFilter[] {
   if (!Array.isArray(conditions) || conditions.length === 0) return [];
 
   const filters: ModalBuilderFilter[] = [];
   conditions.forEach((item, index) => {
-    const text = typeof item === "string" ? item : item?.name;
+    if (typeof item === "object" && item !== null && item.field && item.operator) {
+      filters.push(item as ModalBuilderFilter);
+      return;
+    }
+    const text = typeof item === "string" ? item : (item?.name || item?.condition || item?.label);
     if (text) {
       const parsed = conditionStringToFilter(text, index);
-      if (parsed) filters.push(parsed);
+      if (parsed) {
+        filters.push(parsed);
+      } else {
+        filters.push({
+          id: `cond_${index}_${Date.now()}`,
+          field: "CLOSE",
+          operator: ">",
+          rightKind: "literal",
+          literal: "0",
+          indicator: "SMA",
+          indicatorPeriod: "50",
+          low: "",
+          high: "",
+          label: text,
+        });
+      }
     }
   });
 

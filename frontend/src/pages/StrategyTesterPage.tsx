@@ -740,7 +740,8 @@ export const StrategyTesterPageInner: React.FC = () => {
     newLogic: "ALL" | "ANY",
     newSide: "LONG" | "SHORT",
     source: "builder" | "pine" = "builder",
-    newPineCode?: string
+    newPineCode?: string,
+    options?: { createNew?: boolean; createIndicator?: boolean }
   ) => {
     setStrategyName(name);
     setStrategyDesc(description);
@@ -752,7 +753,11 @@ export const StrategyTesterPageInner: React.FC = () => {
       setPineCode(newPineCode);
     }
 
-    const isIndicatorTarget = workspace === "indicator" || editingIndicator !== null || editExistingIndicator;
+    const isIndicatorTarget =
+      workspace === "indicator" ||
+      editingIndicator !== null ||
+      editExistingIndicator ||
+      Boolean(options?.createIndicator);
     if (isIndicatorTarget) {
       try {
         const generatedPine = filtersToPineIndicator({
@@ -764,7 +769,7 @@ export const StrategyTesterPageInner: React.FC = () => {
         });
 
         let savedIndicator: SavedIndicator;
-        const targetId = editingIndicator?.id || appliedIndicator?.id;
+        const targetId = options?.createNew ? null : (editingIndicator?.id || appliedIndicator?.id);
         if (targetId) {
           try {
             savedIndicator = await updateIndicator(targetId, {
@@ -796,8 +801,8 @@ export const StrategyTesterPageInner: React.FC = () => {
         setIsBuilderModalOpen(false);
 
         notify({
-          title: "Indicator Saved",
-          message: `Indicator "${savedIndicator.name}" updated with ${newFilters.length} condition(s).`,
+          title: options?.createNew ? "Indicator Created" : "Indicator Saved",
+          message: `Indicator "${savedIndicator.name}" ${options?.createNew ? "created" : "updated"} with ${newFilters.length} condition(s).`,
           type: "success",
         });
         return;
@@ -937,7 +942,7 @@ export const StrategyTesterPageInner: React.FC = () => {
               setBuilderTab("indicator");
               setIsBuilderModalOpen(true);
             }}
-            onEditIndicator={(indicator) => {
+            onEditIndicator={(indicator, currentConditions) => {
               setAppliedIndicator(indicator);
               setEditingIndicator(indicator);
               setEditExistingIndicator(true);
@@ -961,14 +966,22 @@ export const StrategyTesterPageInner: React.FC = () => {
 
               if (parsedFilters.length === 0) {
                 const conditions = indicator.entry_conditions || (indicator.parsed_definition as any)?.entry_conditions;
-                if (conditions && Array.isArray(conditions)) {
+                if (conditions && Array.isArray(conditions) && conditions.length > 0) {
                   parsedFilters = entryConditionsToFilters(conditions);
                 }
               }
 
-              if (parsedFilters.length > 0) {
-                setFilters(parsedFilters);
+              if (parsedFilters.length === 0 && currentConditions && currentConditions.length > 0) {
+                parsedFilters = entryConditionsToFilters(currentConditions);
               }
+
+              if (parsedFilters.length === 0) {
+                parsedFilters = [
+                  { id: "f1", field: "CLOSE", operator: ">", rightKind: "indicator", literal: "", indicator: "SMA", indicatorPeriod: "50", low: "", high: "" }
+                ];
+              }
+
+              setFilters(parsedFilters);
               setStrategyName(indicator.name);
               setStrategyDesc(indicator.description || "");
               setLogic(parsedLogic);
@@ -1025,7 +1038,10 @@ export const StrategyTesterPageInner: React.FC = () => {
               exitRule="EOD (End of Day)"
               capital={initialCapital}
               sourceType={strategySource}
-              onEditClick={() => setIsBuilderModalOpen(true)}
+              onEditClick={() => {
+                setBuilderTab("builder");
+                setIsBuilderModalOpen(true);
+              }}
             />
           </div>
 

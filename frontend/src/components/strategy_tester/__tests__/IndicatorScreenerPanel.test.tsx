@@ -303,7 +303,7 @@ describe("IndicatorScreenerPanel", () => {
     expect(editBtn.textContent).toContain("Edit");
     fireEvent.click(editBtn);
     expect(onEditIndicator).toHaveBeenCalledTimes(1);
-    expect(onEditIndicator).toHaveBeenCalledWith(strategyWithConditions);
+    expect(onEditIndicator).toHaveBeenCalledWith(strategyWithConditions, ["Close > SMA 50"]);
   });
 
   it("shows each strategy's last scan when the selection changes", async () => {
