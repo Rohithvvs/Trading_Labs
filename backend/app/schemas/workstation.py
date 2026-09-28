@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -97,6 +97,11 @@ class MarketIndexItem(BaseModel):
     label: str
     price: float | None = None
     change_pct: float | None = None
+    change: float | None = None
+    high: float | None = None
+    low: float | None = None
+    prev_close: float | None = None
+    sparkline: list[float] | None = None
     source: str
 
 
@@ -105,7 +110,12 @@ class MarketOverviewResponse(BaseModel):
     vix: MarketIndexItem
     top_gainers: list[MarketIndexItem]
     top_losers: list[MarketIndexItem]
+    sectors: list[MarketIndexItem] | None = None
+    breadth: dict[str, Any] | None = None
     updated_at: datetime
+
+
+MarketOverviewResponse.model_rebuild()
 
 
 class AlertCreate(BaseModel):

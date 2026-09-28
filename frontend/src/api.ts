@@ -1687,7 +1687,50 @@ export async function fetchBatchLight(symbols: string[]): Promise<{ symbols: { s
   return response.json();
 }
 
-export async function fetchMarketOverview(): Promise<any> {
+export interface MarketIndexItem {
+  symbol: string;
+  label: string;
+  price?: number | null;
+  change_pct?: number | null;
+  change?: number | null;
+  high?: number | null;
+  low?: number | null;
+  prev_close?: number | null;
+  sparkline?: number[] | null;
+  source: string;
+}
+
+export interface MarketBreadth {
+  advances: number;
+  declines: number;
+  unchanged: number;
+  total: number;
+  high_52w?: number;
+  low_52w?: number;
+  source?: string;
+}
+
+export interface MarketOverviewData {
+  indices: MarketIndexItem[];
+  vix?: MarketIndexItem;
+  top_gainers?: MarketIndexItem[];
+  top_losers?: MarketIndexItem[];
+  sectors?: MarketIndexItem[];
+  breadth?: MarketBreadth;
+  updated_at?: string;
+  source?: string;
+}
+
+export interface IndexCandlePoint {
+  date: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
+export async function fetchMarketOverview(): Promise<MarketOverviewData> {
   return cachedFetch(
     CACHE_KEYS.marketOverview,
     async () => {
@@ -1698,6 +1741,21 @@ export async function fetchMarketOverview(): Promise<any> {
     { swr: true, ttlMs: 2 * 60 * 1000, softTimeoutMs: 3000 },
   );
 }
+
+export async function fetchIndexCandles(
+  symbol: string = "NSE:NIFTY50-INDEX",
+  timeframe: string = "1M",
+): Promise<IndexCandlePoint[]> {
+  const params = new URLSearchParams({ symbol, timeframe });
+  const response = await fetchWithDiagnostics(
+    `/workstation/index-candles?${params.toString()}`,
+    undefined,
+    `Index candles ${symbol}`,
+  );
+  if (!response.ok) return [];
+  return response.json();
+}
+
 
 export async function fetchSavedScans(): Promise<any[]> {
   return cachedFetch(

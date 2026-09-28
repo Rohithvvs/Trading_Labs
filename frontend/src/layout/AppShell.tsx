@@ -134,7 +134,7 @@ export function AppShell({ children, topActions, title }: Props) {
       {/* Desktop / tablet sidebar */}
       <aside className="app-sidebar" aria-label="Main navigation" data-collapsed={sidebarCollapsed ? "true" : "false"}>
         <div className="app-sidebar__brand">
-          <Link to="/markets" className="app-brand-link" aria-label="Go to Markets">
+          <Link to="/strategy-tester" className="app-brand-link" aria-label="Go to Strategy Tester">
             <span className="app-brand-mark" aria-hidden>
               TS
             </span>

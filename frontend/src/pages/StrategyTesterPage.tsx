@@ -1,5 +1,5 @@
 import React, { Component, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   exportStrategyRun,
   fetchFilterAnalytics,
@@ -243,10 +243,39 @@ export const StrategyTesterPageInner: React.FC = () => {
   const [isSaveModalOpen, setIsSaveModalOpen] = useState<boolean>(false);
   const [isBuilderModalOpen, setIsBuilderModalOpen] = useState<boolean>(false);
   const [isColumnsModalOpen, setIsColumnsModalOpen] = useState<boolean>(false);
-  const [workspace, setWorkspace] = useState<"strategy" | "indicator">(
-    savedState?.workspace === "indicator" ? "indicator" : "strategy",
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tabParam = searchParams.get("tab") || searchParams.get("workspace");
+  const [workspace, setWorkspaceState] = useState<"strategy" | "indicator">(() => {
+    if (tabParam === "indicator") {
+      return "indicator";
+    }
+    if (tabParam === "strategy") {
+      return "strategy";
+    }
+    if (savedState?.workspace === "indicator" || savedState?.workspace === "strategy") {
+      return savedState.workspace;
+    }
+    return "strategy";
+  });
+
+  const setWorkspace = useCallback((newWs: "strategy" | "indicator") => {
+    setWorkspaceState(newWs);
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.set("tab", newWs);
+      return next;
+    }, { replace: true });
+  }, [setSearchParams]);
+
+  useEffect(() => {
+    if (tabParam === "strategy" || tabParam === "indicator") {
+      setWorkspaceState(tabParam);
+    }
+  }, [tabParam]);
+
+  const [builderTab, setBuilderTab] = useState<"builder" | "pine" | "indicator">(
+    workspace === "indicator" ? "indicator" : "builder"
   );
-  const [builderTab, setBuilderTab] = useState<"builder" | "pine" | "indicator">("builder");
   const [appliedIndicator, setAppliedIndicator] = useState<SavedIndicator | null>(
     savedState?.appliedIndicator && savedState.appliedIndicator.id ? savedState.appliedIndicator : null,
   );

@@ -142,7 +142,7 @@ export const Signup: React.FC = () => {
       });
       if (data?.user?.id) {
         login(data.user);
-        navigate('/scanner', { replace: true });
+        navigate('/strategy-tester', { replace: true });
       } else {
         // Fallback if session payload is incomplete.
         navigate('/login', { state: { signupSuccess: true } });

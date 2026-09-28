@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import time as time_module
 from datetime import datetime, timezone
@@ -47,23 +48,58 @@ _NSE_SYMBOL_TO_FALLBACK = {
 }
 
 
-async def _fetch_index_from_yfinance(symbol: str) -> dict | None:
+def _sync_batch_download_yfinance(symbols: list[str]) -> dict[str, dict]:
     try:
         import yfinance as yf
-
-        ticker = yf.Ticker(symbol)
-        data = ticker.history(period="2d")
-        if data.empty:
-            return None
-        last = data.iloc[-1]
-        prev = data.iloc[-2] if len(data) > 1 else last
-        ltp = round(float(last["Close"]), 2)
-        prev_close = round(float(prev["Close"]), 2)
-        change_pct = round(((ltp - prev_close) / prev_close) * 100, 2) if prev_close else None
-        return {"ltp": ltp, "change_pct": change_pct, "source": "YAHOO_FALLBACK"}
+        df = yf.download(symbols, period="5d", interval="1d", progress=False)
+        if df is None or df.empty:
+            return {}
+        results = {}
+        for sym in symbols:
+            try:
+                if "Close" not in df or sym not in df["Close"].columns:
+                    continue
+                close_series = df["Close"][sym].dropna()
+                if close_series.empty:
+                    continue
+                ltp = round(float(close_series.iloc[-1]), 2)
+                if len(close_series) > 1:
+                    prev = round(float(close_series.iloc[-2]), 2)
+                else:
+                    open_series = df["Open"][sym].dropna() if "Open" in df and sym in df["Open"].columns else None
+                    prev = round(float(open_series.iloc[-1]), 2) if open_series is not None and not open_series.empty else ltp
+                high_series = df["High"][sym].dropna() if "High" in df and sym in df["High"].columns else None
+                low_series = df["Low"][sym].dropna() if "Low" in df and sym in df["Low"].columns else None
+                high = round(float(high_series.iloc[-1]), 2) if high_series is not None and not high_series.empty else None
+                low = round(float(low_series.iloc[-1]), 2) if low_series is not None and not low_series.empty else None
+                change = round(ltp - prev, 2)
+                change_pct = round(((ltp - prev) / prev) * 100, 2) if prev else 0.0
+                sparkline = [round(float(c), 2) for c in close_series.tolist()[-7:]]
+                results[sym] = {
+                    "ltp": ltp,
+                    "change_pct": change_pct,
+                    "change": change,
+                    "high": high,
+                    "low": low,
+                    "prev_close": prev,
+                    "sparkline": sparkline,
+                    "source": "YAHOO_FALLBACK",
+                }
+            except Exception as e:
+                logger.debug("YF_BATCH_EXTRACT_SKIP | symbol=%s | error=%s", sym, str(e))
+        return results
     except Exception as exc:
-        logger.warning("YF_FALLBACK_FAILED | symbol=%s | error=%s", symbol, str(exc))
-        return None
+        logger.warning("YF_BATCH_DOWNLOAD_FAILED | error=%s", exc)
+        return {}
+
+
+async def _fetch_batch_indices_yfinance(symbols: list[str]) -> dict[str, dict]:
+    return await asyncio.to_thread(_sync_batch_download_yfinance, symbols)
+
+
+async def _fetch_index_from_yfinance(symbol: str) -> dict | None:
+    res = await _fetch_batch_indices_yfinance([symbol])
+    return res.get(symbol)
 
 
 class WorkstationService:
@@ -186,32 +222,123 @@ class WorkstationService:
         fyers = FyersService.shared()
 
         indices_defs = [
-            ("NSE:NIFTY50-INDEX", "NIFTY 50"),
-            ("NSE:NIFTYBANK-INDEX", "BANK NIFTY"),
-            ("BSE:SENSEX-INDEX", "SENSEX"),
+            ("NSE:NIFTY50-INDEX", "NIFTY 50", "^NSEI"),
+            ("NSE:NIFTYBANK-INDEX", "BANK NIFTY", "^NSEBANK"),
+            ("BSE:SENSEX-INDEX", "SENSEX", "^BSESN"),
+        ]
+        vix_def = ("NSE:INDIAVIX-INDEX", "India VIX", "^INDIAVIX")
+        sector_defs = [
+            ("NSE:NIFTYIT-INDEX", "IT", "^CNXIT"),
+            ("NSE:NIFTYBANK-INDEX", "Banking", "^NSEBANK"),
+            ("NSE:NIFTYPHARMA-INDEX", "Pharma", "^CNXPHARMA"),
+            ("NSE:NIFTYAUTO-INDEX", "Auto", "^CNXAUTO"),
+            ("NSE:NIFTYFMCG-INDEX", "FMCG", "^CNXFMCG"),
+            ("NSE:NIFTYMETAL-INDEX", "Metals", "^CNXMETAL"),
+            ("NSE:NIFTYREALTY-INDEX", "Realty", "^CNXREALTY"),
+            ("NSE:NIFTYENERGY-INDEX", "Energy", "^CNXENERGY"),
+            ("NSE:NIFTYINFRA-INDEX", "Infra", "^CNXINFRA"),
+            ("NSE:NIFTYMEDIA-INDEX", "Media", "^CNXMEDIA"),
         ]
 
-        indices = []
-        for sym, label in indices_defs:
-            item = await self._market_item(fyers, sym, label)
-            if item.price is None:
-                fallback_sym = _NSE_SYMBOL_TO_FALLBACK.get(sym)
-                if fallback_sym:
-                    fb = await _fetch_index_from_yfinance(fallback_sym)
-                    if fb:
-                        item.price = fb["ltp"]
-                        item.change_pct = fb["change_pct"]
-                        logger.info("MARKET_OVERVIEW_FALLBACK | symbol=%s | source=YAHOO | ltp=%s", sym, fb["ltp"])
-            indices.append(item)
+        # 1. Query FYERS in a SINGLE batch request if configured with a valid token
+        fyers_results: dict[str, MarketIndexItem] = {}
+        if getattr(fyers, "_is_fyers_configured", lambda: False)():
+            all_symbols = [sym for sym, _, _ in indices_defs] + [vix_def[0]] + [sym for sym, _, _ in sector_defs]
+            labels_map = {sym: label for sym, label, _ in indices_defs}
+            labels_map[vix_def[0]] = vix_def[1]
+            for sym, label, _ in sector_defs:
+                labels_map[sym] = label
 
-        vix = await self._market_item(fyers, "NSE:INDIAVIX-INDEX", "India VIX")
-        if vix.price is None:
-            fb = await _fetch_index_from_yfinance("^INDIAVIX")
-            if fb:
-                vix.price = fb["ltp"]
-                vix.change_pct = fb["change_pct"]
+            fyers_raw = await fyers.fetch_quotes_batch(all_symbols)
+            for sym, q in fyers_raw.items():
+                if q.get("ltp") is not None:
+                    fyers_results[sym] = MarketIndexItem(
+                        symbol=sym,
+                        label=labels_map.get(sym, sym),
+                        price=q.get("ltp"),
+                        change_pct=q.get("change_pct"),
+                        change=q.get("change"),
+                        high=q.get("high"),
+                        low=q.get("low"),
+                        prev_close=q.get("prev_close"),
+                        source=q.get("source", "FYERS_PRIMARY"),
+                    )
 
+        # 2. Identify tickers needing Yahoo Finance
+        needed_yf: list[str] = []
+        for sym, _, fb in indices_defs:
+            if sym not in fyers_results and fb:
+                needed_yf.append(fb)
+        if vix_def[0] not in fyers_results and vix_def[2]:
+            needed_yf.append(vix_def[2])
+        for sym, _, fb in sector_defs:
+            if sym not in fyers_results and fb:
+                needed_yf.append(fb)
+
+        # 3. Batch download ALL required Yahoo Finance tickers in ONE request (~1.0s)
+        yf_map = await _fetch_batch_indices_yfinance(list(set(needed_yf))) if needed_yf else {}
+
+        # 4. Build major indices list
+        indices: list[MarketIndexItem] = []
+        for sym, label, fb_sym in indices_defs:
+            if sym in fyers_results:
+                indices.append(fyers_results[sym])
+            else:
+                fb = yf_map.get(fb_sym)
+                indices.append(MarketIndexItem(
+                    symbol=sym,
+                    label=label,
+                    price=fb["ltp"] if fb else None,
+                    change_pct=fb["change_pct"] if fb else None,
+                    change=fb.get("change") if fb else None,
+                    high=fb.get("high") if fb else None,
+                    low=fb.get("low") if fb else None,
+                    prev_close=fb.get("prev_close") if fb else None,
+                    sparkline=fb.get("sparkline") if fb else None,
+                    source=fb.get("source", "unknown") if fb else "unknown",
+                ))
+
+        # 5. Build VIX
+        if vix_def[0] in fyers_results:
+            vix = fyers_results[vix_def[0]]
+        else:
+            fb = yf_map.get(vix_def[2])
+            vix = MarketIndexItem(
+                symbol=vix_def[0],
+                label=vix_def[1],
+                price=fb["ltp"] if fb else None,
+                change_pct=fb["change_pct"] if fb else None,
+                change=fb.get("change") if fb else None,
+                high=fb.get("high") if fb else None,
+                low=fb.get("low") if fb else None,
+                prev_close=fb.get("prev_close") if fb else None,
+                sparkline=fb.get("sparkline") if fb else None,
+                source=fb.get("source", "unknown") if fb else "unknown",
+            )
+
+        # 6. Build Sectors
+        sectors: list[MarketIndexItem] = []
+        for sym, label, fb_sym in sector_defs:
+            if sym in fyers_results:
+                sectors.append(fyers_results[sym])
+            else:
+                fb = yf_map.get(fb_sym)
+                sectors.append(MarketIndexItem(
+                    symbol=sym,
+                    label=label,
+                    price=fb["ltp"] if fb else None,
+                    change_pct=fb["change_pct"] if fb else None,
+                    change=fb.get("change") if fb else None,
+                    high=fb.get("high") if fb else None,
+                    low=fb.get("low") if fb else None,
+                    prev_close=fb.get("prev_close") if fb else None,
+                    sparkline=fb.get("sparkline") if fb else None,
+                    source=fb.get("source", "unknown") if fb else "unknown",
+                ))
+
+        # 7. Movers & Breadth from DB (run sequentially on the shared async session)
         movers = await self._movers_from_latest_scan()
+        breadth = await self._breadth_from_latest_scan()
         gainers = [m for m in movers if m.change_pct is not None and m.change_pct > 0][:5]
         losers = [m for m in movers if m.change_pct is not None and m.change_pct < 0][-5:][::-1]
 
@@ -220,6 +347,8 @@ class WorkstationService:
             vix=vix,
             top_gainers=gainers,
             top_losers=losers,
+            sectors=sectors,
+            breadth=breadth,
             updated_at=datetime.now(timezone.utc),
         )
         cache_set(cache_key, response.model_dump(mode="json"), ttl_seconds=120.0)
@@ -341,19 +470,37 @@ class WorkstationService:
 
     async def _market_item(self, fyers: FyersService, symbol: str, label: str) -> MarketIndexItem:
         start_t = time_module.time()
-        quote = await fyers.fetch_quote(symbol)
+        quote = await fyers.fetch_quote(symbol, allow_yfinance=False)
         elapsed = int((time_module.time() - start_t) * 1000)
         price = None
         change_pct = None
+        change = None
+        high = None
+        low = None
+        prev_close = None
         source = "unknown"
         if quote:
-            price = round(float(quote.get("ltp", 0)), 2) if quote.get("ltp") else None
-            change_pct = round(float(quote.get("change_pct", 0)), 2) if quote.get("change_pct") else None
+            price = round(float(quote.get("ltp", 0)), 2) if quote.get("ltp") is not None else None
+            change_pct = round(float(quote.get("change_pct", 0)), 2) if quote.get("change_pct") is not None else None
+            change = round(float(quote.get("change", 0)), 2) if quote.get("change") is not None else None
+            high = round(float(quote.get("high", 0)), 2) if quote.get("high") is not None else None
+            low = round(float(quote.get("low", 0)), 2) if quote.get("low") is not None else None
+            prev_close = round(float(quote.get("prev_close", 0)), 2) if quote.get("prev_close") is not None else None
             source = quote.get("source", "unknown")
             logger.info("MARKET_ITEM_FETCHED | symbol=%s | label=%s | ltp=%s | source=%s | duration_ms=%s", symbol, label, price, source, elapsed)
         else:
             logger.warning("MARKET_ITEM_FAILED | symbol=%s | label=%s | duration_ms=%s | quote=None", symbol, label, elapsed)
-        return MarketIndexItem(symbol=symbol, label=label, price=price, change_pct=change_pct, source=source)
+        return MarketIndexItem(
+            symbol=symbol,
+            label=label,
+            price=price,
+            change_pct=change_pct,
+            change=change,
+            high=high,
+            low=low,
+            prev_close=prev_close,
+            source=source,
+        )
 
     async def _movers_from_latest_scan(self) -> list[MarketIndexItem]:
         row = await self.db.scalar(select(ScanHistorySnapshot).order_by(ScanHistorySnapshot.created_at.desc()).limit(1))
@@ -446,3 +593,99 @@ class WorkstationService:
             created_at=row.created_at,
             updated_at=row.updated_at,
         )
+
+    async def _breadth_from_latest_scan(self) -> dict[str, Any]:
+        row = await self.db.scalar(select(ScanHistorySnapshot).order_by(ScanHistorySnapshot.created_at.desc()).limit(1))
+        if not row:
+            return {"advances": 0, "declines": 0, "unchanged": 0, "total": 0, "high_52w": 0, "low_52w": 0, "source": "unavailable"}
+        try:
+            payload = json.loads(row.payload_json)
+            stocks = payload.get("all_analyzed_stocks") or payload.get("matches") or []
+            advances = 0
+            declines = 0
+            unchanged = 0
+            for s in stocks:
+                chg = s.get("change_pct")
+                if chg is not None:
+                    try:
+                        c = float(chg)
+                        if c > 0:
+                            advances += 1
+                        elif c < 0:
+                            declines += 1
+                        else:
+                            unchanged += 1
+                    except (ValueError, TypeError):
+                        pass
+            total = advances + declines + unchanged
+            return {
+                "advances": advances,
+                "declines": declines,
+                "unchanged": unchanged,
+                "total": total if total > 0 else len(stocks),
+                "high_52w": payload.get("high_52w_count", 0),
+                "low_52w": payload.get("low_52w_count", 0),
+                "source": "scan_snapshot",
+            }
+        except Exception as exc:
+            logger.warning("BREADTH_PARSE_FAILED | error=%s", exc)
+            return {"advances": 0, "declines": 0, "unchanged": 0, "total": 0, "high_52w": 0, "low_52w": 0, "source": "error"}
+
+    async def get_index_candles(self, symbol: str, timeframe: str = "1M") -> list[dict[str, Any]]:
+        cache_key = f"index_candles_{symbol}_{timeframe}"
+        cached = cache_get(cache_key)
+        if cached is not None:
+            return cached
+
+        sym_map = {
+            "NSE:NIFTY50-INDEX": "^NSEI",
+            "NIFTY 50": "^NSEI",
+            "^NSEI": "^NSEI",
+            "NSE:NIFTYBANK-INDEX": "^NSEBANK",
+            "BANK NIFTY": "^NSEBANK",
+            "^NSEBANK": "^NSEBANK",
+            "BSE:SENSEX-INDEX": "^BSESN",
+            "SENSEX": "^BSESN",
+            "^BSESN": "^BSESN",
+            "NSE:INDIAVIX-INDEX": "^INDIAVIX",
+            "INDIA VIX": "^INDIAVIX",
+            "^INDIAVIX": "^INDIAVIX",
+        }
+        yf_symbol = sym_map.get(symbol.strip().upper(), "^NSEI")
+
+        period_map = {
+            "1D": ("5d", "15m"),
+            "1W": ("1mo", "1d"),
+            "1M": ("1mo", "1d"),
+            "3M": ("3mo", "1d"),
+            "6M": ("6mo", "1d"),
+            "1Y": ("1y", "1d"),
+        }
+        period, interval = period_map.get(timeframe.strip().upper(), ("6mo", "1d"))
+
+        try:
+            import yfinance as yf
+            import pandas as pd
+            df = await asyncio.to_thread(yf.download, yf_symbol, period=period, interval=interval, progress=False)
+            if df is None or df.empty:
+                return []
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+
+            candles = []
+            for idx, row in df.iterrows():
+                d_str = idx.strftime("%Y-%m-%d") if hasattr(idx, "strftime") else str(idx)[:10]
+                candles.append({
+                    "date": d_str,
+                    "open": round(float(row["Open"]), 2),
+                    "high": round(float(row["High"]), 2),
+                    "low": round(float(row["Low"]), 2),
+                    "close": round(float(row["Close"]), 2),
+                    "volume": int(row.get("Volume", 0)),
+                })
+            cache_set(cache_key, candles, ttl_seconds=300.0)
+            return candles
+        except Exception as exc:
+            logger.warning("INDEX_CANDLES_FAILED | symbol=%s | error=%s", symbol, str(exc))
+            return []
+

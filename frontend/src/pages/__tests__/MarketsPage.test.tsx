@@ -11,6 +11,10 @@ vi.mock("../../api", () => ({
   createWorkstationAlert: vi.fn(),
   deleteScannerPreset: vi.fn(),
   deleteWorkstationAlert: vi.fn(),
+  fetchIndexCandles: vi.fn(async () => []),
+  fetchUniverseInstruments: vi.fn(async () => []),
+  placePaperOrder: vi.fn(),
+  fetchBatchLight: vi.fn(async () => ({ symbols: [] })),
 }));
 
 vi.mock("../../hooks/useAuth", () => ({

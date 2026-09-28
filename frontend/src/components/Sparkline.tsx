@@ -3,8 +3,8 @@ import { memo, useMemo } from "react";
 const DEFAULT_WIDTH = 120;
 const DEFAULT_HEIGHT = 40;
 
-export function downsampleValues(values: number[], maxPoints = 32): number[] {
-  if (values.length <= maxPoints) return values;
+export function downsampleValues(values: number[] = [], maxPoints = 32): number[] {
+  if (!values || values.length <= maxPoints) return values ?? [];
   const last = values.length - 1;
   const step = last / (maxPoints - 1);
   const out: number[] = [];
@@ -15,16 +15,16 @@ export function downsampleValues(values: number[], maxPoints = 32): number[] {
 }
 
 export const Sparkline = memo(function Sparkline({
-  values,
+  values = [],
   width = DEFAULT_WIDTH,
   height = DEFAULT_HEIGHT,
 }: {
-  values: number[];
+  values?: number[];
   width?: number;
   height?: number;
 }) {
   const path = useMemo(() => {
-    const series = downsampleValues(values);
+    const series = downsampleValues(values ?? []);
     if (series.length < 2) return "";
     let min = series[0];
     let max = series[0];

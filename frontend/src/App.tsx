@@ -1307,9 +1307,9 @@ export default function App() {
         <AppShell>
           <Suspense fallback={<ViewFallback />}>
             <Routes>
-              {/* Ungated core landing (audit M-4) — avoid defaulting into a gated route */}
-              <Route path="/" element={<Navigate to="/markets" replace />} />
-              <Route path="/home" element={<Navigate to="/markets" replace />} />
+              {/* Primary landing: default into Strategy Tester Indicator Scanner */}
+              <Route path="/" element={<Navigate to="/strategy-tester" replace />} />
+              <Route path="/home" element={<Navigate to="/strategy-tester" replace />} />
               <Route
                 path="/markets"
                 element={
@@ -1460,7 +1460,7 @@ export default function App() {
                 }
               />
               <Route path="/fyers/callback" element={<FyersCallback />} />
-              <Route path="*" element={<Navigate to="/markets" replace />} />
+              <Route path="*" element={<Navigate to="/strategy-tester" replace />} />
             </Routes>
           </Suspense>
         </AppShell>

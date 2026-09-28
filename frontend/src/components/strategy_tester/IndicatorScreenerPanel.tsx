@@ -67,7 +67,7 @@ export type IndicatorScreenerPanelProps = {
   appliedIndicator: SavedIndicator | null;
   navigate: NavigateFunction;
   onAddIndicator: () => void;
-  onEditIndicator: (indicator: SavedIndicator, currentConditions?: string[]) => void;
+  onEditIndicator: (indicator: SavedIndicator) => void;
   notify: (opts: { title: string; message?: string; type?: "success" | "error" | "warning" | "info" }) => void;
 };
 
@@ -624,23 +624,10 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
     };
   }, [appliedIndicatorId]);
 
-  const lastAppliedRef = useRef<{ id: string; source_code: string; updated_at?: string | null } | null>(null);
-
   useEffect(() => {
     if (!appliedIndicatorId) return;
     setIndicators((prev) => upsertIndicator(prev, appliedIndicator));
-    const prev = lastAppliedRef.current;
-    const isDifferent =
-      !prev ||
-      prev.id !== appliedIndicatorId ||
-      prev.source_code !== appliedIndicator?.source_code ||
-      prev.updated_at !== appliedIndicator?.updated_at;
-    if (isDifferent) {
-      lastAppliedRef.current = {
-        id: appliedIndicatorId,
-        source_code: appliedIndicator?.source_code || "",
-        updated_at: appliedIndicator?.updated_at,
-      };
+    if (lastAppliedId.current !== appliedIndicatorId) {
       lastAppliedId.current = appliedIndicatorId;
       selectIndicatorRef.current(appliedIndicatorId);
     }
@@ -1581,29 +1568,31 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
         </span>
       )}
 
-      {showScanChrome && (selected || appliedIndicator) && (
+      {showScanChrome && entryConditions.length > 0 && (
         <div className="st-card" data-testid="indicator-strategy-conditions">
           <div className="st-card-title" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
             <h2 style={{ margin: 0, fontSize: "inherit", fontWeight: "inherit", color: "inherit" }}>
               Strategy Conditions
             </h2>
-            <button
-              type="button"
-              className="st-btn-dark"
-              style={{ padding: "3px 8px", fontSize: "0.72rem", display: "inline-flex", alignItems: "center", gap: 4, cursor: "pointer" }}
-              onClick={() => {
-                const ind = selected || appliedIndicator;
-                if (ind) onEditIndicator(ind, entryConditions);
-              }}
-              data-testid="btn-edit-strategy-conditions"
-              title="Edit indicator strategy conditions"
-            >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M12 20h9" />
-                <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
-              </svg>
-              Edit
-            </button>
+            {(selected || appliedIndicator) && (
+              <button
+                type="button"
+                className="st-btn-dark"
+                style={{ padding: "3px 8px", fontSize: "0.72rem", display: "inline-flex", alignItems: "center", gap: 4, cursor: "pointer" }}
+                onClick={() => {
+                  const ind = selected || appliedIndicator;
+                  if (ind) onEditIndicator(ind);
+                }}
+                data-testid="btn-edit-strategy-conditions"
+                title="Edit indicator strategy conditions"
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 20h9" />
+                  <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
+                </svg>
+                Edit
+              </button>
+            )}
           </div>
           <p className="st-reject-not-a-trade">
             TradingView Pine Screener and this scan both evaluate the last 1D bar. MATCH requires every
@@ -1611,18 +1600,12 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
             only on that bar.
           </p>
           <div className="st-filter-eval-list">
-            {entryConditions.length > 0 ? (
-              entryConditions.map((name) => (
-                <div key={name} className="st-filter-eval-item">
-                  <span className="st-filter-eval-name">{name}</span>
-                  <span className="st-filter-eval-status passed">✓ Required</span>
-                </div>
-              ))
-            ) : (
-              <div style={{ color: "#94a3b8", fontSize: "0.8rem", fontStyle: "italic", padding: "8px 0" }}>
-                No entry conditions configured. Click Edit to add filter conditions with Strategy Builder.
+            {entryConditions.map((name) => (
+              <div key={name} className="st-filter-eval-item">
+                <span className="st-filter-eval-name">{name}</span>
+                <span className="st-filter-eval-status passed">✓ Required</span>
               </div>
-            )}
+            ))}
           </div>
         </div>
       )}

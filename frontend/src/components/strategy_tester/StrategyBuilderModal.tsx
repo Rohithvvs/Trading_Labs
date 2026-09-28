@@ -25,8 +25,7 @@ export interface StrategyBuilderModalProps {
     logic: "ALL" | "ANY",
     side: "LONG" | "SHORT",
     source?: "builder" | "pine",
-    pineCode?: string,
-    options?: { createNew?: boolean; createIndicator?: boolean }
+    pineCode?: string
   ) => void;
   onApplyIndicator?: (indicator: SavedIndicator, applyToScreener?: boolean) => void;
 }
@@ -275,7 +274,7 @@ export const StrategyBuilderModal: React.FC<StrategyBuilderModalProps> = ({
     applyParsedResult(res);
   };
 
-  const handleSave = (opts?: { createNew?: boolean; createIndicator?: boolean }) => {
+  const handleSave = () => {
     if (!name.trim()) {
       alert("Please enter a strategy name.");
       return;
@@ -285,7 +284,7 @@ export const StrategyBuilderModal: React.FC<StrategyBuilderModalProps> = ({
       return;
     }
 
-    onApply(name.trim(), description.trim(), filters, logic, side, sourceType, pineCode, opts);
+    onApply(name.trim(), description.trim(), filters, logic, side, sourceType, pineCode);
     onClose();
   };
 
@@ -831,27 +830,14 @@ export const StrategyBuilderModal: React.FC<StrategyBuilderModalProps> = ({
               Observe Filters
             </button>
           ) : (
-            <div style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-              {editingIndicator && (
-                <button
-                  type="button"
-                  className="st-btn-dark"
-                  onClick={() => handleSave({ createNew: true })}
-                  data-testid="btn-create-new-indicator"
-                  title="Create as a new indicator with these conditions"
-                >
-                  Create as New Indicator
-                </button>
-              )}
-              <button
-                type="button"
-                className="st-btn-primary"
-                onClick={() => handleSave()}
-                data-testid="btn-apply-strategy-builder"
-              >
-                {editingIndicator ? "Save & Apply Indicator" : "Save & Apply"}
-              </button>
-            </div>
+            <button
+              type="button"
+              className="st-btn-primary"
+              onClick={handleSave}
+              data-testid="btn-apply-strategy-builder"
+            >
+              Save & Apply
+            </button>
           )}
         </div>
         )}

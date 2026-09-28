@@ -18,7 +18,6 @@ from ..utils import sanitize_for_json
 router = APIRouter(
     prefix="/workstation",
     tags=["workstation"],
-    dependencies=[Depends(get_token_principal)],
 )
 
 
@@ -52,30 +51,40 @@ async def market_overview(svc: WorkstationService = Depends(service)):
     return JSONResponse(content=sanitize_for_json(overview.model_dump(mode="json")))
 
 
-@router.get("/saved-scans")
+@router.get("/index-candles")
+async def index_candles(
+    symbol: str = Query("NSE:NIFTY50-INDEX"),
+    timeframe: str = Query("1M"),
+    svc: WorkstationService = Depends(service),
+):
+    candles = await svc.get_index_candles(symbol, timeframe)
+    return JSONResponse(content=sanitize_for_json(candles))
+
+
+@router.get("/saved-scans", dependencies=[Depends(get_token_principal)])
 async def list_saved_scans(svc: WorkstationService = Depends(service)):
     return JSONResponse(content=sanitize_for_json([item.model_dump(mode="json") for item in await svc.list_saved_scans()]))
 
 
-@router.post("/saved-scans")
+@router.post("/saved-scans", dependencies=[Depends(get_token_principal)])
 async def save_scan(payload: SavedScanCreate, svc: WorkstationService = Depends(service)):
     scan = await svc.save_scan(payload)
     return JSONResponse(content=sanitize_for_json(scan.model_dump(mode="json")))
 
 
-@router.delete("/saved-scans/{scan_id}")
+@router.delete("/saved-scans/{scan_id}", dependencies=[Depends(get_token_principal)])
 async def delete_saved_scan(scan_id: int, svc: WorkstationService = Depends(service)):
     await svc.delete_saved_scan(scan_id)
     return JSONResponse(content={"deleted": scan_id})
 
 
-@router.get("/scan-history")
+@router.get("/scan-history", dependencies=[Depends(get_token_principal)])
 async def scan_history(limit: int = Query(20, ge=1, le=100), svc: WorkstationService = Depends(service)):
     history = await svc.list_scan_history(limit)
     return JSONResponse(content=sanitize_for_json([item.model_dump(mode="json") for item in history]))
 
 
-@router.get("/scan-history/{scan_id}/compare")
+@router.get("/scan-history/{scan_id}/compare", dependencies=[Depends(get_token_principal)])
 async def compare_scan(scan_id: int, svc: WorkstationService = Depends(service)):
     try:
         data = await svc.compare_scan(scan_id)
@@ -84,13 +93,13 @@ async def compare_scan(scan_id: int, svc: WorkstationService = Depends(service))
     return JSONResponse(content=sanitize_for_json(data.model_dump(mode="json")))
 
 
-@router.get("/alerts")
+@router.get("/alerts", dependencies=[Depends(get_token_principal)])
 async def list_alerts(svc: WorkstationService = Depends(service)):
     alerts = await svc.list_alerts()
     return JSONResponse(content=sanitize_for_json([item.model_dump(mode="json") for item in alerts]))
 
 
-@router.post("/alerts")
+@router.post("/alerts", dependencies=[Depends(get_token_principal)])
 async def create_alert(payload: AlertCreate, svc: WorkstationService = Depends(service)):
     try:
         item = await svc.create_alert(payload)
@@ -99,19 +108,19 @@ async def create_alert(payload: AlertCreate, svc: WorkstationService = Depends(s
     return JSONResponse(content=sanitize_for_json(item.model_dump(mode="json")))
 
 
-@router.delete("/alerts/{alert_id}")
+@router.delete("/alerts/{alert_id}", dependencies=[Depends(get_token_principal)])
 async def delete_alert(alert_id: int, svc: WorkstationService = Depends(service)):
     await svc.delete_alert(alert_id)
     return JSONResponse(content={"deleted": alert_id})
 
 
-@router.get("/risk-settings")
+@router.get("/risk-settings", dependencies=[Depends(get_token_principal)])
 async def get_risk_settings(svc: WorkstationService = Depends(service)):
     settings = await svc.get_risk_settings()
     return JSONResponse(content=sanitize_for_json(settings.model_dump(mode="json")))
 
 
-@router.put("/risk-settings")
+@router.put("/risk-settings", dependencies=[Depends(get_token_principal)])
 async def update_risk_settings(payload: RiskSettingsRequest, svc: WorkstationService = Depends(service)):
     settings = await svc.update_risk_settings(payload)
     return JSONResponse(content=sanitize_for_json(settings.model_dump(mode="json")))
