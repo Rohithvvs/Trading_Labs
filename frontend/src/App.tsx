@@ -1354,7 +1354,7 @@ export default function App() {
                 element={
                   <FeatureGuard feature="advanced_scanner" fallback={<AccessDenied />}>
                     <Suspense fallback={<ViewFallback />}>
-                      <StrategyTesterPage />
+                      <StrategyTesterPage defaultWorkspace="indicator" />
                     </Suspense>
                   </FeatureGuard>
                 }

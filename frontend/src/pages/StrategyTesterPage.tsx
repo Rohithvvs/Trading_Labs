@@ -1,5 +1,5 @@
 import React, { Component, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   exportStrategyRun,
   fetchFilterAnalytics,
@@ -159,8 +159,14 @@ class StrategyTesterErrorBoundary extends Component<{ children: ReactNode }, { e
   }
 }
 
-export const StrategyTesterPageInner: React.FC = () => {
+export interface StrategyTesterPageProps {
+  defaultWorkspace?: "strategy" | "indicator";
+}
+
+export const StrategyTesterPageInner: React.FC<StrategyTesterPageProps> = ({ defaultWorkspace }) => {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const urlTab = searchParams.get("tab") || searchParams.get("workspace");
   const toast = useToast();
   const notify = useCallback(
     (opts: { title: string; message?: string; type?: "success" | "error" | "warning" | "info" }) => {
@@ -243,9 +249,22 @@ export const StrategyTesterPageInner: React.FC = () => {
   const [isSaveModalOpen, setIsSaveModalOpen] = useState<boolean>(false);
   const [isBuilderModalOpen, setIsBuilderModalOpen] = useState<boolean>(false);
   const [isColumnsModalOpen, setIsColumnsModalOpen] = useState<boolean>(false);
-  const [workspace, setWorkspace] = useState<"strategy" | "indicator">(
-    savedState?.workspace === "indicator" ? "indicator" : "strategy",
-  );
+  const [workspace, setWorkspace] = useState<"strategy" | "indicator">(() => {
+    if (urlTab === "strategy") return "strategy";
+    if (urlTab === "indicator") return "indicator";
+    if (defaultWorkspace) return defaultWorkspace;
+    if (savedState?.workspace === "indicator") return "indicator";
+    if (savedState?.workspace === "strategy") return "strategy";
+    return "strategy";
+  });
+
+  useEffect(() => {
+    if (urlTab === "strategy") {
+      setWorkspace("strategy");
+    } else if (urlTab === "indicator") {
+      setWorkspace("indicator");
+    }
+  }, [urlTab]);
   const [builderTab, setBuilderTab] = useState<"builder" | "pine" | "indicator">("builder");
   const [appliedIndicator, setAppliedIndicator] = useState<SavedIndicator | null>(
     savedState?.appliedIndicator && savedState.appliedIndicator.id ? savedState.appliedIndicator : null,
@@ -1191,9 +1210,9 @@ export const StrategyTesterPageInner: React.FC = () => {
   );
 };
 
-export const StrategyTesterPage: React.FC = () => (
+export const StrategyTesterPage: React.FC<StrategyTesterPageProps> = ({ defaultWorkspace }) => (
   <StrategyTesterErrorBoundary>
-    <StrategyTesterPageInner />
+    <StrategyTesterPageInner defaultWorkspace={defaultWorkspace} />
   </StrategyTesterErrorBoundary>
 );
 

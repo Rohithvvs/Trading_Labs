@@ -758,4 +758,28 @@ if longCondition
       }),
     );
   });
+
+  it("defaults to Indicator Scanner immediately when defaultWorkspace='indicator' is provided", async () => {
+    render(
+      <MemoryRouter>
+        <StrategyTesterPage defaultWorkspace="indicator" />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByTestId("strategy-tester-page")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Indicator Scanner" })).toBeTruthy();
+    expect(screen.getByTestId("indicator-screener")).toBeTruthy();
+  });
+
+  it("opens Indicator Scanner when tab=indicator query param is present", async () => {
+    render(
+      <MemoryRouter initialEntries={["/strategy-tester?tab=indicator"]}>
+        <StrategyTesterPage />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByTestId("strategy-tester-page")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Indicator Scanner" })).toBeTruthy();
+    expect(screen.getByTestId("indicator-screener")).toBeTruthy();
+  });
 });
