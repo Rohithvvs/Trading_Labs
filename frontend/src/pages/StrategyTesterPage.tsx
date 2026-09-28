@@ -1,5 +1,5 @@
 import React, { Component, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import {
   exportStrategyRun,
   fetchFilterAnalytics,
@@ -243,39 +243,10 @@ export const StrategyTesterPageInner: React.FC = () => {
   const [isSaveModalOpen, setIsSaveModalOpen] = useState<boolean>(false);
   const [isBuilderModalOpen, setIsBuilderModalOpen] = useState<boolean>(false);
   const [isColumnsModalOpen, setIsColumnsModalOpen] = useState<boolean>(false);
-  const [searchParams, setSearchParams] = useSearchParams();
-  const tabParam = searchParams.get("tab") || searchParams.get("workspace");
-  const [workspace, setWorkspaceState] = useState<"strategy" | "indicator">(() => {
-    if (tabParam === "indicator") {
-      return "indicator";
-    }
-    if (tabParam === "strategy") {
-      return "strategy";
-    }
-    if (savedState?.workspace === "indicator" || savedState?.workspace === "strategy") {
-      return savedState.workspace;
-    }
-    return "strategy";
-  });
-
-  const setWorkspace = useCallback((newWs: "strategy" | "indicator") => {
-    setWorkspaceState(newWs);
-    setSearchParams((prev) => {
-      const next = new URLSearchParams(prev);
-      next.set("tab", newWs);
-      return next;
-    }, { replace: true });
-  }, [setSearchParams]);
-
-  useEffect(() => {
-    if (tabParam === "strategy" || tabParam === "indicator") {
-      setWorkspaceState(tabParam);
-    }
-  }, [tabParam]);
-
-  const [builderTab, setBuilderTab] = useState<"builder" | "pine" | "indicator">(
-    workspace === "indicator" ? "indicator" : "builder"
+  const [workspace, setWorkspace] = useState<"strategy" | "indicator">(
+    savedState?.workspace === "indicator" ? "indicator" : "strategy",
   );
+  const [builderTab, setBuilderTab] = useState<"builder" | "pine" | "indicator">("builder");
   const [appliedIndicator, setAppliedIndicator] = useState<SavedIndicator | null>(
     savedState?.appliedIndicator && savedState.appliedIndicator.id ? savedState.appliedIndicator : null,
   );
@@ -769,8 +740,7 @@ export const StrategyTesterPageInner: React.FC = () => {
     newLogic: "ALL" | "ANY",
     newSide: "LONG" | "SHORT",
     source: "builder" | "pine" = "builder",
-    newPineCode?: string,
-    options?: { createNew?: boolean; createIndicator?: boolean }
+    newPineCode?: string
   ) => {
     setStrategyName(name);
     setStrategyDesc(description);
@@ -782,11 +752,7 @@ export const StrategyTesterPageInner: React.FC = () => {
       setPineCode(newPineCode);
     }
 
-    const isIndicatorTarget =
-      workspace === "indicator" ||
-      editingIndicator !== null ||
-      editExistingIndicator ||
-      Boolean(options?.createIndicator);
+    const isIndicatorTarget = workspace === "indicator" || editingIndicator !== null || editExistingIndicator;
     if (isIndicatorTarget) {
       try {
         const generatedPine = filtersToPineIndicator({
@@ -798,7 +764,7 @@ export const StrategyTesterPageInner: React.FC = () => {
         });
 
         let savedIndicator: SavedIndicator;
-        const targetId = options?.createNew ? null : (editingIndicator?.id || appliedIndicator?.id);
+        const targetId = editingIndicator?.id || appliedIndicator?.id;
         if (targetId) {
           try {
             savedIndicator = await updateIndicator(targetId, {
@@ -830,8 +796,8 @@ export const StrategyTesterPageInner: React.FC = () => {
         setIsBuilderModalOpen(false);
 
         notify({
-          title: options?.createNew ? "Indicator Created" : "Indicator Saved",
-          message: `Indicator "${savedIndicator.name}" ${options?.createNew ? "created" : "updated"} with ${newFilters.length} condition(s).`,
+          title: "Indicator Saved",
+          message: `Indicator "${savedIndicator.name}" updated with ${newFilters.length} condition(s).`,
           type: "success",
         });
         return;
@@ -971,7 +937,7 @@ export const StrategyTesterPageInner: React.FC = () => {
               setBuilderTab("indicator");
               setIsBuilderModalOpen(true);
             }}
-            onEditIndicator={(indicator, currentConditions) => {
+            onEditIndicator={(indicator) => {
               setAppliedIndicator(indicator);
               setEditingIndicator(indicator);
               setEditExistingIndicator(true);
@@ -995,22 +961,14 @@ export const StrategyTesterPageInner: React.FC = () => {
 
               if (parsedFilters.length === 0) {
                 const conditions = indicator.entry_conditions || (indicator.parsed_definition as any)?.entry_conditions;
-                if (conditions && Array.isArray(conditions) && conditions.length > 0) {
+                if (conditions && Array.isArray(conditions)) {
                   parsedFilters = entryConditionsToFilters(conditions);
                 }
               }
 
-              if (parsedFilters.length === 0 && currentConditions && currentConditions.length > 0) {
-                parsedFilters = entryConditionsToFilters(currentConditions);
+              if (parsedFilters.length > 0) {
+                setFilters(parsedFilters);
               }
-
-              if (parsedFilters.length === 0) {
-                parsedFilters = [
-                  { id: "f1", field: "CLOSE", operator: ">", rightKind: "indicator", literal: "", indicator: "SMA", indicatorPeriod: "50", low: "", high: "" }
-                ];
-              }
-
-              setFilters(parsedFilters);
               setStrategyName(indicator.name);
               setStrategyDesc(indicator.description || "");
               setLogic(parsedLogic);
@@ -1067,10 +1025,7 @@ export const StrategyTesterPageInner: React.FC = () => {
               exitRule="EOD (End of Day)"
               capital={initialCapital}
               sourceType={strategySource}
-              onEditClick={() => {
-                setBuilderTab("builder");
-                setIsBuilderModalOpen(true);
-              }}
+              onEditClick={() => setIsBuilderModalOpen(true)}
             />
           </div>
 
