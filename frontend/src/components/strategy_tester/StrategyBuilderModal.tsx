@@ -87,9 +87,6 @@ export const StrategyBuilderModal: React.FC<StrategyBuilderModalProps> = ({
 }) => {
   const [activeTab, setActiveTab] = useState<"builder" | "pine" | "indicator">(initialTab);
 
-  useEffect(() => {
-    if (isOpen) setActiveTab(initialTab);
-  }, [isOpen, initialTab]);
   const [name, setName] = useState(initialName || "Momentum Strategy");
   const [description, setDescription] = useState(initialDescription || "");
   const [filters, setFilters] = useState<ModalBuilderFilter[]>(() =>
@@ -110,6 +107,34 @@ export const StrategyBuilderModal: React.FC<StrategyBuilderModalProps> = ({
   const [isUserModified, setIsUserModified] = useState<boolean>(false);
   const [confirmReplaceOpen, setConfirmReplaceOpen] = useState<boolean>(false);
   const [pendingResult, setPendingResult] = useState<any | null>(null);
+
+  useEffect(() => {
+    if (isOpen) {
+      setActiveTab(initialTab);
+      setName(initialName || "Momentum Strategy");
+      setDescription(initialDescription || "");
+      setFilters(
+        initialFilters && initialFilters.length > 0
+          ? JSON.parse(JSON.stringify(initialFilters))
+          : [
+              { id: "1", field: "CLOSE", operator: ">", rightKind: "indicator", literal: "", indicator: "SMA", indicatorPeriod: "50", low: "", high: "" },
+              { id: "2", field: "SMA", period: "50", operator: ">", rightKind: "indicator", literal: "", indicator: "SMA", indicatorPeriod: "200", low: "", high: "" },
+              { id: "3", field: "RSI", period: "14", operator: ">", rightKind: "literal", literal: "55", indicator: "SMA", indicatorPeriod: "20", low: "", high: "" },
+              { id: "4", field: "VOLUME", operator: ">", rightKind: "indicator", literal: "", indicator: "AVG_VOLUME", indicatorPeriod: "20", low: "", high: "" },
+            ]
+      );
+      setLogic(initialLogic || "ALL");
+      setSide(initialSide || "LONG");
+      setSourceType(initialSource);
+      setPineCode(initialPineCode || DEFAULT_PINE_TEMPLATE);
+      setIsUserModified(false);
+      setConfirmReplaceOpen(false);
+      setPendingResult(null);
+      setPineError(null);
+      setPineWarnings([]);
+      setPineImportSummary(null);
+    }
+  }, [isOpen, initialTab, initialName, initialDescription, initialFilters, initialLogic, initialSide, initialSource, initialPineCode]);
   const [showDebugTrace, setShowDebugTrace] = useState<boolean>(false);
 
   const [pineError, setPineError] = useState<string | null>(null);

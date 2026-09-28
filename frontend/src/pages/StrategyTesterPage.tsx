@@ -41,9 +41,10 @@ import { StrategyConfigurationPanel } from "../components/strategy_tester/Strate
 import { StrategyTesterHeader } from "../components/strategy_tester/StrategyTesterHeader";
 import { TopReturnsCard } from "../components/strategy_tester/TopReturnsCard";
 import { navigateToStock } from "../utils/stockNavigation";
-import { DEFAULT_PINE_TEMPLATE } from "../utils/pineParser";
+import { DEFAULT_PINE_TEMPLATE, parsePineScript } from "../utils/pineParser";
+import { entryConditionsToFilters, filtersToPineIndicator } from "../utils/pineGenerator";
 import { IndicatorScreenerPanel } from "../components/strategy_tester/IndicatorScreenerPanel";
-import type { SavedIndicator } from "../api_indicator_scanner";
+import { createIndicator, updateIndicator, type SavedIndicator } from "../api_indicator_scanner";
 import { useToast } from "../design-system";
 import { isoDateIST } from "../utils/tradingHours";
 import {
@@ -243,12 +244,13 @@ export const StrategyTesterPageInner: React.FC = () => {
   const [isBuilderModalOpen, setIsBuilderModalOpen] = useState<boolean>(false);
   const [isColumnsModalOpen, setIsColumnsModalOpen] = useState<boolean>(false);
   const [workspace, setWorkspace] = useState<"strategy" | "indicator">(
-    savedState?.workspace === "strategy" ? "strategy" : "indicator",
+    savedState?.workspace === "indicator" ? "indicator" : "strategy",
   );
   const [builderTab, setBuilderTab] = useState<"builder" | "pine" | "indicator">("builder");
   const [appliedIndicator, setAppliedIndicator] = useState<SavedIndicator | null>(
     savedState?.appliedIndicator && savedState.appliedIndicator.id ? savedState.appliedIndicator : null,
   );
+  const [editingIndicator, setEditingIndicator] = useState<SavedIndicator | null>(null);
   const [editExistingIndicator, setEditExistingIndicator] = useState(false);
 
   // Visible columns
@@ -750,6 +752,65 @@ export const StrategyTesterPageInner: React.FC = () => {
       setPineCode(newPineCode);
     }
 
+    const isIndicatorTarget = workspace === "indicator" || editingIndicator !== null || editExistingIndicator;
+    if (isIndicatorTarget) {
+      try {
+        const generatedPine = filtersToPineIndicator({
+          name,
+          description,
+          filters: newFilters,
+          logic: newLogic,
+          side: newSide,
+        });
+
+        let savedIndicator: SavedIndicator;
+        const targetId = editingIndicator?.id || appliedIndicator?.id;
+        if (targetId) {
+          try {
+            savedIndicator = await updateIndicator(targetId, {
+              name: name.slice(0, 120),
+              description: description.slice(0, 500),
+              source_code: generatedPine,
+              timeframe: "1D",
+            });
+          } catch {
+            savedIndicator = await createIndicator({
+              name: name.slice(0, 120),
+              description: description.slice(0, 500),
+              source_code: generatedPine,
+              timeframe: "1D",
+            });
+          }
+        } else {
+          savedIndicator = await createIndicator({
+            name: name.slice(0, 120),
+            description: description.slice(0, 500),
+            source_code: generatedPine,
+            timeframe: "1D",
+          });
+        }
+
+        setAppliedIndicator(savedIndicator);
+        setEditingIndicator(null);
+        setEditExistingIndicator(false);
+        setIsBuilderModalOpen(false);
+
+        notify({
+          title: "Indicator Saved",
+          message: `Indicator "${savedIndicator.name}" updated with ${newFilters.length} condition(s).`,
+          type: "success",
+        });
+        return;
+      } catch (e: any) {
+        notify({
+          title: "Save failed",
+          message: e?.message || "Unable to save indicator conditions.",
+          type: "error",
+        });
+        return;
+      }
+    }
+
     let savePayload: StrategyConfigPayload;
     try {
       const scanEnd = pineScreenerEndDate(endDate);
@@ -878,8 +939,42 @@ export const StrategyTesterPageInner: React.FC = () => {
             }}
             onEditIndicator={(indicator) => {
               setAppliedIndicator(indicator);
+              setEditingIndicator(indicator);
               setEditExistingIndicator(true);
-              setBuilderTab("indicator");
+
+              let parsedFilters: ModalBuilderFilter[] = [];
+              let parsedLogic: "ALL" | "ANY" = "ALL";
+              let parsedSide: "LONG" | "SHORT" = "LONG";
+
+              if (indicator.source_code) {
+                try {
+                  const res = parsePineScript(indicator.source_code);
+                  if (res.filters && res.filters.length > 0) {
+                    parsedFilters = res.filters;
+                    parsedLogic = res.logic || "ALL";
+                    parsedSide = res.positionSide || "LONG";
+                  }
+                } catch {
+                  /* fallback */
+                }
+              }
+
+              if (parsedFilters.length === 0) {
+                const conditions = indicator.entry_conditions || (indicator.parsed_definition as any)?.entry_conditions;
+                if (conditions && Array.isArray(conditions)) {
+                  parsedFilters = entryConditionsToFilters(conditions);
+                }
+              }
+
+              if (parsedFilters.length > 0) {
+                setFilters(parsedFilters);
+              }
+              setStrategyName(indicator.name);
+              setStrategyDesc(indicator.description || "");
+              setLogic(parsedLogic);
+              setPositionSide(parsedSide);
+
+              setBuilderTab("builder");
               setIsBuilderModalOpen(true);
             }}
             notify={notify}
@@ -1069,11 +1164,15 @@ export const StrategyTesterPageInner: React.FC = () => {
         initialSource={strategySource}
         initialPineCode={pineCode}
         initialTab={builderTab}
-        editingIndicator={builderTab === "indicator" && editExistingIndicator ? appliedIndicator : null}
-        onClose={() => setIsBuilderModalOpen(false)}
+        editingIndicator={editingIndicator || (editExistingIndicator ? appliedIndicator : null)}
+        onClose={() => {
+          setIsBuilderModalOpen(false);
+          setEditingIndicator(null);
+        }}
         onApply={handleBuilderApply}
         onApplyIndicator={(indicator, applyToScreener = true) => {
           setAppliedIndicator(indicator);
+          setEditingIndicator(null);
           if (applyToScreener) {
             setWorkspace("indicator");
             setEditExistingIndicator(false);

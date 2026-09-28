@@ -288,6 +288,24 @@ describe("IndicatorScreenerPanel", () => {
     expect(screen.queryByText("RSI 14 > 55")).toBeNull();
   });
 
+  it("renders Edit button in the top right of Strategy Conditions card and triggers onEditIndicator", async () => {
+    const onEditIndicator = vi.fn();
+    const strategyWithConditions = {
+      ...applied,
+      parsed_definition: {
+        outputs: [{ name: "52W Breakout Signal" }],
+        entry_conditions: [{ name: "Close > SMA 50" }],
+      },
+    };
+    renderPanel({ appliedIndicator: strategyWithConditions, onEditIndicator });
+    const editBtn = await screen.findByTestId("btn-edit-strategy-conditions");
+    expect(editBtn).toBeTruthy();
+    expect(editBtn.textContent).toContain("Edit");
+    fireEvent.click(editBtn);
+    expect(onEditIndicator).toHaveBeenCalledTimes(1);
+    expect(onEditIndicator).toHaveBeenCalledWith(strategyWithConditions);
+  });
+
   it("shows each strategy's last scan when the selection changes", async () => {
     const other = {
       ...applied,

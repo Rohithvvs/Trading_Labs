@@ -225,6 +225,7 @@ import {
   saveStrategyDefinition,
   updateStrategyDefinition,
 } from "../../api_strategy_tester";
+import { createIndicator, fetchIndicators, updateIndicator } from "../../api_indicator_scanner";
 import { StrategyTesterPage } from "../StrategyTesterPage";
 
 describe("StrategyTesterPage", () => {
@@ -691,5 +692,70 @@ if longCondition
     fireEvent.click(screen.getByTestId("btn-new-strategy"));
     expect(screen.getByTestId("tab-indicator").className).toContain("is-active");
     expect(screen.getByTestId("indicator-editor-panel")).toBeTruthy();
+  });
+
+  it("opens Strategy Builder GUI on Edit in Indicator Screener, loads current conditions, and updates indicator on Save", async () => {
+    const mockSavedInd = {
+      id: "ind-1",
+      name: "Momentum Strategy [SCAN]",
+      description: "Test momentum",
+      source_code: `//@version=6\nindicator("Momentum Strategy [SCAN]", overlay=false)\nc1 = close > ta.sma(close, 50)\nscanSignal = c1\nplot(scanSignal ? 1 : 0, "Signal")\nplot(close, "Close")\nplotshape(scanSignal, title="Buy", style=shape.triangleup, location=location.bottom, size=size.tiny, text="BUY")\nalertcondition(scanSignal, title="Momentum Strategy [SCAN]", message="buy")\n`,
+      script_version: 6,
+      language_mode: "pine_subset_v1",
+      timeframe: "1D",
+      validation_status: "valid",
+      required_bars: 50,
+      entry_conditions: [{ name: "Close > SMA 50" }],
+      parsed_definition: {
+        entry_conditions: [{ name: "Close > SMA 50" }],
+      },
+    };
+
+    sessionStorage.setItem(
+      "strategy_tester_state_v1",
+      JSON.stringify({
+        workspace: "indicator",
+        appliedIndicator: mockSavedInd,
+      }),
+    );
+
+    vi.mocked(fetchIndicators).mockResolvedValue([mockSavedInd as any]);
+    vi.mocked(updateIndicator).mockResolvedValue(mockSavedInd);
+
+    render(
+      <MemoryRouter>
+        <StrategyTesterPage />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByTestId("indicator-screener")).toBeTruthy();
+
+    const editBtn = await screen.findByTestId("btn-edit-strategy-conditions");
+    fireEvent.click(editBtn);
+
+    // Verifies Strategy Builder GUI tab is active
+    expect(screen.getByTestId("tab-strategy-builder").className).toContain("is-active");
+    const nameInput = screen.getByTestId("input-strategy-name") as HTMLInputElement;
+    expect(nameInput.value).toBe("Momentum Strategy [SCAN]");
+
+    // Verify "+ Add Condition" button is present and add a condition
+    const addConditionBtn = screen.getByTestId("btn-add-filter-rule");
+    expect(addConditionBtn).toBeTruthy();
+    fireEvent.click(addConditionBtn);
+
+    // Save & Apply
+    const saveBtn = screen.getByTestId("btn-apply-strategy-builder");
+    fireEvent.click(saveBtn);
+
+    await waitFor(() => {
+      expect(updateIndicator).toHaveBeenCalledTimes(1);
+    });
+    expect(updateIndicator).toHaveBeenCalledWith(
+      "ind-1",
+      expect.objectContaining({
+        name: "Momentum Strategy [SCAN]",
+        source_code: expect.stringContaining("indicator(\"Momentum Strategy [SCAN]\""),
+      }),
+    );
   });
 });

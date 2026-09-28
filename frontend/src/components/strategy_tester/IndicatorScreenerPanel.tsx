@@ -75,7 +75,9 @@ const SIGNAL_FIELD = "52W Breakout Signal";
 const VALUELESS_OPS = new Set(["is_true", "is_false", "is_null", "is_not_null"]);
 
 function absorbedFromIndicator(indicator: SavedIndicator | null | undefined) {
-  return absorbFromParsedDefinition(indicator?.parsed_definition);
+  return absorbFromParsedDefinition(
+    indicator?.parsed_definition || (indicator?.entry_conditions ? { entry_conditions: indicator.entry_conditions } : undefined)
+  );
 }
 
 function upsertIndicator(list: SavedIndicator[], item: SavedIndicator | null | undefined): SavedIndicator[] {
@@ -1568,7 +1570,30 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
 
       {showScanChrome && entryConditions.length > 0 && (
         <div className="st-card" data-testid="indicator-strategy-conditions">
-          <h2 className="st-card-title">Strategy Conditions</h2>
+          <div className="st-card-title" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <h2 style={{ margin: 0, fontSize: "inherit", fontWeight: "inherit", color: "inherit" }}>
+              Strategy Conditions
+            </h2>
+            {(selected || appliedIndicator) && (
+              <button
+                type="button"
+                className="st-btn-dark"
+                style={{ padding: "3px 8px", fontSize: "0.72rem", display: "inline-flex", alignItems: "center", gap: 4, cursor: "pointer" }}
+                onClick={() => {
+                  const ind = selected || appliedIndicator;
+                  if (ind) onEditIndicator(ind);
+                }}
+                data-testid="btn-edit-strategy-conditions"
+                title="Edit indicator strategy conditions"
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 20h9" />
+                  <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
+                </svg>
+                Edit
+              </button>
+            )}
+          </div>
           <p className="st-reject-not-a-trade">
             TradingView Pine Screener and this scan both evaluate the last 1D bar. MATCH requires every
             required entry condition on that bar, plus any column filters you set. ta.crossover is true
