@@ -153,9 +153,9 @@ const GoogleSignInActive: React.FC = () => {
   return (
     <div className="w-full" ref={containerRef}>
       {isAuthenticating ? (
-        <button type="button" disabled aria-label="Authenticating with Google" className={buttonClass}>
+        <button type="button" disabled aria-label="Connecting to server" className={buttonClass}>
           {spinner}
-          <span>Authenticating...</span>
+          <span>Connecting to server...</span>
         </button>
       ) : (
         <div className="w-full flex justify-center google-signin-host" style={{ minHeight: 50 }}>

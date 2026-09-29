@@ -350,10 +350,21 @@ async def save_results(run_id: uuid.UUID, rows: list[dict[str, Any]]) -> None:
         await db.commit()
 
 
+_SCAN_RESULTS_CACHE: dict[uuid.UUID, list[IndicatorScanResult]] = {}
+_SCAN_RESULTS_CACHE_MAX = 50
+
+
 async def list_results(run_id: uuid.UUID) -> list[IndicatorScanResult]:
+    if run_id in _SCAN_RESULTS_CACHE:
+        return _SCAN_RESULTS_CACHE[run_id]
     async with AsyncSessionLocal() as db:
         stmt = select(IndicatorScanResult).where(IndicatorScanResult.run_id == run_id)
-        return list((await db.execute(stmt)).scalars().all())
+        rows = list((await db.execute(stmt)).scalars().all())
+        if rows:
+            if len(_SCAN_RESULTS_CACHE) >= _SCAN_RESULTS_CACHE_MAX:
+                _SCAN_RESULTS_CACHE.pop(next(iter(_SCAN_RESULTS_CACHE)))
+            _SCAN_RESULTS_CACHE[run_id] = rows
+        return rows
 
 
 async def get_result(run_id: uuid.UUID, symbol: str) -> IndicatorScanResult | None:

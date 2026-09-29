@@ -392,7 +392,14 @@ export const StrategyTesterPageInner: React.FC<StrategyTesterPageProps> = ({ def
       })
       .catch(() => {});
 
-    // Check history for existing latest run
+  }, []);
+
+  // Check history for existing latest run only when strategy workspace is active
+  const hasLoadedStrategyDataRef = useRef(false);
+  useEffect(() => {
+    if (workspace !== "strategy" || hasLoadedStrategyDataRef.current) return;
+    hasLoadedStrategyDataRef.current = true;
+
     fetchStrategyHistory()
       .then(async (history) => {
         const rows = asRows<HistoryRow>(history, "runs");
@@ -430,7 +437,8 @@ export const StrategyTesterPageInner: React.FC<StrategyTesterPageProps> = ({ def
         }
       })
       .catch(() => {});
-  }, [savedState]);
+  }, [workspace, savedState]);
+
 
   useEffect(() => {
     if (!catalog) return;

@@ -261,11 +261,25 @@ async function parseError(response: Response, fallback: string): Promise<string>
   return body?.message || fallback;
 }
 
-export async function fetchStrategyCatalog(): Promise<StrategyCatalog> {
-  const response = await fetchWithAuthResponse("/strategy-tests/catalog", { method: "GET" }, "Strategy tester catalog");
-  if (!response.ok) throw new Error(await parseError(response, "Unable to load strategy catalog."));
-  return response.json();
+let _catalogPromise: Promise<StrategyCatalog> | null = null;
+
+export async function fetchStrategyCatalog(force = false): Promise<StrategyCatalog> {
+  if (force) _catalogPromise = null;
+  if (!_catalogPromise) {
+    _catalogPromise = (async () => {
+      try {
+        const response = await fetchWithAuthResponse("/strategy-tests/catalog", { method: "GET" }, "Strategy tester catalog");
+        if (!response.ok) throw new Error(await parseError(response, "Unable to load strategy catalog."));
+        return await response.json();
+      } catch (err) {
+        _catalogPromise = null;
+        throw err;
+      }
+    })();
+  }
+  return _catalogPromise;
 }
+
 
 export async function fetchStrategyHistory(): Promise<HistoryRow[]> {
   const response = await fetchWithAuthResponse("/strategy-tests/history", { method: "GET" }, "Strategy tester history");

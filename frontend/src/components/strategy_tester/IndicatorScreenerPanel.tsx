@@ -457,6 +457,7 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null);
   const [topPositiveRows, setTopPositiveRows] = useState<RankedReturn[]>([]);
   const [topNegativeRows, setTopNegativeRows] = useState<RankedReturn[]>([]);
+  const lastTopReturnsScanIdRef = useRef<string | null>(null);
   const [columnsOpen, setColumnsOpen] = useState(false);
   const [visibleColumns, setVisibleColumns] = useState<Set<string>>(
     () => new Set(["rank", "symbol", "company", "signal", "entry_price", "exit_price", "rr", "return_pct", "evaluation_date", "pass_count", "primary_failure"]),
@@ -915,9 +916,12 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
 
   useEffect(() => {
     if (scan?.scan_id && scan.status === "completed") {
+      if (lastTopReturnsScanIdRef.current === scan.scan_id && topPositiveRows.length > 0) return;
+      lastTopReturnsScanIdRef.current = scan.scan_id;
       loadTopReturns(scan.scan_id).catch(() => {});
     }
-  }, [scan?.scan_id, scan?.status, loadTopReturns]);
+  }, [scan?.scan_id, scan?.status, loadTopReturns, topPositiveRows.length]);
+
 
   const rememberVisibleScan = () => {
     if (!scan?.scan_id) return;

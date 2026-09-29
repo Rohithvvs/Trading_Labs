@@ -1949,7 +1949,8 @@ export async function authLogin(payload: any): Promise<any> {
 
 export async function authGoogleLogin(idToken: string): Promise<any> {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 15000);
+  // 60-second budget allows for Render free-tier cold starts without timing out on first click
+  const timeoutId = setTimeout(() => controller.abort(), 60000);
   try {
     const response = await fetchWithDiagnostics(
       "/auth/google",

@@ -193,12 +193,19 @@ export async function fetchIndicatorTemplates(): Promise<LabIndicatorTemplate[]>
   return Array.isArray(body?.templates) ? body.templates : [];
 }
 
+let _indicatorsPromise: Promise<SavedIndicator[]> | null = null;
+
+export function invalidateIndicatorsCache(): void {
+  _indicatorsPromise = null;
+}
+
 export async function seedLabIndicators(): Promise<{
   created: string[];
   skipped: string[];
   count: number;
   indicators: SavedIndicator[];
 }> {
+  invalidateIndicatorsCache();
   const response = await fetchWithAuth("/indicators/seed-lab", { method: "POST" });
   if (!response.ok) throw new Error(await parseError(response, "Unable to save research-lab strategies."));
   return response.json();
@@ -210,6 +217,7 @@ export async function createIndicator(payload: {
   source_code: string;
   timeframe?: string;
 }): Promise<SavedIndicator> {
+  invalidateIndicatorsCache();
   const response = await fetchWithAuth("/indicators", { method: "POST", body: JSON.stringify(payload) });
   if (!response.ok) throw new Error(await parseError(response, "Unable to save indicator."));
   return response.json();
@@ -219,6 +227,7 @@ export async function updateIndicator(
   id: string,
   payload: { name: string; description?: string; source_code: string; timeframe?: string },
 ): Promise<SavedIndicator> {
+  invalidateIndicatorsCache();
   const response = await fetchWithAuth(`/indicators/${encodeURIComponent(id)}`, {
     method: "PUT",
     body: JSON.stringify(payload),
@@ -227,11 +236,23 @@ export async function updateIndicator(
   return response.json();
 }
 
-export async function fetchIndicators(): Promise<SavedIndicator[]> {
-  const response = await fetchWithAuth("/indicators");
-  if (!response.ok) throw new Error(await parseError(response, "Unable to load indicators."));
-  const body = await response.json();
-  return Array.isArray(body?.indicators) ? body.indicators : [];
+
+export async function fetchIndicators(force = false): Promise<SavedIndicator[]> {
+  if (force) _indicatorsPromise = null;
+  if (!_indicatorsPromise) {
+    _indicatorsPromise = (async () => {
+      try {
+        const response = await fetchWithAuth("/indicators");
+        if (!response.ok) throw new Error(await parseError(response, "Unable to load indicators."));
+        const body = await response.json();
+        return Array.isArray(body?.indicators) ? body.indicators : [];
+      } catch (err) {
+        _indicatorsPromise = null;
+        throw err;
+      }
+    })();
+  }
+  return _indicatorsPromise;
 }
 
 export async function fetchIndicator(id: string): Promise<SavedIndicator> {
@@ -241,15 +262,18 @@ export async function fetchIndicator(id: string): Promise<SavedIndicator> {
 }
 
 export async function duplicateIndicator(id: string): Promise<SavedIndicator> {
+  invalidateIndicatorsCache();
   const response = await fetchWithAuth(`/indicators/${encodeURIComponent(id)}/duplicate`, { method: "POST" });
   if (!response.ok) throw new Error(await parseError(response, "Unable to duplicate indicator."));
   return response.json();
 }
 
 export async function archiveIndicator(id: string): Promise<void> {
+  invalidateIndicatorsCache();
   const response = await fetchWithAuth(`/indicators/${encodeURIComponent(id)}`, { method: "DELETE" });
   if (!response.ok) throw new Error(await parseError(response, "Unable to archive indicator."));
 }
+
 
 export async function startIndicatorScan(
   indicatorId: string,
