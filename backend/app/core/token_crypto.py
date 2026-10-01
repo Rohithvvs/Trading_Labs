@@ -30,22 +30,10 @@ def _get_fernet():
     if _fernet is not None:
         return _fernet
     try:
-        from cryptography.fernet import Fernet
         from cryptography.fernet import MultiFernet
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError("cryptography package is required for token encryption") from exc
 
-    secret = (
-        os.getenv("TOKEN_ENCRYPTION_KEY")
-        or os.getenv("JWT_SECRET")
-        or "yoursecretkey_must_be_changed_in_prod"
-    )
-    # Fernet needs 32 url-safe base64-encoded bytes
-    digest = hashlib.sha256(secret.encode("utf-8")).digest()
-    key = base64.urlsafe_b64encode(digest)
-    _fernet = Fernet(key)
-    primary_secret = os.getenv("TOKEN_ENCRYPTION_KEY") or os.getenv("JWT_SECRET")
-    if not primary_secret:
     candidates: list[str] = []
     for s in (
         os.getenv("TOKEN_ENCRYPTION_KEY"),
@@ -58,19 +46,19 @@ def _get_fernet():
         try:
             from pathlib import Path
             from dotenv import load_dotenv
+
             root_env = Path(__file__).resolve().parents[3] / ".env"
             if root_env.exists():
                 load_dotenv(root_env, override=False)
-                primary_secret = os.getenv("TOKEN_ENCRYPTION_KEY") or os.getenv("JWT_SECRET")
                 for s in (os.getenv("TOKEN_ENCRYPTION_KEY"), os.getenv("JWT_SECRET")):
                     if s and str(s).strip() and str(s).strip() not in candidates:
                         candidates.append(str(s).strip())
         except Exception:
             pass
 
-    primary = (primary_secret or "").strip()
     try:
         from ..config import settings
+
         jwt_s = getattr(settings, "jwt_secret", None)
         if jwt_s and str(jwt_s).strip() and str(jwt_s).strip() not in candidates:
             candidates.append(str(jwt_s).strip())
@@ -81,13 +69,7 @@ def _get_fernet():
     if fallback not in candidates:
         candidates.append(fallback)
 
-    fernets = []
-    if primary:
-        fernets.append(_make_single_fernet(primary))
-    if fallback != primary:
-        fernets.append(_make_single_fernet(fallback))
-
-    fernets = [_make_single_fernet(key) for key in candidates]
+    fernets = [_make_single_fernet(key) for key in candidates if key]
     _fernet = MultiFernet(fernets)
     return _fernet
 
