@@ -28,9 +28,9 @@ _LAST_LIVE_QUOTE_SYNC_TIME: float = 0.0
 _LIVE_QUOTE_REFRESH_MIN_INTERVAL_S = 15.0
 # Per-symbol history for the whole universe is what restarted Render mid-scan
 # (IND-20260925-009). Quotes cover the latest session in a few batched calls.
-_HISTORY_BATCH = 40
-_HISTORY_BUDGET_S = 20.0
-_UPSERT_CHUNK = 200
+_HISTORY_BATCH = 50
+_HISTORY_BUDGET_S = 10.0
+_UPSERT_CHUNK = 500
 
 
 def _now_ist() -> datetime:
@@ -202,7 +202,7 @@ async def sync_daily_market_data_for_scan(
                 live_persist = [
                     {
                         "trade_date": plan["quote_session"],
-                        "symbol": sym,
+                        "symbol": f"{sym}-EQ" if not str(sym).endswith("-EQ") else str(sym),
                         "open": float(b.get("open") or b["close"]),
                         "high": float(b["high"]),
                         "low": float(b["low"]),

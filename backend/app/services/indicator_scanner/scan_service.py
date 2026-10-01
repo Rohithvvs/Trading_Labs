@@ -264,7 +264,7 @@ async def fetch_current_indicator_market_data(
         # it and the startup reaper marks the run SCAN_INTERRUPTED.
         report["daily_sync"] = await asyncio.wait_for(
             sync_daily_market_data_for_scan(store_symbols or symbols),
-            timeout=15.0,
+            timeout=35.0,
         )
     except asyncio.TimeoutError:
         logger.warning("INDICATOR_SCAN_DAILY_SYNC_TIMEOUT | continuing with stored candles")

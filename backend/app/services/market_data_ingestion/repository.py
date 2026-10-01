@@ -1,6 +1,7 @@
 """Bulk upsert and query helpers for strategy-grade market data."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from datetime import date, datetime, timezone
@@ -42,7 +43,7 @@ async def max_equity_trade_date(symbols: list[str] | None = None) -> date | None
         from . import turso_repository as turso
 
         try:
-            d = await turso.fetch_max_equity_trade_date(symbols)
+            d = await asyncio.wait_for(turso.fetch_max_equity_trade_date(symbols), timeout=3.0)
             if d is not None:
                 return d
         except Exception as exc:
@@ -60,7 +61,7 @@ async def equity_date_span(symbol: str) -> tuple[date | None, date | None, int]:
         from . import turso_repository as turso
 
         try:
-            res = await turso.fetch_equity_date_span(symbol)
+            res = await asyncio.wait_for(turso.fetch_equity_date_span(symbol), timeout=3.0)
             if res and res[2] > 0:
                 return res
         except Exception as exc:
@@ -82,7 +83,10 @@ async def max_index_trade_date(symbol: str = "NIFTY500") -> date | None:
     if _use_turso_history():
         from . import turso_repository as turso
 
-        return await turso.fetch_max_index_trade_date(symbol)
+        try:
+            return await asyncio.wait_for(turso.fetch_max_index_trade_date(symbol), timeout=3.0)
+        except Exception as exc:
+            _ohlcv_log.warning("TURSO_MAX_INDEX_TRADE_DATE_FAILED | err=%s, falling back to postgres", exc)
     async with AsyncSessionLocal() as db:
         stmt = select(func.max(IndexOhlcv.trade_date)).where(IndexOhlcv.symbol == symbol)
         return (await db.execute(stmt)).scalar_one_or_none()
@@ -92,7 +96,10 @@ async def min_index_trade_date(symbol: str = "NIFTY500") -> date | None:
     if _use_turso_history():
         from . import turso_repository as turso
 
-        return await turso.fetch_min_index_trade_date(symbol)
+        try:
+            return await asyncio.wait_for(turso.fetch_min_index_trade_date(symbol), timeout=3.0)
+        except Exception as exc:
+            _ohlcv_log.warning("TURSO_MIN_INDEX_TRADE_DATE_FAILED | err=%s, falling back to postgres", exc)
     async with AsyncSessionLocal() as db:
         stmt = select(func.min(IndexOhlcv.trade_date)).where(IndexOhlcv.symbol == symbol)
         return (await db.execute(stmt)).scalar_one_or_none()
@@ -102,7 +109,10 @@ async def index_row_count(symbol: str = "NIFTY500") -> int:
     if _use_turso_history():
         from . import turso_repository as turso
 
-        return await turso.fetch_index_row_count(symbol)
+        try:
+            return await asyncio.wait_for(turso.fetch_index_row_count(symbol), timeout=3.0)
+        except Exception as exc:
+            _ohlcv_log.warning("TURSO_INDEX_ROW_COUNT_FAILED | err=%s, falling back to postgres", exc)
     async with AsyncSessionLocal() as db:
         stmt = select(func.count()).select_from(IndexOhlcv).where(IndexOhlcv.symbol == symbol)
         return int((await db.execute(stmt)).scalar() or 0)
@@ -112,7 +122,10 @@ async def symbols_present_on(trade_date: date, symbols: list[str] | None = None)
     if _use_turso_history():
         from . import turso_repository as turso
 
-        return await turso.fetch_symbols_present_on(trade_date, symbols)
+        try:
+            return await asyncio.wait_for(turso.fetch_symbols_present_on(trade_date, symbols), timeout=5.0)
+        except Exception as exc:
+            _ohlcv_log.warning("TURSO_SYMBOLS_PRESENT_ON_FAILED | err=%s, falling back to postgres", exc)
     async with AsyncSessionLocal() as db:
         stmt = select(DailyOhlcv.symbol).where(DailyOhlcv.trade_date == trade_date)
         if symbols:
@@ -125,7 +138,10 @@ async def index_present(trade_date: date, symbol: str = "NIFTY500") -> bool:
     if _use_turso_history():
         from . import turso_repository as turso
 
-        return await turso.fetch_index_present(trade_date, symbol)
+        try:
+            return await asyncio.wait_for(turso.fetch_index_present(trade_date, symbol), timeout=3.0)
+        except Exception as exc:
+            _ohlcv_log.warning("TURSO_INDEX_PRESENT_FAILED | err=%s, falling back to postgres", exc)
     async with AsyncSessionLocal() as db:
         stmt = (
             select(IndexOhlcv.symbol)
@@ -575,7 +591,7 @@ async def backfill_adtv_20_for_session(
                        ) AS adtv
                 FROM daily_ohlcv
                 WHERE trade_date <= :sess
-                  AND trade_date >= (:sess::date - INTERVAL '90 days')
+                  AND trade_date >= (CAST(:sess AS date) - INTERVAL '90 days')
                   {symbol_filter}
             ) AS w
             WHERE d.trade_date = :sess
@@ -597,7 +613,13 @@ async def fetch_recent_equity_before(
     if _use_turso_history():
         from . import turso_repository as turso
 
-        return await turso.fetch_recent_equity_before(symbol, before_date, limit)
+        try:
+            return await asyncio.wait_for(
+                turso.fetch_recent_equity_before(symbol, before_date, limit),
+                timeout=5.0,
+            )
+        except Exception as exc:
+            _ohlcv_log.warning("TURSO_FETCH_RECENT_EQUITY_BEFORE_FAILED | err=%s, falling back to postgres", exc)
     async with AsyncSessionLocal() as db:
         stmt = (
             select(DailyOhlcv)
@@ -706,7 +728,13 @@ async def fetch_equity_history(
     if _use_turso_history():
         from . import turso_repository as turso
 
-        return await turso.fetch_equity_history(symbol, from_date=from_date, limit=limit)
+        try:
+            return await asyncio.wait_for(
+                turso.fetch_equity_history(symbol, from_date=from_date, limit=limit),
+                timeout=5.0,
+            )
+        except Exception as exc:
+            _ohlcv_log.warning("TURSO_FETCH_EQUITY_HISTORY_FAILED | err=%s, falling back to postgres", exc)
     from ...utils.symbol import ohlcv_symbol_variants, preferred_ohlcv_store_symbol
 
     variants = ohlcv_symbol_variants(symbol) or [symbol]
@@ -740,7 +768,13 @@ async def fetch_index_history(
     if _use_turso_history():
         from . import turso_repository as turso
 
-        return await turso.fetch_index_history(symbol, from_date=from_date)
+        try:
+            return await asyncio.wait_for(
+                turso.fetch_index_history(symbol, from_date=from_date),
+                timeout=5.0,
+            )
+        except Exception as exc:
+            _ohlcv_log.warning("TURSO_FETCH_INDEX_HISTORY_FAILED | err=%s, falling back to postgres", exc)
     async with AsyncSessionLocal() as db:
         stmt = select(IndexOhlcv).where(IndexOhlcv.symbol == symbol)
         if from_date:
@@ -765,7 +799,13 @@ async def symbol_has_sufficient_history(symbol: str, min_rows: int = 500) -> boo
     if _use_turso_history():
         from . import turso_repository as turso
 
-        return await turso.fetch_symbol_has_sufficient_history(symbol, min_rows)
+        try:
+            return await asyncio.wait_for(
+                turso.fetch_symbol_has_sufficient_history(symbol, min_rows),
+                timeout=3.0,
+            )
+        except Exception as exc:
+            _ohlcv_log.warning("TURSO_SYMBOL_SUFFICIENT_HISTORY_FAILED | err=%s, falling back to postgres", exc)
     async with AsyncSessionLocal() as db:
         cnt = (
             await db.execute(
@@ -915,8 +955,11 @@ async def fetch_daily_ohlcv_for_symbols(
 
         try:
             col_names = _ohlcv_column_names(columns)
-            dict_rows = await turso.fetch_daily_ohlcv_for_symbols(
-                unique, lookback=lookback, from_date=from_date, to_date=to_date, columns=col_names
+            dict_rows = await asyncio.wait_for(
+                turso.fetch_daily_ohlcv_for_symbols(
+                    unique, lookback=lookback, from_date=from_date, to_date=to_date, columns=col_names
+                ),
+                timeout=8.0,
             )
             if dict_rows:
                 RowCls = namedtuple("DailyOhlcvRow", col_names)

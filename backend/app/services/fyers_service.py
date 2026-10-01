@@ -919,11 +919,16 @@ class FyersService:
 
     def has_fyers_credentials(self) -> bool:
         try:
-            if not (settings.fyers_app_id and settings.fyers_app_id.strip()):
-                return False
             from .token_service import get_current_access_token_sync
             token, _ = get_current_access_token_sync()
-            return bool(token)
+            if token and str(token).strip():
+                return True
+            env_tok = (
+                getattr(settings, "fyers_access_token", None)
+                or os.getenv("FYERS_ACCESS_TOKEN")
+                or ""
+            ).strip()
+            return bool(env_tok)
         except Exception:
             return False
 
@@ -1327,12 +1332,28 @@ class FyersService:
         # the token is stored or passed with surrounding quotes or prefixed
         # with the app id (e.g. "APPID:ACCESS_TOKEN"). FyersModel expects
         # the raw access token only.
-        client_id = (settings.fyers_app_id or "").strip().strip('"').strip("'")
+        client_id = (
+            getattr(settings, "fyers_app_id", None)
+            or getattr(settings, "fyers_client_id", None)
+            or os.getenv("FYERS_APP_ID")
+            or os.getenv("FYERS_CLIENT_ID")
+            or ""
+        ).strip().strip('"').strip("'")
 
         # Read token from DB (manual access token) via token_service helper.
         from . import token_service
 
         token, source = token_service.get_current_access_token_sync()
+        if not token:
+            env_tok = (
+                getattr(settings, "fyers_access_token", None)
+                or os.getenv("FYERS_ACCESS_TOKEN")
+                or ""
+            ).strip().strip('"').strip("'")
+            if env_tok:
+                token = env_tok
+                source = "env"
+
         if token:
             token = str(token).strip().strip('"').strip("'")
             self.logger.info("Scanner token loaded successfully. Token source used: %s", source)

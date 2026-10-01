@@ -438,54 +438,52 @@ async def get_current_access_token(db: AsyncSession) -> str | None:
         return _CACHED_TOKEN
 
     if _NEGATIVE_CACHE_UNTIL and now < _NEGATIVE_CACHE_UNTIL and not _CACHED_TOKEN:
+        env_tok = _get_env_fallback_token()
+        if env_tok:
+            return env_tok
         return None
 
     logger.info("TOKEN_CACHE_MISS | source=database | reason=cache_miss_or_expired")
-    row = await get_fyers_token_row(db)
-    if row is None:
-        logger.warning("TOKEN_NOT_FOUND | No FyersToken row found in database")
-        _clear_token_cache()
-        _set_negative_cache()
-        return None
-    if not row.is_active or (getattr(row, "status", "") or "").lower() == "failed":
-        logger.warning("TOKEN_NOT_ACTIVE | DB token has status=%s, is_active=%s", getattr(row, "status", None), row.is_active)
-        _clear_token_cache()
-        _set_negative_cache()
-        return None
-    if not row.access_token:
-        logger.warning("TOKEN_NOT_FOUND | FyersToken row exists but access_token is empty")
-        _clear_token_cache()
-        _set_negative_cache()
-        return None
+    try:
+        row = await get_fyers_token_row(db)
+        if row and row.is_active and (getattr(row, "status", "") or "").lower() != "failed" and row.access_token:
+            plain = _decrypt_from_storage(row.access_token)
+            if plain:
+                jwt_exp = _decode_jwt_expiry(plain)
+                if not jwt_exp or _ensure_utc(jwt_exp) > now:
+                    logger.info(
+                        "TOKEN_REFRESH_FROM_DB | Access token found in DB, status=%s, saved_at=%s",
+                        row.status,
+                        row.access_token_saved_at,
+                    )
+                    _set_token_cache(plain, row.access_token_saved_at)
+                    return plain
+    except Exception as e:
+        logger.error("TOKEN_DB_LOOKUP_FAILED | %s", e)
 
-    plain = _decrypt_from_storage(row.access_token)
-    if not plain:
-        logger.warning("TOKEN_NOT_FOUND | Stored token could not be decrypted")
-        _clear_token_cache()
-        _set_negative_cache()
+    env_tok = _get_env_fallback_token()
+    if env_tok:
+        logger.info("TOKEN_ENV_FALLBACK | Using FYERS_ACCESS_TOKEN from settings/env")
+        _set_token_cache(env_tok)
+        return env_tok
+
+    _clear_token_cache()
+    _set_negative_cache()
+    return None
+
+
+def _get_env_fallback_token() -> str | None:
+    tok = (
+        getattr(settings, "fyers_access_token", None)
+        or os.getenv("FYERS_ACCESS_TOKEN")
+        or ""
+    ).strip().strip('"').strip("'")
+    if not tok:
         return None
-
-    jwt_exp = _decode_jwt_expiry(plain)
-    if jwt_exp and _ensure_utc(jwt_exp) <= now:
-        logger.warning("TOKEN_EXPIRED | Stored DB token expired at %s", jwt_exp.isoformat())
-        _clear_token_cache()
-        _set_negative_cache()
+    exp = _decode_jwt_expiry(tok)
+    if exp and _ensure_utc(exp) <= utc_now():
         return None
-
-    saved_at = _ensure_utc(row.access_token_saved_at)
-    known_saved = _ensure_utc(_TOKEN_SAVED_AT)
-    if known_saved and saved_at and saved_at < known_saved:
-        logger.warning(
-            "TOKEN_GENERATION_MISMATCH | DB token is older than our last known token"
-        )
-
-    logger.info(
-        "TOKEN_REFRESH_FROM_DB | Access token found in DB, status=%s, saved_at=%s",
-        row.status,
-        row.access_token_saved_at,
-    )
-    _set_token_cache(plain, row.access_token_saved_at)
-    return plain
+    return tok
 
 
 def get_current_access_token_sync() -> tuple[str | None, str]:
@@ -499,6 +497,9 @@ def get_current_access_token_sync() -> tuple[str | None, str]:
         return _CACHED_TOKEN, "cache"
 
     if _NEGATIVE_CACHE_UNTIL and now < _NEGATIVE_CACHE_UNTIL and not _CACHED_TOKEN:
+        env_tok = _get_env_fallback_token()
+        if env_tok:
+            return env_tok, "env"
         return None, "cache_cooldown"
 
     with _TOKEN_LOCK:
@@ -509,6 +510,9 @@ def get_current_access_token_sync() -> tuple[str | None, str]:
             return _CACHED_TOKEN, "cache"
 
         if _NEGATIVE_CACHE_UNTIL and now < _NEGATIVE_CACHE_UNTIL and not _CACHED_TOKEN:
+            env_tok = _get_env_fallback_token()
+            if env_tok:
+                return env_tok, "env"
             return None, "cache_cooldown"
 
         logger.info("TOKEN_CACHE_MISS | source=database | reason=cache_miss_or_expired")
@@ -523,11 +527,19 @@ def get_current_access_token_sync() -> tuple[str | None, str]:
                 )
                 if row is None:
                     logger.warning("TOKEN_NOT_FOUND | No FyersToken row found in database")
+                    env_tok = _get_env_fallback_token()
+                    if env_tok:
+                        _set_token_cache(env_tok)
+                        return env_tok, "env"
                     _clear_token_cache()
                     _set_negative_cache()
                     return None, "database"
                 if not row.is_active or (getattr(row, "status", "") or "").lower() == "failed":
                     logger.warning("TOKEN_NOT_ACTIVE | DB token has status=%s, is_active=%s", getattr(row, "status", None), row.is_active)
+                    env_tok = _get_env_fallback_token()
+                    if env_tok:
+                        _set_token_cache(env_tok)
+                        return env_tok, "env"
                     _clear_token_cache()
                     _set_negative_cache()
                     return None, "database"
@@ -535,6 +547,10 @@ def get_current_access_token_sync() -> tuple[str | None, str]:
                     logger.warning(
                         "TOKEN_NOT_FOUND | FyersToken row exists but access_token is empty"
                     )
+                    env_tok = _get_env_fallback_token()
+                    if env_tok:
+                        _set_token_cache(env_tok)
+                        return env_tok, "env"
                     _clear_token_cache()
                     _set_negative_cache()
                     return None, "database"
@@ -543,6 +559,10 @@ def get_current_access_token_sync() -> tuple[str | None, str]:
                     logger.warning(
                         "TOKEN_NOT_FOUND | Stored token could not be decrypted"
                     )
+                    env_tok = _get_env_fallback_token()
+                    if env_tok:
+                        _set_token_cache(env_tok)
+                        return env_tok, "env"
                     _clear_token_cache()
                     _set_negative_cache()
                     return None, "database"
@@ -550,6 +570,10 @@ def get_current_access_token_sync() -> tuple[str | None, str]:
                 jwt_exp = _decode_jwt_expiry(plain)
                 if jwt_exp and _ensure_utc(jwt_exp) <= now:
                     logger.warning("TOKEN_EXPIRED | Stored DB token expired at %s", jwt_exp.isoformat())
+                    env_tok = _get_env_fallback_token()
+                    if env_tok:
+                        _set_token_cache(env_tok)
+                        return env_tok, "env"
                     _clear_token_cache()
                     _set_negative_cache()
                     return None, "database"
@@ -578,6 +602,10 @@ def get_current_access_token_sync() -> tuple[str | None, str]:
                     "TOKEN_DB_UNAVAILABLE | Falling back to expired cached token due to DB outage"
                 )
                 return _CACHED_TOKEN, "cache_fallback"
+            env_tok = _get_env_fallback_token()
+            if env_tok:
+                _set_token_cache(env_tok)
+                return env_tok, "env_fallback"
             return None, "error"
 
 

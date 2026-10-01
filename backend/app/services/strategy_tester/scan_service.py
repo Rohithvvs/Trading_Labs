@@ -179,6 +179,17 @@ async def execute_run(
     )
 
     await persistence.update_run(run_id, stage="loading_market_data")
+    from ...utils.datetime_utils import ist_now as _ist_now
+    from ..daily_scan_sync_service import sync_daily_market_data_for_scan
+    if end_date >= _ist_now().date():
+        try:
+            await asyncio.wait_for(
+                sync_daily_market_data_for_scan(store_symbols or symbols),
+                timeout=25.0,
+            )
+        except Exception as exc:
+            logger.warning("STRATEGY_TESTER_DAILY_SYNC_FAILED | err=%s", exc)
+
     series_by_symbol, benchmark_series, data_source = await prepare_scan_market_data(
         symbols,
         from_date=from_date,
@@ -774,7 +785,7 @@ async def fill_missing_completed_bar_series(
         )
         return series_by_symbol, benchmark, "stored_eod"
     try:
-        fill_timeout = _FILL_HISTORY_TIMEOUT_S if timeout_s is None else timeout_s
+        fill_timeout = min(20.0, float(timeout_s)) if timeout_s is not None else 20.0
         by_session, index_by, persist, index_persist = await asyncio.wait_for(
             fetch_missing_completed_bars(stale, gap_from, target),
             timeout=fill_timeout,
@@ -902,7 +913,7 @@ async def overlay_live_session(
         # Weekend/holiday: do not stamp last quotes onto a new date (that cloned
         # Thursday onto Friday and froze the scanner on 755 FYERS quote calls).
         return series_by_symbol, benchmark, fill_source
-    quote_timeout = _LIVE_QUOTE_TIMEOUT_S if fill_timeout_s is None else min(_LIVE_QUOTE_TIMEOUT_S, float(fill_timeout_s))
+    quote_timeout = max(25.0, min(_LIVE_QUOTE_TIMEOUT_S, float(fill_timeout_s))) if fill_timeout_s is not None else 30.0
     try:
         bars, index_close = await asyncio.wait_for(
             fetch_live_session_bars(symbols),
