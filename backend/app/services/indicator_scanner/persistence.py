@@ -7,7 +7,7 @@ import uuid
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, insert, select
 
 from ...db.session import AsyncSessionLocal
 from ...models.indicator_scanner import IndicatorDefinition, IndicatorScanResult, IndicatorScanRun
@@ -328,25 +328,32 @@ async def update_scan(run_id: uuid.UUID, **fields: Any) -> IndicatorScanRun | No
 
 
 async def save_results(run_id: uuid.UUID, rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        return
+    payload = [
+        {
+            "id": uuid.uuid4(),
+            "run_id": run_id,
+            "symbol": str(item["symbol"]),
+            "display_name": item.get("display_name") or item.get("company"),
+            "exchange": item.get("exchange") or "NSE",
+            "timeframe": item.get("timeframe") or "1D",
+            "as_of": item.get("as_of"),
+            "status": item.get("status") or "ok",
+            "matched": bool(item.get("matched")),
+            "outputs": json_safe(item.get("outputs") or {}),
+            "ohlcv": json_safe(item.get("ohlcv") or {}),
+            "error_detail": item.get("error_detail"),
+            "bar_count": item.get("bar_count"),
+        }
+        for item in rows
+    ]
+    chunk_size = 250
     async with AsyncSessionLocal() as db:
-        for item in rows:
-            db.add(
-                IndicatorScanResult(
-                    id=uuid.uuid4(),
-                    run_id=run_id,
-                    symbol=str(item["symbol"]),
-                    display_name=item.get("display_name") or item.get("company"),
-                    exchange=item.get("exchange") or "NSE",
-                    timeframe=item.get("timeframe") or "1D",
-                    as_of=item.get("as_of"),
-                    status=item.get("status") or "ok",
-                    matched=bool(item.get("matched")),
-                    outputs=json_safe(item.get("outputs") or {}),
-                    ohlcv=json_safe(item.get("ohlcv") or {}),
-                    error_detail=item.get("error_detail"),
-                    bar_count=item.get("bar_count"),
-                )
-            )
+        for i in range(0, len(payload), chunk_size):
+            chunk = payload[i : i + chunk_size]
+            stmt = insert(IndicatorScanResult).values(chunk)
+            await db.execute(stmt)
         await db.commit()
 
 

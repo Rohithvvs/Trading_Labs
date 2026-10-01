@@ -272,9 +272,10 @@ async def sync_daily_market_data_for_scan(
                 await asyncio.sleep(0)
             else:
                 result["completed_synced"] = True
-                _LAST_COMPLETED_SYNC_DAY = today_ist
+            _LAST_COMPLETED_SYNC_DAY = today_ist
             result["completed_sessions"] = [d.isoformat() for d in sorted(sessions)]
         except Exception as exc:
+            _LAST_COMPLETED_SYNC_DAY = today_ist
             logger.warning("DAILY_SCAN_SYNC | Failed fetching completed sessions: %s", exc)
 
     result["duration_ms"] = int((time.time() - t0) * 1000)

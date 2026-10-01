@@ -376,7 +376,7 @@ async def load_bar_series(
     from_date: date,
     to_date: date,
     session_dates: set[date] | None = None,
-    chunk_size: int = 100,
+    chunk_size: int = 250,
 ) -> dict[str, BarSeries]:
     if not symbols:
         return {}
@@ -398,14 +398,23 @@ async def load_bar_series(
         DailyOhlcv.close,
         DailyOhlcv.volume,
     )
-    for i in range(0, len(query_symbols), chunk_size):
-        chunk = query_symbols[i : i + chunk_size]
-        rows = await fetch_daily_ohlcv_for_symbols(
-            chunk,
-            columns=cols,
-            from_date=from_date,
-            to_date=to_date,
-        )
+    chunks = [query_symbols[i : i + chunk_size] for i in range(0, len(query_symbols), chunk_size)]
+    sem = asyncio.Semaphore(4)
+
+    async def fetch_chunk(ch: list[str]) -> list[Any]:
+        async with sem:
+            return await fetch_daily_ohlcv_for_symbols(
+                ch,
+                columns=cols,
+                from_date=from_date,
+                to_date=to_date,
+            )
+
+    chunk_results = await asyncio.gather(*(fetch_chunk(ch) for ch in chunks), return_exceptions=True)
+    for rows in chunk_results:
+        if isinstance(rows, Exception):
+            logger.warning("FAILED_FETCH_OHLCV_CHUNK | err=%s", rows)
+            continue
         for r in rows:
             symbol = getattr(r, "symbol", None) or (r[1] if isinstance(r, (tuple, list)) else None)
             trade_date = getattr(r, "trade_date", None) or (r[0] if isinstance(r, (tuple, list)) else None)
@@ -416,7 +425,6 @@ async def load_bar_series(
             volume = getattr(r, "volume", None) or (r[6] if isinstance(r, (tuple, list)) else 0)
             canon = canonical_symbol(symbol) or symbol
             buckets[canon].append((trade_date, open_px, high, low, close, volume))
-        del rows
 
     out: dict[str, BarSeries] = {}
     for symbol, items in buckets.items():

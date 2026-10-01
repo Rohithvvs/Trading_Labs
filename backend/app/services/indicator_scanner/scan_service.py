@@ -264,7 +264,7 @@ async def fetch_current_indicator_market_data(
         # it and the startup reaper marks the run SCAN_INTERRUPTED.
         report["daily_sync"] = await asyncio.wait_for(
             sync_daily_market_data_for_scan(store_symbols or symbols),
-            timeout=35.0,
+            timeout=15.0,
         )
     except asyncio.TimeoutError:
         logger.warning("INDICATOR_SCAN_DAILY_SYNC_TIMEOUT | continuing with stored candles")
@@ -429,8 +429,8 @@ async def start_scan_background(
             started = started.replace(tzinfo=timezone.utc)
         age = (_utc() - started).total_seconds() if started else 0
         processed = int(getattr(active, "processed_count", 0) or 0)
-        orphaned = active.id not in _active_scans and age > 20
-        idle_hung = processed == 0 and age > 30
+        orphaned = active.id not in _active_scans and age > 600
+        idle_hung = processed == 0 and age > 600
         if orphaned or idle_hung:
             request_cancel(active.id)
             await persistence.update_scan(
@@ -719,6 +719,8 @@ async def execute_scan(
             return _row_from_eval(symbol, company_map.get(symbol), eval_result, filters)
 
     pending: list[asyncio.Task] = []
+    last_db_update_count = 0
+    last_db_update_time = time.monotonic()
     for index, symbol in enumerate(symbols, start=1):
         if run_id in _cancel_requested:
             for task in pending:
@@ -746,18 +748,23 @@ async def execute_scan(
                 if item.get("matched"):
                     matched += 1
             processed = len(results)
-            await persistence.update_scan(
-                run_id,
-                status="running",
-                stage="scanning",
-                processed_count=processed,
-                total_count=total,
-                progress_pct=int(processed / total * 100) if total else 100,
-                success_count=success,
-                failed_count=failed,
-                skipped_count=skipped,
-                matched_count=matched,
-            )
+            is_final = (index == total)
+            now_mono = time.monotonic()
+            if is_final or (processed - last_db_update_count >= 50) or (now_mono - last_db_update_time >= 2.0):
+                last_db_update_count = processed
+                last_db_update_time = now_mono
+                await persistence.update_scan(
+                    run_id,
+                    status="running",
+                    stage="scanning",
+                    processed_count=processed,
+                    total_count=total,
+                    progress_pct=int(processed / total * 100) if total else 100,
+                    success_count=success,
+                    failed_count=failed,
+                    skipped_count=skipped,
+                    matched_count=matched,
+                )
 
     await persistence.update_scan(run_id, stage="applying_filters", progress_pct=99)
     await persistence.save_results(run_id, results)

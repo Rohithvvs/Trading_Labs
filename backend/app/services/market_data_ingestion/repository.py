@@ -41,7 +41,12 @@ async def max_equity_trade_date(symbols: list[str] | None = None) -> date | None
     if _use_turso_history():
         from . import turso_repository as turso
 
-        return await turso.fetch_max_equity_trade_date(symbols)
+        try:
+            d = await turso.fetch_max_equity_trade_date(symbols)
+            if d is not None:
+                return d
+        except Exception as exc:
+            _ohlcv_log.warning("TURSO_MAX_EQUITY_TRADE_DATE_FAILED | err=%s, falling back to postgres", exc)
     async with AsyncSessionLocal() as db:
         stmt = select(func.max(DailyOhlcv.trade_date))
         if symbols:
@@ -54,7 +59,12 @@ async def equity_date_span(symbol: str) -> tuple[date | None, date | None, int]:
     if _use_turso_history():
         from . import turso_repository as turso
 
-        return await turso.fetch_equity_date_span(symbol)
+        try:
+            res = await turso.fetch_equity_date_span(symbol)
+            if res and res[2] > 0:
+                return res
+        except Exception as exc:
+            _ohlcv_log.warning("TURSO_EQUITY_DATE_SPAN_FAILED | err=%s, falling back to postgres", exc)
     async with AsyncSessionLocal() as db:
         row = (
             await db.execute(
@@ -306,8 +316,13 @@ async def upsert_daily_bars(rows: list[dict[str, Any]]) -> tuple[int, int]:
     if _use_turso_history():
         from . import turso_repository as turso
 
-        n = turso.upsert_daily_rows(turso._client(), accepted)
-        return n, rejected_n
+        try:
+            n = turso.upsert_daily_rows(turso._client(), accepted)
+            if n > 0 or not accepted:
+                return n, rejected_n
+            _ohlcv_log.warning("TURSO_UPSERT_DAILY_RETURNED_ZERO | falling back to postgres")
+        except Exception as exc:
+            _ohlcv_log.warning("TURSO_UPSERT_DAILY_FAILED | err=%s, falling back to postgres", exc)
     if not accepted:
         return 0, rejected_n
     loaded_at = _utc_now()
@@ -619,7 +634,13 @@ async def upsert_index_bars(rows: list[dict[str, Any]]) -> int:
     if _use_turso_history():
         from . import turso_repository as turso
 
-        return turso.upsert_index_rows(turso._client(), accepted)
+        try:
+            n = turso.upsert_index_rows(turso._client(), accepted)
+            if n > 0 or not accepted:
+                return n
+            _ohlcv_log.warning("TURSO_UPSERT_INDEX_RETURNED_ZERO | falling back to postgres")
+        except Exception as exc:
+            _ohlcv_log.warning("TURSO_UPSERT_INDEX_FAILED | err=%s, falling back to postgres", exc)
     if not accepted:
         return 0
     loaded_at = _utc_now()
@@ -892,12 +913,16 @@ async def fetch_daily_ohlcv_for_symbols(
         from collections import namedtuple
         from . import turso_repository as turso
 
-        col_names = _ohlcv_column_names(columns)
-        dict_rows = await turso.fetch_daily_ohlcv_for_symbols(
-            unique, lookback=lookback, from_date=from_date, to_date=to_date, columns=col_names
-        )
-        RowCls = namedtuple("DailyOhlcvRow", col_names)
-        return [RowCls(*(r.get(c) for c in col_names)) for r in dict_rows]
+        try:
+            col_names = _ohlcv_column_names(columns)
+            dict_rows = await turso.fetch_daily_ohlcv_for_symbols(
+                unique, lookback=lookback, from_date=from_date, to_date=to_date, columns=col_names
+            )
+            if dict_rows:
+                RowCls = namedtuple("DailyOhlcvRow", col_names)
+                return [RowCls(*(r.get(c) for c in col_names)) for r in dict_rows]
+        except Exception as exc:
+            _ohlcv_log.warning("TURSO_FETCH_DAILY_OHLCV_FAILED | err=%s, falling back to postgres", exc)
     col_names = _ohlcv_column_names(columns)
     cols = columns or _default_ohlcv_columns()
     bound = None if from_date is not None else (clamp_ohlcv_lookback(lookback) if lookback is not None else None)

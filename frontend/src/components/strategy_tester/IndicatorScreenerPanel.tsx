@@ -788,7 +788,7 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
           pollConsecutiveErrorsRef.current += 1;
           const msg = err instanceof Error ? err.message : String(err || "");
           const isAuth = msg.includes("401") || msg.toLowerCase().includes("not authenticated") || msg.toLowerCase().includes("unauthorized");
-          if (isAuth || pollConsecutiveErrorsRef.current >= 3) {
+          if (isAuth || pollConsecutiveErrorsRef.current >= 6) {
             stopPoll();
             setBusy(false);
             setScan((prev) =>
@@ -817,7 +817,7 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
       void tick();
       pollRef.current = window.setInterval(() => {
         void tick();
-      }, 1000);
+      }, 1200);
     },
     [handleTerminalScan, notify, stopPoll, withIndicatorOwner],
   );
