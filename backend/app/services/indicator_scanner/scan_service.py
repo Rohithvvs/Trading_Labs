@@ -918,10 +918,13 @@ def paginate_results(
     wanted = (signal or "").strip().upper()
     bucket = (return_bucket or "").strip().upper()
     for row in rows:
-        payload = result_payload(row)
+        payload = row if isinstance(row, dict) else result_payload(row)
         row_signal_value = str(payload.get("signal") or "")
+        matched = payload.get("matched") if isinstance(row, dict) else row.matched
+        symbol = payload.get("symbol") if isinstance(row, dict) else row.symbol
+        display_name = payload.get("display_name") if isinstance(row, dict) else row.display_name
         if matched_only and wanted not in {"FAILED", "SKIPPED", "REJECT", "ALL", ""}:
-            if not row.matched:
+            if not matched:
                 continue
         if wanted in {"MATCH", "MATCHED"} and row_signal_value != "MATCH":
             continue
@@ -929,7 +932,7 @@ def paginate_results(
             continue
         if wanted in {"FAILED", "REJECT"} and row_signal_value not in {"REJECT", "FAILED"}:
             continue
-        if needle and needle not in (row.symbol or "").upper() and needle not in (row.display_name or "").upper():
+        if needle and needle not in (symbol or "").upper() and needle not in (display_name or "").upper():
             continue
         pct = payload.get("return_pct")
         if bucket == "POSITIVE" and not (isinstance(pct, (int, float)) and pct > 0):

@@ -52,8 +52,10 @@ async def seed_lab_indicators(user_id: uuid.UUID) -> dict[str, Any]:
     created: list[str] = []
     skipped: list[str] = []
     indicators: list[dict[str, Any]] = []
+    existing_defs = await persistence.list_definitions(user_id)
+    existing_by_name = {d.name.strip().lower(): d for d in existing_defs if d.name}
     for spec in LAB_STRATEGIES:
-        existing = await persistence.find_definition_by_name(user_id, spec.scan_title)
+        existing = existing_by_name.get(spec.scan_title.strip().lower())
         if existing is not None:
             skipped.append(spec.strategy_id)
             indicators.append(persistence.definition_payload(existing))

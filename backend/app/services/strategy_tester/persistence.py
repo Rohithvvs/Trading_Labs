@@ -6,7 +6,7 @@ import uuid
 from datetime import date, datetime, timezone
 from typing import Any
 
-from sqlalchemy import case, func, select
+from sqlalchemy import case, func, insert, select
 
 from ...db.session import AsyncSessionLocal
 from ...models.strategy_tester import (
@@ -212,54 +212,62 @@ async def update_run(run_id: uuid.UUID, **fields: Any) -> StrategyTestRun | None
 async def save_results(run_id: uuid.UUID, rows: list[dict[str, Any]]) -> None:
     if not rows:
         return
+    payload = [
+        {
+            "id": uuid.uuid4(),
+            "run_id": run_id,
+            "symbol": row["symbol"],
+            "company": row.get("company"),
+            "status": row.get("status") or "ok",
+            "signal": row.get("signal"),
+            "entry_price": row.get("entry_price"),
+            "exit_price": row.get("exit_price"),
+            "return_pct": row.get("return_pct"),
+            "return_bucket": row.get("return_bucket"),
+            "return_formula": row.get("return_formula"),
+            "rank": row.get("rank"),
+            "indicators": _json_safe(row.get("indicators") or {}),
+            "passed_filters": _json_safe(row.get("passed_filters") or []),
+            "failed_filters": _json_safe(row.get("failed_filters") or []),
+            "filter_details": _json_safe(row.get("filter_details") or []),
+            "primary_failure_reason": row.get("primary_failure_reason"),
+            "error_detail": row.get("error_detail"),
+            "candle_count": row.get("candle_count"),
+        }
+        for row in rows
+    ]
+    chunk_size = 250
     async with AsyncSessionLocal() as db:
-        for row in rows:
-            db.add(
-                StrategyTestResult(
-                    id=uuid.uuid4(),
-                    run_id=run_id,
-                    symbol=row["symbol"],
-                    company=row.get("company"),
-                    status=row.get("status") or "ok",
-                    signal=row.get("signal"),
-                    entry_price=row.get("entry_price"),
-                    exit_price=row.get("exit_price"),
-                    return_pct=row.get("return_pct"),
-                    return_bucket=row.get("return_bucket"),
-                    return_formula=row.get("return_formula"),
-                    rank=row.get("rank"),
-                    indicators=_json_safe(row.get("indicators") or {}),
-                    passed_filters=_json_safe(row.get("passed_filters") or []),
-                    failed_filters=_json_safe(row.get("failed_filters") or []),
-                    filter_details=_json_safe(row.get("filter_details") or []),
-                    primary_failure_reason=row.get("primary_failure_reason"),
-                    error_detail=row.get("error_detail"),
-                    candle_count=row.get("candle_count"),
-                )
-            )
+        for i in range(0, len(payload), chunk_size):
+            chunk = payload[i : i + chunk_size]
+            stmt = insert(StrategyTestResult).values(chunk)
+            await db.execute(stmt)
         await db.commit()
 
 
 async def save_filter_stats(run_id: uuid.UUID, independent: list[dict[str, Any]], funnel: list[dict[str, Any]]) -> None:
+    if not independent:
+        return
     funnel_by_id = {step.get("filter_id"): step for step in funnel if step.get("filter_id")}
+    payload = [
+        {
+            "id": uuid.uuid4(),
+            "run_id": run_id,
+            "filter_id": str(item.get("filter_id") or ""),
+            "label": str(item.get("label") or ""),
+            "passed": int(item.get("passed") or 0),
+            "failed": int(item.get("failed") or 0),
+            "skipped": int(item.get("skipped") or 0),
+            "pass_pct": item.get("pass_pct"),
+            "fail_pct": item.get("fail_pct"),
+            "funnel_remaining": (funnel_by_id.get(item.get("filter_id")) or {}).get("remaining"),
+            "funnel_step": (funnel_by_id.get(item.get("filter_id")) or {}).get("step"),
+        }
+        for item in independent
+    ]
     async with AsyncSessionLocal() as db:
-        for item in independent:
-            step = funnel_by_id.get(item.get("filter_id")) or {}
-            db.add(
-                StrategyFilterResult(
-                    id=uuid.uuid4(),
-                    run_id=run_id,
-                    filter_id=str(item.get("filter_id") or ""),
-                    label=str(item.get("label") or ""),
-                    passed=int(item.get("passed") or 0),
-                    failed=int(item.get("failed") or 0),
-                    skipped=int(item.get("skipped") or 0),
-                    pass_pct=item.get("pass_pct"),
-                    fail_pct=item.get("fail_pct"),
-                    funnel_remaining=step.get("remaining"),
-                    funnel_step=step.get("step"),
-                )
-            )
+        stmt = insert(StrategyFilterResult).values(payload)
+        await db.execute(stmt)
         await db.commit()
 
 

@@ -25,6 +25,7 @@ from ..services.indicator_scanner.scan_service import (
     ensure_summary_analytics,
     paginate_results,
     request_cancel,
+    result_payload,
     results_to_csv,
     scan_status_payload,
     start_scan_background,
@@ -445,6 +446,10 @@ async def get_scan(scan_id: str, user: User = Depends(require_feature("advanced_
     return scan_status_payload(run)
 
 
+_SCAN_PAYLOADS_CACHE: dict[uuid.UUID, list[dict[str, Any]]] = {}
+_SCAN_PAYLOADS_CACHE_MAX = 50
+
+
 @scan_router.get("/{scan_id}/results")
 async def get_scan_results(
     scan_id: str,
@@ -459,10 +464,17 @@ async def get_scan_results(
     return_bucket: str | None = None,
 ):
     run = _scan_owned(await _load_scan(scan_id), user)
-    rows = await persistence.list_results(run.id)
+    cached_payloads = _SCAN_PAYLOADS_CACHE.get(run.id)
+    if cached_payloads is None:
+        rows = await persistence.list_results(run.id)
+        cached_payloads = [result_payload(r) for r in rows]
+        if cached_payloads:
+            if len(_SCAN_PAYLOADS_CACHE) >= _SCAN_PAYLOADS_CACHE_MAX:
+                _SCAN_PAYLOADS_CACHE.pop(next(iter(_SCAN_PAYLOADS_CACHE)))
+            _SCAN_PAYLOADS_CACHE[run.id] = cached_payloads
     output_names = [o.get("name") for o in (run.indicator_snapshot or {}).get("outputs") or [] if o.get("name")]
     page_rows, total = paginate_results(
-        rows,
+        cached_payloads,
         page=page,
         page_size=page_size,
         search=search,

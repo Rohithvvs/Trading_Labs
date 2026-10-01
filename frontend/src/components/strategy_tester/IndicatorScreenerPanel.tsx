@@ -574,10 +574,12 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
     let cancelled = false;
     const loadLibrary = async () => {
       let rows = await fetchIndicators();
+      const hasCheckedSeed = sessionStorage.getItem("tl_lab_indicators_seeded");
       const hasLab = rows.some((row) => /^\d{2}\s/.test(row.name) && row.name.includes("[SCAN]"));
       const hasTop5 = rows.some((row) => getTop5Rank(row.name) !== null);
-      if (!hasLab || !hasTop5) {
+      if (!hasCheckedSeed && (!hasLab || !hasTop5)) {
         try {
+          sessionStorage.setItem("tl_lab_indicators_seeded", "1");
           const seeded = await seedLabIndicators();
           if (Array.isArray(seeded.indicators) && seeded.indicators.length) {
             rows = seeded.indicators;

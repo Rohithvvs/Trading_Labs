@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import uuid
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
@@ -169,7 +170,7 @@ async def execute_run(
     from_date = start_date - timedelta(days=max(warmup * 2, 420))
 
     await persistence.update_run(run_id, stage="ensuring_market_data")
-    ensure_result = await ensure_universe_market_data(store_symbols)
+    ensure_result = await ensure_universe_market_data(store_symbols, max_duration_s=10.0)
     logger.info(
         "STRATEGY_TESTER_MARKET_DATA_ENSURED | run_id=%s | status=%s | universe=%s",
         run_id,
@@ -195,6 +196,8 @@ async def execute_run(
     await persistence.update_run(run_id, stage="evaluating")
     results: list[StrategyEvaluationResult] = []
     buy = watch = reject = 0
+    last_db_update_count = 0
+    last_db_update_time = time.monotonic()
     for index, symbol in enumerate(symbols, start=1):
         if is_cancel_requested(run_id):
             await _mark_cancelled(
@@ -237,7 +240,11 @@ async def execute_run(
             watch += 1
         elif row.signal == REJECT:
             reject += 1
-        if index % _PROGRESS_EVERY == 0 or index == total:
+        is_final = (index == total)
+        now_mono = time.monotonic()
+        if is_final or (index - last_db_update_count >= 50) or (now_mono - last_db_update_time >= 2.0):
+            last_db_update_count = index
+            last_db_update_time = now_mono
             await persistence.update_run(
                 run_id,
                 status="running",
@@ -299,6 +306,10 @@ async def execute_run(
     )
 
 
+_UNIVERSE_CACHE: dict[str, tuple[float, list[dict[str, str | None]]]] = {}
+_UNIVERSE_CACHE_TTL = 300.0  # 5 minutes
+
+
 async def load_universe(universe: str) -> list[dict[str, str | None]]:
     """Load the live 755-name NIFTY 500 universe (stocks_master), never a truncated subset.
 
@@ -308,6 +319,11 @@ async def load_universe(universe: str) -> list[dict[str, str | None]]:
     full live universe.
     """
     code = (universe or DEFAULT_UNIVERSE).upper().replace(" ", "")
+    cached = _UNIVERSE_CACHE.get(code)
+    now = time.monotonic()
+    if cached and (now - cached[0] < _UNIVERSE_CACHE_TTL):
+        return [dict(item) for item in cached[1]]
+
     rows: list[dict[str, str | None]] = []
     seen: set[str] = set()
 
@@ -343,6 +359,8 @@ async def load_universe(universe: str) -> list[dict[str, str | None]]:
     logger.info("STRATEGY_TESTER_UNIVERSE_LOADED | universe=%s | count=%s", code, len(rows))
     if not rows:
         logger.warning("Strategy tester universe is empty | universe=%s", code)
+    if rows:
+        _UNIVERSE_CACHE[code] = (now, rows)
     return rows
 
 

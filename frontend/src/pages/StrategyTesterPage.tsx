@@ -406,30 +406,31 @@ export const StrategyTesterPageInner: React.FC<StrategyTesterPageProps> = ({ def
         if (rows.length > 0) {
           const latest = rows[0];
           try {
-            const runData = await fetchStrategyRun(latest.run_id);
+            const isCompleted = latest.status === "completed";
+            const [runData, analytics, pageResults] = await Promise.all([
+              fetchStrategyRun(latest.run_id),
+              isCompleted ? fetchFilterAnalytics(latest.run_id).catch(() => null) : Promise.resolve(null),
+              isCompleted
+                ? fetchStrategyResults(latest.run_id, {
+                    page: savedState?.currentPage || 1,
+                    page_size: savedState?.pageSize || 25,
+                    search: savedState?.searchQuery || undefined,
+                    signal: savedState?.signalFilter && savedState.signalFilter !== "ALL" ? savedState.signalFilter : undefined,
+                    return_bucket: savedState?.returnFilter && savedState.returnFilter !== "ALL" ? savedState.returnFilter : undefined,
+                    sort: savedState?.sortColumn || "return_pct",
+                    direction: savedState?.sortDirection || "desc",
+                  }).catch(() => null)
+                : Promise.resolve(null),
+            ]);
             setActiveRun(runData);
             if (typeof runData.universe_size === "number" && runData.universe_size > 0) {
               setUniverseCount(runData.universe_size);
             }
             localStorage.setItem("strategy_tester_last_run_id", latest.run_id);
-            if (runData.status === "completed") {
-              const [analytics, pageResults] = await Promise.all([
-                fetchFilterAnalytics(latest.run_id).catch(() => null),
-                fetchStrategyResults(latest.run_id, {
-                  page: savedState?.currentPage || 1,
-                  page_size: savedState?.pageSize || 25,
-                  search: savedState?.searchQuery || undefined,
-                  signal: savedState?.signalFilter && savedState.signalFilter !== "ALL" ? savedState.signalFilter : undefined,
-                  return_bucket: savedState?.returnFilter && savedState.returnFilter !== "ALL" ? savedState.returnFilter : undefined,
-                  sort: savedState?.sortColumn || "return_pct",
-                  direction: savedState?.sortDirection || "desc",
-                }).catch(() => null),
-              ]);
-              if (analytics) setFilterAnalytics(analytics);
-              if (pageResults) {
-                setResults(pageResults.results);
-                setTotalResults(pageResults.total);
-              }
+            if (analytics) setFilterAnalytics(analytics);
+            if (pageResults) {
+              setResults(pageResults.results);
+              setTotalResults(pageResults.total);
             }
           } catch (e) {
             console.error("Failed to load latest run details:", e);
