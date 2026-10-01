@@ -180,12 +180,12 @@ async def execute_run(
 
     await persistence.update_run(run_id, stage="loading_market_data")
     from ...utils.datetime_utils import ist_now as _ist_now
-    from ..daily_scan_sync_service import sync_daily_market_data_for_scan
+    from ..daily_scan_sync_service import DAILY_SYNC_TIMEOUT_S, sync_daily_market_data_for_scan
     if end_date >= _ist_now().date():
         try:
             await asyncio.wait_for(
                 sync_daily_market_data_for_scan(store_symbols or symbols),
-                timeout=25.0,
+                timeout=DAILY_SYNC_TIMEOUT_S,
             )
         except Exception as exc:
             logger.warning("STRATEGY_TESTER_DAILY_SYNC_FAILED | err=%s", exc)

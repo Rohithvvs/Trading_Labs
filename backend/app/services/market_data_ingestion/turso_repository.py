@@ -335,6 +335,36 @@ async def fetch_max_equity_trade_date(
     return await asyncio.to_thread(select_max_equity_trade_date, _client(), symbols)
 
 
+def select_equity_session_counts(client: TursoClient, since: date) -> dict[date, int]:
+    rows = client.execute(
+        "SELECT trade_date, COUNT(*) AS n FROM daily_ohlcv "
+        "WHERE trade_date >= ? GROUP BY trade_date",
+        [since.isoformat()],
+    )
+    out: dict[date, int] = {}
+    for row in rows:
+        if not row.get("trade_date"):
+            continue
+        out[_parse_date(row["trade_date"])] = int(row.get("n") or 0)
+    return out
+
+
+async def fetch_equity_session_counts(since: date) -> dict[date, int]:
+    return await asyncio.to_thread(select_equity_session_counts, _client(), since)
+
+
+def select_symbols_on_trade_date(client: TursoClient, trade_date: date) -> set[str]:
+    rows = client.execute(
+        "SELECT symbol FROM daily_ohlcv WHERE trade_date = ?",
+        [trade_date.isoformat()],
+    )
+    return {str(row["symbol"]) for row in rows if row.get("symbol")}
+
+
+async def fetch_symbols_on_trade_date(trade_date: date) -> set[str]:
+    return await asyncio.to_thread(select_symbols_on_trade_date, _client(), trade_date)
+
+
 def select_equity_date_span(
     client: TursoClient, symbol: str
 ) -> tuple[date | None, date | None, int]:

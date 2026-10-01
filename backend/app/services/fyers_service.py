@@ -193,6 +193,10 @@ class FyersService:
     _ltp_cache: dict[str, tuple[dict, float]] = {}
     # Fresh broker prints only (not PG hits). Callers pass pg_ttl_sec as the max age.
     _ltp_mem: dict[str, tuple[float, float]] = {}
+    # Account-wide quotes cooldown after HTTP 429. Desk polls are ~1s; without this
+    # every poll hits FYERS again, then a synchronous Yahoo fallback freezes the loop.
+    _quote_cooldown_until: float = 0.0
+    _QUOTE_COOLDOWN_SEC = 20.0
     _CACHE_EVICT_INTERVAL = 300  # seconds between eviction sweeps
     _cache_last_evict: float = 0.0
     _network_pool = __import__("concurrent.futures").futures.ThreadPoolExecutor(
@@ -203,6 +207,16 @@ class FyersService:
     _client_cache: dict[str, object] = {}
     _client_cache_lock = threading.Lock()
     _CLIENT_CACHE_MAX = 4
+
+    @classmethod
+    def quote_rate_limited(cls) -> bool:
+        return time.monotonic() < cls._quote_cooldown_until
+
+    @classmethod
+    def note_quote_rate_limit(cls) -> None:
+        until = time.monotonic() + cls._QUOTE_COOLDOWN_SEC
+        if until > cls._quote_cooldown_until:
+            cls._quote_cooldown_until = until
     _shared_instance: "FyersService | None" = None
     _shared_lock = threading.Lock()
 
@@ -323,6 +337,15 @@ class FyersService:
         if mem is not None:
             return mem
 
+        # After a 429, do not call the broker or Yahoo on the 1s desk poll.
+        # Serve a recent print when we have one; otherwise fail fast.
+        if FyersService.quote_rate_limited():
+            stale = _mem_ltp(120.0)
+            if stale is not None:
+                FyersService._ltp_source_cache[cache_key] = "MEM_CACHE"
+                return stale
+            return None
+
         # Helper to check DB cache
         async def _check_db(max_age_sec: float):
             async with AsyncSessionLocal() as db:
@@ -409,7 +432,6 @@ class FyersService:
             if allow_yfinance:
                 try:
                     import math
-                    import yfinance as yf
 
                     clean = (
                         symbol.replace("NSE:", "")
@@ -418,8 +440,13 @@ class FyersService:
                         .replace("-EQ", "")
                     )
                     yf_sym = f"{clean}.NS" if not clean.endswith(".NS") else clean
-                    ticker = yf.Ticker(yf_sym)
-                    data = ticker.history(period="2d")
+
+                    def _history():
+                        import yfinance as yf
+
+                        return yf.Ticker(yf_sym).history(period="2d")
+
+                    data = await asyncio.to_thread(_history)
                     if not data.empty:
                         raw_ltp = data["Close"].iloc[-1]
                         if math.isnan(float(raw_ltp)):
@@ -504,6 +531,11 @@ class FyersService:
                 self.logger.info("FETCH_QUOTE_CACHE_HIT | symbol=%s | source=memory | key=%s", symbol, cache_key)
                 return val
 
+        if FyersService.quote_rate_limited():
+            if cached_ltp and time.time() - cached_ltp[1] < 300.0:
+                return cached_ltp[0]
+            return None
+
         # Check DB ltp_cache as fallback (15s TTL)
         async with AsyncSessionLocal() as db:
             res = await db.execute(
@@ -548,7 +580,8 @@ class FyersService:
             )
             _check_fyers_response(response, symbol)
         except FyersRateLimitError:
-            self.logger.warning("FETCH_QUOTE_RATE_LIMIT | symbol=%s | trying fallback", symbol)
+            FyersService.note_quote_rate_limit()
+            self.logger.warning("FETCH_QUOTE_RATE_LIMIT | symbol=%s | cooldown_sec=%s", symbol, FyersService._QUOTE_COOLDOWN_SEC)
             if allow_yfinance:
                 fb = await self._fetch_yfinance_quote(symbol)
                 if fb:
@@ -670,11 +703,15 @@ class FyersService:
     async def _fetch_yfinance_quote(self, symbol: str) -> dict | None:
         """Fallback quote fetch using yfinance."""
         try:
-            import yfinance as yf
             clean = symbol.replace("NSE:", "").replace("BSE:", "").replace("-INDEX", "").replace("-EQ", "")
             yf_sym = f"{clean}.NS" if not clean.endswith(".NS") else clean
-            ticker = yf.Ticker(yf_sym)
-            data = ticker.history(period="2d")
+
+            def _history():
+                import yfinance as yf
+
+                return yf.Ticker(yf_sym).history(period="2d")
+
+            data = await asyncio.to_thread(_history)
             if data.empty:
                 self.logger.warning("YF_QUOTE_EMPTY | symbol=%s | yf_sym=%s", symbol, yf_sym)
                 return None
@@ -955,6 +992,8 @@ class FyersService:
             self.logger.info("FYERS_REQUEST_COMPLETED | symbol=%s | endpoint=quotes | duration_ms=%s | attempt=1", symbol, response_ms)
             _check_fyers_response(response, symbol)
         except Exception as exc:  # pragma: no cover - network/provider failure
+            if isinstance(exc, FyersRateLimitError):
+                FyersService.note_quote_rate_limit()
             if isinstance(exc, (requests.exceptions.Timeout, TimeoutError, asyncio.TimeoutError)) or "timeout" in str(exc).lower():
                 self.logger.warning("FYERS_REQUEST_TIMEOUT | symbol=%s | endpoint=quotes | attempt=1 | timeout_sec=3.0", symbol)
             self.logger.error("FYERS_REQUEST_FAILED | symbol=%s | endpoint=quotes | error_type=%s", symbol, type(exc).__name__)

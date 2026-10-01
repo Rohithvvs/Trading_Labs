@@ -22,6 +22,7 @@ from ....config.settings import settings
 logger = logging.getLogger("app.strategies.w52.session")
 
 _QUOTE_CHUNK = 50
+_HISTORY_CONCURRENCY = 5
 _HISTORY_CONCURRENCY = 6
 
 
@@ -253,6 +254,7 @@ async def fetch_live_session_bars(symbols: list[str]) -> tuple[dict[str, dict[st
     reverse[svc._normalize_symbol(index_provider)] = index_provider
 
     chunks = [want[i : i + _QUOTE_CHUNK] for i in range(0, len(want), _QUOTE_CHUNK)]
+    sem = asyncio.Semaphore(4)
     sem = asyncio.Semaphore(8)
 
     async def fetch_chunk(chunk: list[str]) -> list[dict[str, Any]]:
@@ -350,6 +352,7 @@ async def overlay_current_session(
         persist = [
             {
                 "trade_date": session,
+                "symbol": sym,
                 "symbol": f"{sym}-EQ" if not str(sym).endswith("-EQ") else str(sym),
                 "open": float(bar.get("open") or bar["close"]),
                 "high": float(bar["high"]),

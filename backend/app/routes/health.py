@@ -19,6 +19,11 @@ logger = logging.getLogger("app.routes.health")
 # Neon cold connect is often 5–10s; stay under the frontend probe budget (15s).
 _DB_PROBE_TIMEOUT_SEC = 8.0
 _REDIS_PROBE_TIMEOUT_SEC = 1.0
+# A down Redis must not add a 1–2s wait to every /health poll. The UI live
+# probe budget is 3s; stacking a retry on TimeoutError blew past it.
+_REDIS_NEGATIVE_CACHE_SEC = 30.0
+_redis_negative_until = 0.0
+_redis_negative_status = "error"
 
 
 @router.get("/market-data/freshness")
@@ -85,8 +90,18 @@ async def health_check() -> HealthResponse:
             return "error"
 
     async def _probe_redis() -> str:
+        global _redis_negative_until, _redis_negative_status
         if not (os.getenv("REDIS_URL") or "").strip():
             return "not_configured"
+        if time.monotonic() < _redis_negative_until:
+            return _redis_negative_status
+
+        def _remember(status: str) -> str:
+            global _redis_negative_until, _redis_negative_status
+            _redis_negative_status = status
+            _redis_negative_until = time.monotonic() + _REDIS_NEGATIVE_CACHE_SEC
+            return status
+
         try:
             from ..core.redis import close_redis_client, get_redis
 
@@ -98,7 +113,7 @@ async def health_check() -> HealthResponse:
                 return "ok"
 
             try:
-                return await _ping()
+                status = await _ping()
             except Exception as first_exc:
                 logger.warning(
                     "[health] redis probe failed (%s): %s — recreating client",
@@ -106,7 +121,16 @@ async def health_check() -> HealthResponse:
                     str(first_exc)[:160],
                 )
                 await close_redis_client()
-                return await _ping()
+                # Timeout means the server is unreachable. A second ping only
+                # doubles the wait. Connection errors can be a stale client.
+                if isinstance(first_exc, (asyncio.TimeoutError, TimeoutError)):
+                    explicit = (os.getenv("REDIS_URL") or "").strip()
+                    return _remember("error" if explicit else "not_configured")
+                status = await _ping()
+            if status == "ok":
+                _redis_negative_until = 0.0
+                return status
+            return _remember(status)
         except Exception as exc:
             explicit = (os.getenv("REDIS_URL") or "").strip()
             status = "error" if explicit else "not_configured"
@@ -116,7 +140,7 @@ async def health_check() -> HealthResponse:
                 str(exc)[:160],
                 status,
             )
-            return status
+            return _remember(status)
 
     async def _probe_engine() -> tuple[str, str]:
         fyers_status = "ok"

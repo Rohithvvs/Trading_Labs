@@ -444,6 +444,22 @@ async def get_current_access_token(db: AsyncSession) -> str | None:
         return None
 
     logger.info("TOKEN_CACHE_MISS | source=database | reason=cache_miss_or_expired")
+    row = await get_fyers_token_row(db)
+    if row is None:
+        logger.warning("TOKEN_NOT_FOUND | No FyersToken row found in database")
+        _clear_token_cache()
+        _set_negative_cache()
+        return None
+    if not row.is_active or (getattr(row, "status", "") or "").lower() == "failed":
+        logger.warning("TOKEN_NOT_ACTIVE | DB token has status=%s, is_active=%s", getattr(row, "status", None), row.is_active)
+        _clear_token_cache()
+        _set_negative_cache()
+        return None
+    if not row.access_token:
+        logger.warning("TOKEN_NOT_FOUND | FyersToken row exists but access_token is empty")
+        _clear_token_cache()
+        _set_negative_cache()
+        return None
     try:
         row = await get_fyers_token_row(db)
         if row and row.is_active and (getattr(row, "status", "") or "").lower() != "failed" and row.access_token:
@@ -461,17 +477,42 @@ async def get_current_access_token(db: AsyncSession) -> str | None:
     except Exception as e:
         logger.error("TOKEN_DB_LOOKUP_FAILED | %s", e)
 
+    plain = _decrypt_from_storage(row.access_token)
+    if not plain:
+        logger.warning("TOKEN_NOT_FOUND | Stored token could not be decrypted")
+        _clear_token_cache()
+        _set_negative_cache()
+        return None
     env_tok = _get_env_fallback_token()
     if env_tok:
         logger.info("TOKEN_ENV_FALLBACK | Using FYERS_ACCESS_TOKEN from settings/env")
         _set_token_cache(env_tok)
         return env_tok
 
+    jwt_exp = _decode_jwt_expiry(plain)
+    if jwt_exp and _ensure_utc(jwt_exp) <= now:
+        logger.warning("TOKEN_EXPIRED | Stored DB token expired at %s", jwt_exp.isoformat())
+        _clear_token_cache()
+        _set_negative_cache()
+        return None
     _clear_token_cache()
     _set_negative_cache()
     return None
 
+    saved_at = _ensure_utc(row.access_token_saved_at)
+    known_saved = _ensure_utc(_TOKEN_SAVED_AT)
+    if known_saved and saved_at and saved_at < known_saved:
+        logger.warning(
+            "TOKEN_GENERATION_MISMATCH | DB token is older than our last known token"
+        )
 
+    logger.info(
+        "TOKEN_REFRESH_FROM_DB | Access token found in DB, status=%s, saved_at=%s",
+        row.status,
+        row.access_token_saved_at,
+    )
+    _set_token_cache(plain, row.access_token_saved_at)
+    return plain
 def _get_env_fallback_token() -> str | None:
     tok = (
         getattr(settings, "fyers_access_token", None)

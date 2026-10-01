@@ -25,24 +25,93 @@ IST = ZoneInfo("Asia/Kolkata")
 
 _LAST_COMPLETED_SYNC_DAY: date | None = None
 _LAST_LIVE_QUOTE_SYNC_TIME: float = 0.0
+_HISTORY_FULL_PASSES: dict[date, int] = {}
 _LIVE_QUOTE_REFRESH_MIN_INTERVAL_S = 15.0
-# Per-symbol history for the whole universe is what restarted Render mid-scan
-# (IND-20260925-009). Quotes cover the latest session in a few batched calls.
+# One history call per symbol covers the whole missing range. The outer scan
+# wait is the hard cap so a slow FYERS pass cannot pin the process the way
+# IND-20260925-009 did. A later quote day must not hide an earlier hole, and
+# a short budget must not mark that hole done.
 _HISTORY_BATCH = 50
-_HISTORY_BUDGET_S = 10.0
+_HISTORY_BUDGET_S = 150.0
+_HISTORY_FULL_PASSES_PER_DAY = 2
+_COVERAGE_LOOKBACK_DAYS = 45
+_MIN_COVERED_SYMBOLS = 500
 _UPSERT_CHUNK = 500
+# Outer wait used by every scan entry. Kept above the history budget so a
+# finished pass can record whether the hole is actually closed.
+DAILY_SYNC_TIMEOUT_S = 180.0
 
 
 def _now_ist() -> datetime:
     return datetime.now(IST)
 
 
-def plan_daily_scan_sync(now: datetime, latest_stored: date | None) -> dict[str, Any]:
+def _coerce_session_counts(session_counts: dict[Any, int] | None) -> dict[date, int]:
+    out: dict[date, int] = {}
+    for key, value in (session_counts or {}).items():
+        if isinstance(key, datetime):
+            parsed = key.date()
+        elif isinstance(key, date):
+            parsed = key
+        else:
+            parsed = date.fromisoformat(str(key)[:10])
+        out[parsed] = int(value or 0)
+    return out
+
+
+def _trading_days_inclusive(start: date, end: date) -> list[date]:
+    from .trading_hours_service import TradingHoursService, trading_hours
+
+    if start > end:
+        return []
+    hours = trading_hours if trading_hours is not None else TradingHoursService()
+    days: list[date] = []
+    cur = start
+    while cur <= end:
+        if hours.is_trading_day(datetime(cur.year, cur.month, cur.day)):
+            days.append(cur)
+        cur += timedelta(days=1)
+    return days
+
+
+def _missing_history_range(
+    history_end: date,
+    session_counts: dict[Any, int],
+    min_covered_symbols: int,
+) -> tuple[date | None, date | None]:
+    """First and last trading day after the newest covered session.
+
+    ``MAX(trade_date)`` stays on a later quote day while earlier sessions are
+    empty. Coverage looks through the recent window and ignores holes that
+    sit behind a fully stored session.
+    """
+    counts = _coerce_session_counts(session_counts)
+    since = history_end - timedelta(days=_COVERAGE_LOOKBACK_DAYS)
+    days = _trading_days_inclusive(since, history_end)
+    covered = [day for day in days if counts.get(day, 0) >= min_covered_symbols]
+    if covered:
+        anchor = covered[-1]
+        missing = [day for day in days if day > anchor]
+    else:
+        missing = [day for day in days if counts.get(day, 0) < min_covered_symbols]
+    if not missing:
+        return None, None
+    return missing[0], missing[-1]
+
+
+def plan_daily_scan_sync(
+    now: datetime,
+    latest_stored: date | None,
+    session_counts: dict[Any, int] | None = None,
+    *,
+    min_covered_symbols: int = _MIN_COVERED_SYMBOLS,
+) -> dict[str, Any]:
     """Decide the cheapest Fyers refresh that still stores the scan session.
 
     The latest session uses batched quotes. Older missing sessions use history,
     and only up to the day before the quote session so the same day is not
-    downloaded twice.
+    downloaded twice. When session counts are provided, a later stored day does
+    not hide an earlier empty session.
     """
     from .market_data_ingestion.calendar_utils import expected_last_completed_session
     from .market_data_ingestion.nse_sessions import is_nse_cash_session
@@ -62,7 +131,11 @@ def plan_daily_scan_sync(now: datetime, latest_stored: date | None) -> dict[str,
         history_end = target - timedelta(days=1)
     history_from: date | None = None
     history_to: date | None = None
-    if latest_stored is None or latest_stored < history_end:
+    if session_counts is not None:
+        history_from, history_to = _missing_history_range(
+            history_end, session_counts, min_covered_symbols
+        )
+    elif latest_stored is None or latest_stored < history_end:
         history_from = (latest_stored + timedelta(days=1)) if latest_stored else (history_end - timedelta(days=10))
         if history_from <= history_end:
             history_to = history_end
@@ -105,13 +178,27 @@ async def ensure_fyers_token_for_scanner() -> bool:
         return False
 
 
+def _store_symbol(symbol: str) -> str:
+    text = str(symbol or "").strip()
+    if not text:
+        return text
+    return text if text.endswith("-EQ") else f"{text}-EQ"
+
+
 async def sync_daily_market_data_for_scan(
     symbols: list[str],
     *,
     force_history: bool = False,
     progress_callback: Any | None = None,
+    history_budget_s: float | None = None,
 ) -> dict[str, Any]:
-    """Sync missing daily OHLCV and today's forming bar from FYERS into the database."""
+    """Sync missing daily OHLCV and today's forming bar from FYERS into the candle store.
+
+    Writes go through the daily repository, which uses Turso when
+    ``CANDLE_HISTORY_BACKEND=turso``. The first scan of an IST day fills every
+    uncovered completed session in the recent window, then stores today's bar.
+    Later scans that day reuse the stored sessions.
+    """
     global _LAST_COMPLETED_SYNC_DAY, _LAST_LIVE_QUOTE_SYNC_TIME
     import time
     t0 = time.time()
@@ -133,7 +220,9 @@ async def sync_daily_market_data_for_scan(
         return result
 
     from .market_data_ingestion.repository import (
+        equity_session_counts,
         max_equity_trade_date,
+        symbols_on_trade_date,
         upsert_daily_bars,
         upsert_index_bars,
     )
@@ -152,12 +241,21 @@ async def sync_daily_market_data_for_scan(
 
     now = _now_ist()
     latest_stored = await max_equity_trade_date()
-    plan = plan_daily_scan_sync(now, latest_stored)
+    coverage_since = now.date() - timedelta(days=_COVERAGE_LOOKBACK_DAYS + 5)
+    session_counts: dict[date, int] | None
+    try:
+        session_counts = await equity_session_counts(coverage_since)
+    except Exception as exc:
+        session_counts = None
+        logger.warning("DAILY_SCAN_SYNC | Session coverage unavailable: %s", exc)
+    plan = plan_daily_scan_sync(now, latest_stored, session_counts)
     today_ist = plan["today"]
     target_completed = plan["target_completed"]
     result["target_completed"] = target_completed.isoformat()
+    result["history_from"] = plan["history_from"].isoformat() if plan["history_from"] else None
+    result["history_to"] = plan["history_to"].isoformat() if plan["history_to"] else None
     needs_history_sync = bool(plan["history_from"]) and (
-        force_history or _LAST_COMPLETED_SYNC_DAY != today_ist or latest_stored is None or latest_stored < target_completed
+        force_history or _LAST_COMPLETED_SYNC_DAY != today_ist
     )
 
     # Quotes first. One batched call stores today's OHLC without a per-symbol
@@ -170,11 +268,15 @@ async def sync_daily_market_data_for_scan(
         or latest_stored is None
         or latest_stored < plan["quote_session"]
     )
+    quote_session = plan["quote_session"]
+    quote_count = (session_counts or {}).get(quote_session, 0) if quote_session else 0
+    quote_stored = quote_count >= _MIN_COVERED_SYMBOLS or (
+        session_counts is None and latest_stored is not None and quote_session is not None and latest_stored >= quote_session
+    )
     if (
         quote_due
         and plan["quote_source"] == "FYERS"
-        and latest_stored is not None
-        and latest_stored >= plan["quote_session"]
+        and quote_stored
         and not force_history
     ):
         # Session is already closed and stored. Do not download it again.
@@ -183,8 +285,7 @@ async def sync_daily_market_data_for_scan(
         quote_due
         and _LAST_LIVE_QUOTE_SYNC_TIME
         and not needs_history_sync
-        and latest_stored
-        and latest_stored >= plan["quote_session"]
+        and quote_stored
         and time_since_last_quote < _LIVE_QUOTE_REFRESH_MIN_INTERVAL_S
         and not force_history
     ):
@@ -202,7 +303,7 @@ async def sync_daily_market_data_for_scan(
                 live_persist = [
                     {
                         "trade_date": plan["quote_session"],
-                        "symbol": f"{sym}-EQ" if not str(sym).endswith("-EQ") else str(sym),
+                        "symbol": _store_symbol(sym),
                         "open": float(b.get("open") or b["close"]),
                         "high": float(b["high"]),
                         "low": float(b["low"]),
@@ -249,34 +350,77 @@ async def sync_daily_market_data_for_scan(
             gap_from,
             gap_to,
         )
-        deadline = time.monotonic() + _HISTORY_BUDGET_S
+        budget_s = _HISTORY_BUDGET_S if history_budget_s is None else max(1.0, float(history_budget_s))
+        deadline = time.monotonic() + budget_s
         sessions: set[date] = set()
+        present: set[str] = set()
         try:
-            for offset in range(0, len(symbols), _HISTORY_BATCH):
-                if time.monotonic() >= deadline:
-                    result["history_budget"] = True
-                    logger.warning(
-                        "DAILY_SCAN_SYNC | History budget reached after %s symbols. Scan continues with stored bars.",
-                        offset,
-                    )
-                    break
-                chunk = symbols[offset : offset + _HISTORY_BATCH]
-                _by_session, _index_by, persist, index_persist = await fetch_missing_completed_bars(
-                    chunk, gap_from, gap_to
-                )
-                if persist:
-                    result["rows_upserted"] += await _upsert_daily(persist)
-                if index_persist:
-                    await upsert_index_bars(index_persist)
-                sessions.update(_by_session)
-                await asyncio.sleep(0)
-            else:
-                result["completed_synced"] = True
-            _LAST_COMPLETED_SYNC_DAY = today_ist
-            result["completed_sessions"] = [d.isoformat() for d in sorted(sessions)]
+            present = await symbols_on_trade_date(gap_to)
         except Exception as exc:
+            logger.warning("DAILY_SCAN_SYNC | Could not list symbols on %s: %s", gap_to, exc)
+        pending = [
+            sym
+            for sym in symbols
+            if _store_symbol(sym) not in present and str(sym) not in present
+        ]
+        result["history_symbols"] = len(pending)
+        result["history_already_stored"] = len(symbols) - len(pending)
+        if not pending:
+            result["completed_synced"] = True
             _LAST_COMPLETED_SYNC_DAY = today_ist
-            logger.warning("DAILY_SCAN_SYNC | Failed fetching completed sessions: %s", exc)
+        else:
+            rows_before = result["rows_upserted"]
+            finished = False
+            try:
+                for offset in range(0, len(pending), _HISTORY_BATCH):
+                    if time.monotonic() >= deadline:
+                        result["history_budget"] = True
+                        logger.warning(
+                            "DAILY_SCAN_SYNC | History budget reached after %s/%s symbols. "
+                            "Remaining names stay for the next scan.",
+                            offset,
+                            len(pending),
+                        )
+                        break
+                    chunk = pending[offset : offset + _HISTORY_BATCH]
+                    _by_session, _index_by, persist, index_persist = await fetch_missing_completed_bars(
+                        chunk, gap_from, gap_to
+                    )
+                    if persist:
+                        result["rows_upserted"] += await _upsert_daily(persist)
+                    if index_persist:
+                        await upsert_index_bars(index_persist)
+                    sessions.update(_by_session)
+                    if progress_callback is not None:
+                        progress_callback(
+                            {
+                                "stage": "Fetching missing daily candles...",
+                                "done": min(offset + len(chunk), len(pending)),
+                                "total": len(pending),
+                            }
+                        )
+                    await asyncio.sleep(0)
+                else:
+                    finished = True
+                result["completed_sessions"] = [d.isoformat() for d in sorted(sessions)]
+                if finished:
+                    passes = _HISTORY_FULL_PASSES.get(today_ist, 0) + 1
+                    _HISTORY_FULL_PASSES[today_ist] = passes
+                    still_missing = False
+                    try:
+                        refreshed = await equity_session_counts(coverage_since)
+                        follow = plan_daily_scan_sync(now, latest_stored, refreshed)
+                        still_missing = bool(follow["history_from"])
+                    except Exception as exc:
+                        logger.warning("DAILY_SCAN_SYNC | Coverage recheck failed: %s", exc)
+                    wrote = result["rows_upserted"] - rows_before
+                    if not still_missing or wrote == 0 or passes >= _HISTORY_FULL_PASSES_PER_DAY:
+                        result["completed_synced"] = True
+                        _LAST_COMPLETED_SYNC_DAY = today_ist
+                    else:
+                        result["completed_synced"] = False
+            except Exception as exc:
+                logger.warning("DAILY_SCAN_SYNC | Failed fetching completed sessions: %s", exc)
 
     result["duration_ms"] = int((time.time() - t0) * 1000)
     return result

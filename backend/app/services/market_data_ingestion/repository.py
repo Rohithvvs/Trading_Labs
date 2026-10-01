@@ -55,6 +55,42 @@ async def max_equity_trade_date(symbols: list[str] | None = None) -> date | None
         return (await db.execute(stmt)).scalar_one_or_none()
 
 
+async def equity_session_counts(since: date) -> dict[date, int]:
+    """Row counts by trade_date from ``since`` onward.
+
+    Used to see holes that ``MAX(trade_date)`` hides. Turso failures are not
+    filled from Postgres: a second database would describe a different store.
+    """
+    if _use_turso_history():
+        from . import turso_repository as turso
+
+        return await asyncio.wait_for(turso.fetch_equity_session_counts(since), timeout=20.0)
+    async with AsyncSessionLocal() as db:
+        rows = (
+            await db.execute(
+                select(DailyOhlcv.trade_date, func.count())
+                .where(DailyOhlcv.trade_date >= since)
+                .group_by(DailyOhlcv.trade_date)
+            )
+        ).all()
+    return {row[0]: int(row[1] or 0) for row in rows}
+
+
+async def symbols_on_trade_date(trade_date: date) -> set[str]:
+    """Symbols that already have a daily bar on ``trade_date``."""
+    if _use_turso_history():
+        from . import turso_repository as turso
+
+        return await asyncio.wait_for(turso.fetch_symbols_on_trade_date(trade_date), timeout=20.0)
+    async with AsyncSessionLocal() as db:
+        rows = (
+            await db.execute(
+                select(DailyOhlcv.symbol).where(DailyOhlcv.trade_date == trade_date)
+            )
+        ).scalars().all()
+    return {str(sym) for sym in rows}
+
+
 async def equity_date_span(symbol: str) -> tuple[date | None, date | None, int]:
     """Return (min_trade_date, max_trade_date, row_count) for one equity symbol."""
     if _use_turso_history():

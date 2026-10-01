@@ -200,6 +200,45 @@ class ScanExecutionService:
                 "SCAN_STAGE_START | stage=ensure_market_data | scan_id=%s",
                 scan_id,
             )
+            await ScanExecutionService._emit(
+                progress_queue,
+                {
+                    "stage": "Fetching latest daily candles...",
+                    "progress": 3,
+                    "scan_id": scan_id,
+                    "heartbeat": True,
+                },
+            )
+            try:
+                from ..services.daily_scan_sync_service import (
+                    DAILY_SYNC_TIMEOUT_S,
+                    sync_daily_market_data_for_scan,
+                )
+                from ..services.strategy_tester.scan_service import load_universe
+
+                universe_rows = await load_universe("NIFTY500")
+                store_symbols = [
+                    str(item.get("store_symbol") or item.get("symbol") or "")
+                    for item in universe_rows
+                    if item.get("store_symbol") or item.get("symbol")
+                ]
+                daily_sync = await asyncio.wait_for(
+                    sync_daily_market_data_for_scan(store_symbols),
+                    timeout=DAILY_SYNC_TIMEOUT_S,
+                )
+                logger.info(
+                    "SCAN_DAILY_SYNC | scan_id=%s | status=%s | history=%s..%s | rows=%s | live=%s",
+                    scan_id,
+                    daily_sync.get("status"),
+                    daily_sync.get("history_from"),
+                    daily_sync.get("history_to"),
+                    daily_sync.get("rows_upserted"),
+                    daily_sync.get("live_synced"),
+                )
+            except asyncio.TimeoutError:
+                logger.warning("SCAN_DAILY_SYNC_TIMEOUT | scan_id=%s", scan_id)
+            except Exception as exc:
+                logger.warning("SCAN_DAILY_SYNC_FAILED | scan_id=%s | err=%s", scan_id, type(exc).__name__)
             ensure_t0 = time.perf_counter()
 
             def _ensure_progress(update: dict) -> None:
