@@ -1,7 +1,7 @@
 import React from "react";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { IndicatorScreenerPanel } from "../IndicatorScreenerPanel";
+import { IndicatorScreenerPanel, resetIndicatorLibraryLoadForTests } from "../IndicatorScreenerPanel";
 import { saveIndicatorScannerState } from "../../../utils/indicatorScannerState";
 import { currentCashSessionIST } from "../../../utils/tradingHours";
 
@@ -92,6 +92,9 @@ describe("IndicatorScreenerPanel", () => {
     vi.clearAllMocks();
     localStorage.clear();
     sessionStorage.clear();
+    resetIndicatorLibraryLoadForTests();
+    seedLabIndicators.mockReset();
+    seedLabIndicators.mockResolvedValue({ created: [], skipped: [], count: 0, indicators: [] });
     fetchIndicators.mockResolvedValue([applied]);
     startIndicatorScan.mockResolvedValue({
       id: "run-1",
@@ -444,6 +447,79 @@ describe("IndicatorScreenerPanel", () => {
     expect(startIndicatorScan).not.toHaveBeenCalled();
   });
 
+  it("loads the auto-selected indicator's latest scan without starting a new scan", async () => {
+    fetchLatestIndicatorScan.mockResolvedValue({
+      id: "run-saved",
+      scan_id: "IND-SAVED",
+      indicator_id: "ind-1",
+      indicator_name: applied.name,
+      status: "completed",
+      stage: "completed",
+      universe: "nse-755",
+      universe_size: 755,
+      timeframe: "1D",
+      total_count: 755,
+      processed_count: 755,
+      progress_pct: 100,
+      matched_count: 2,
+      success_count: 755,
+      failed_count: 0,
+      skipped_count: 0,
+      as_of: "2026-08-28",
+      started_at: "2026-08-28T19:00:00.000Z",
+      completed_at: "2026-08-28T19:01:00.000Z",
+      summary: { positive_returns: 1, negative_returns: 0, top_positive: [], top_negative: [] },
+    });
+    fetchIndicatorScanResults.mockImplementation(async (scanId: string, params: { return_bucket?: string } = {}) => {
+      if (params.return_bucket) return { total: 0, page: 1, page_size: 5, results: [] };
+      if (scanId !== "IND-SAVED") return { total: 0, page: 1, page_size: 50, results: [] };
+      return {
+        total: 1,
+        page: 1,
+        page_size: 50,
+        results: [{ symbol: "INFY", display_name: "Infosys", status: "ok", matched: true, outputs: { Signal: 1 } }],
+      };
+    });
+    renderPanel({ appliedIndicator: null });
+    await waitFor(() => expect(screen.getByTestId("indicator-results-table").textContent).toContain("INFY"));
+    expect(screen.getByTestId("card-run-info").textContent).toMatch(/IND-SAVED/);
+    expect(fetchLatestIndicatorScan).toHaveBeenCalledWith("ind-1");
+    expect(startIndicatorScan).not.toHaveBeenCalled();
+  });
+
+  it("keeps a scan that just started when an older latest-scan response arrives", async () => {
+    let releaseLatest: (value: unknown) => void = () => {};
+    fetchLatestIndicatorScan.mockImplementation(
+      () => new Promise((resolve) => {
+        releaseLatest = resolve;
+      }),
+    );
+    renderPanel({ appliedIndicator: null });
+    await waitFor(() => expect((screen.getByTestId("select-saved-indicator") as HTMLSelectElement).value).toBe("ind-1"));
+    fireEvent.click(screen.getByTestId("btn-scan-indicator"));
+    await waitFor(() => expect(startIndicatorScan).toHaveBeenCalled());
+    releaseLatest({
+      id: "run-old",
+      scan_id: "IND-OLD",
+      indicator_id: "ind-1",
+      indicator_name: applied.name,
+      status: "completed",
+      stage: "completed",
+      universe: "nse-755",
+      universe_size: 755,
+      timeframe: "1D",
+      total_count: 755,
+      processed_count: 755,
+      progress_pct: 100,
+      matched_count: 1,
+      as_of: "2026-08-28",
+      started_at: "2026-08-28T18:00:00.000Z",
+      completed_at: "2026-08-28T18:01:00.000Z",
+    });
+    await waitFor(() => expect(screen.getByTestId("card-run-info").textContent).toMatch(/IND-20260829-001/));
+    expect(screen.getByTestId("card-run-info").textContent).not.toMatch(/IND-OLD/);
+  });
+
   it("passes the selected indicator to Edit", async () => {
     const { onEditIndicator } = renderPanel();
     fireEvent.click(await screen.findByTestId("btn-edit-indicator"));
@@ -582,6 +658,7 @@ describe("IndicatorScreenerPanel", () => {
     renderPanel();
     fireEvent.click(await screen.findByTestId("btn-scan-indicator"));
     await waitFor(() => expect(screen.getByTestId("btn-scan-indicator").textContent).toMatch(/Fetching data/));
+    expect((screen.getByTestId("btn-scan-indicator") as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByTestId("card-scan-progress").textContent).toMatch(/Fetching current market data/);
   });
 
@@ -603,8 +680,41 @@ describe("IndicatorScreenerPanel", () => {
     fetchIndicators.mockResolvedValue([]);
     const { notify } = renderPanel({ appliedIndicator: null });
     fireEvent.click(await screen.findByTestId("btn-scan-indicator"));
-    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ title: "Add an indicator before scanning." }));
+    await waitFor(() => expect(notify).toHaveBeenCalledWith(expect.objectContaining({ title: "Add an indicator before scanning." })));
     expect(startIndicatorScan).not.toHaveBeenCalled();
+  });
+
+  it("applies seeded indicators under StrictMode and lets Scan run", async () => {
+    const seeded = {
+      ...applied,
+      id: "ind-top",
+      name: "Top 1: App Preset Momentum [SCAN]",
+    };
+    fetchIndicators.mockResolvedValue([]);
+    let release: (value: unknown) => void = () => {};
+    seedLabIndicators.mockImplementation(
+      () => new Promise((resolve) => {
+        release = resolve;
+      }),
+    );
+    render(
+      <React.StrictMode>
+        <IndicatorScreenerPanel
+          universeCount={755}
+          appliedIndicator={null}
+          navigate={vi.fn()}
+          onAddIndicator={vi.fn()}
+          onEditIndicator={vi.fn()}
+          notify={vi.fn()}
+        />
+      </React.StrictMode>,
+    );
+    await waitFor(() => expect(seedLabIndicators).toHaveBeenCalledTimes(1));
+    release({ created: ["top_01_momentum"], skipped: [], count: 1, indicators: [seeded] });
+    await waitFor(() => expect((screen.getByTestId("select-saved-indicator") as HTMLSelectElement).value).toBe("ind-top"));
+    fireEvent.click(screen.getByTestId("btn-scan-indicator"));
+    await waitFor(() => expect(startIndicatorScan).toHaveBeenCalled());
+    expect(startIndicatorScan.mock.calls[0][0]).toBe("ind-top");
   });
 
   it("auto-selects the first saved indicator so Scan can run", async () => {

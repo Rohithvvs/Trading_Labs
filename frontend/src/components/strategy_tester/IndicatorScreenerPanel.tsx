@@ -59,6 +59,56 @@ import type { FilterStat, FunnelStep, RankedReturn, StrategyResultRow } from "..
 import type { NavigateFunction } from "react-router-dom";
 
 const HEADER_SCAN_SLOT_ID = "ind-header-scan-slot";
+const LAB_SEEDED_KEY = "tl_lab_indicators_seeded";
+
+let indicatorLibraryInflight: Promise<SavedIndicator[]> | null = null;
+
+function libraryLooksSeeded(rows: SavedIndicator[]): boolean {
+  const hasLab = rows.some((row) => /^\d{2}\s/.test(row.name || "") && row.name.includes("[SCAN]"));
+  const hasTop5 = rows.some((row) => getTop5Rank(row.name) !== null);
+  return hasLab && hasTop5;
+}
+
+/** One in-flight load so React StrictMode cannot apply an empty library over a seed that is still running. */
+export function loadIndicatorLibrary(): Promise<SavedIndicator[]> {
+  if (indicatorLibraryInflight) return indicatorLibraryInflight;
+  const run = (async () => {
+    let rows = await fetchIndicators();
+    if (!rows.length) rows = await fetchIndicators(true);
+    if (libraryLooksSeeded(rows)) {
+      try { sessionStorage.setItem(LAB_SEEDED_KEY, "1"); } catch { /* ignore */ }
+      return rows;
+    }
+    let flagged = false;
+    try { flagged = sessionStorage.getItem(LAB_SEEDED_KEY) === "1"; } catch { /* ignore */ }
+    // An empty library must not honor the flag. StrictMode used to set it and then
+    // discard the seeded rows, so Scan opened with nothing to run.
+    if (flagged && rows.length) return rows;
+    try {
+      const seeded = await seedLabIndicators();
+      if (Array.isArray(seeded.indicators) && seeded.indicators.length) {
+        rows = seeded.indicators;
+      } else {
+        rows = await fetchIndicators(true);
+      }
+    } catch {
+      /* keep whatever the library already had */
+    }
+    if (rows.length) {
+      try { sessionStorage.setItem(LAB_SEEDED_KEY, "1"); } catch { /* ignore */ }
+    }
+    return rows;
+  })();
+  indicatorLibraryInflight = run;
+  void run.finally(() => {
+    if (indicatorLibraryInflight === run) indicatorLibraryInflight = null;
+  });
+  return run;
+}
+
+export function resetIndicatorLibraryLoadForTests(): void {
+  indicatorLibraryInflight = null;
+}
 
 export type UniverseRow = { symbol: string; company?: string | null };
 
@@ -100,6 +150,9 @@ const FETCHING_DATA_STAGES = new Set([
   "repairing_market_data",
   "loading_market_data",
 ]);
+
+// Server budget before the first scored row: daily sync 180s + ensure 20s + repair 10s + bar fill 45s.
+const MARKET_DATA_WATCHDOG_MS = 300_000;
 
 function isFetchingCurrentData(status: IndicatorScanStatus | null): boolean {
   if (!status) return false;
@@ -486,6 +539,8 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
   const selectIndicatorRef = useRef<(id: string, options?: { forgetId?: string }) => void>(() => {});
   const lastAppliedId = useRef<string | null>(appliedIndicator?.id || null);
   const resultsRequestIdRef = useRef<number>(0);
+  const scanRequestRef = useRef(false);
+  const bootstrappedLatestRef = useRef("");
   const withIndicatorOwner = useCallback((status: IndicatorScanStatus, owner?: string | null): IndicatorScanStatus => {
     const indicatorId = status.indicator_id || owner || activeOwnerRef.current || "";
     return indicatorId ? { ...status, indicator_id: indicatorId } : status;
@@ -573,27 +628,7 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
   const appliedIndicatorId = appliedIndicator?.id;
   useEffect(() => {
     let cancelled = false;
-    const loadLibrary = async () => {
-      let rows = await fetchIndicators();
-      const hasCheckedSeed = sessionStorage.getItem("tl_lab_indicators_seeded");
-      const hasLab = rows.some((row) => /^\d{2}\s/.test(row.name) && row.name.includes("[SCAN]"));
-      const hasTop5 = rows.some((row) => getTop5Rank(row.name) !== null);
-      if (!hasCheckedSeed && (!hasLab || !hasTop5)) {
-        try {
-          sessionStorage.setItem("tl_lab_indicators_seeded", "1");
-          const seeded = await seedLabIndicators();
-          if (Array.isArray(seeded.indicators) && seeded.indicators.length) {
-            rows = seeded.indicators;
-          } else {
-            rows = await fetchIndicators();
-          }
-        } catch {
-          /* keep whatever the library already had */
-        }
-      }
-      return rows;
-    };
-    loadLibrary()
+    loadIndicatorLibrary()
       .then((rows) => {
         if (cancelled) return;
         setLoadError(null);
@@ -772,8 +807,7 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
             await handleTerminalScan(status);
             return;
           }
-          // Watchdog: If scan is stuck fetching market data for > 180s without progress
-          if (Date.now() - pollStart > 180_000 && isFetchingCurrentData(status) && (status.progress_pct ?? 0) <= 2) {
+          if (Date.now() - pollStart > MARKET_DATA_WATCHDOG_MS && isFetchingCurrentData(status) && (status.progress_pct ?? 0) <= 2) {
             stopPoll();
             setBusy(false);
             setScan(withIndicatorOwner({
@@ -982,9 +1016,12 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
 
   const refreshLatest = async (indicatorId: string) => {
     const token = ++selectionTokenRef.current;
+    const scanIdAtStart = scanIdRef.current;
     try {
       const status = await fetchLatestIndicatorScan(indicatorId);
       if (token !== selectionTokenRef.current || selectedIdRef.current !== indicatorId) return;
+      // A Scan click that started while this request was in flight owns the screen.
+      if (scanRequestRef.current || scanIdRef.current !== scanIdAtStart) return;
       if (!status?.scan_id) return;
       const stamped = withIndicatorOwner(status, indicatorId);
       const local = scanCacheRef.current[indicatorId];
@@ -1036,6 +1073,15 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
     }
   };
 
+  useEffect(() => {
+    const id = selected?.id;
+    if (!id || bootstrappedLatestRef.current === id) return;
+    bootstrappedLatestRef.current = id;
+    void refreshLatest(id);
+    // refreshLatest closes over the latest filters and scan date; re-running on those changes would reload the table.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected?.id]);
+
   const selectIndicator = (id: string, options?: { forgetId?: string }) => {
     const currentId = selected?.id || selectedId;
     if (!options?.forgetId && (!id || id === currentId)) return;
@@ -1052,6 +1098,7 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
     }
     selectedIdRef.current = id;
     activeOwnerRef.current = id;
+    bootstrappedLatestRef.current = id;
     setSelectedId(id);
     const entry = scanCacheRef.current[id];
     if (entry?.scan?.scan_id) applyCachedScan(entry);
@@ -1061,36 +1108,48 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
   selectIndicatorRef.current = selectIndicator;
 
   const handleScan = async () => {
-    const indicator = selected || indicators[0];
-    if (!indicator?.id) {
-      notify({ title: "Add an indicator before scanning.", type: "warning" });
-      return;
-    }
-    if (!selected?.id) setSelectedId(indicator.id);
-    if (timeframe !== "1D") {
-      notify({
-        title: "Weekly and monthly timeframes are not supported yet. Daily (1D) data is available.",
-        type: "warning",
-      });
-      return;
-    }
-    const today = currentScanSessionIST();
-    const effectiveScanDate = !scanDate || scanDate > today ? today : scanDate;
-    if (effectiveScanDate !== scanDate) {
-      setScanDate(effectiveScanDate);
-    }
-    activeOwnerRef.current = indicator.id;
-    selectedIdRef.current = indicator.id;
-    setBusy(true);
-    setResults([]);
-    setTopPositiveRows([]);
-    setTopNegativeRows([]);
-    setTotal(0);
-    setDiagnostics(null);
-    setPage(1);
+    if (scanRequestRef.current || isScanActive(scan)) return;
+    scanRequestRef.current = true;
+    let indicator = selected || indicators[0];
     try {
+      if (!indicator?.id) {
+        const rows = uniqueIndicatorsByIdAndName(await loadIndicatorLibrary());
+        if (rows.length) setIndicators(rows);
+        indicator = rows.find((row) => getTop5Rank(row.name) === 1) || rows[0];
+        if (indicator?.id) {
+          setSelectedId(indicator.id);
+          selectedIdRef.current = indicator.id;
+        }
+      }
+      if (!indicator?.id) {
+        notify({ title: "Add an indicator before scanning.", type: "warning" });
+        return;
+      }
+      if (!selected?.id) setSelectedId(indicator.id);
+      if (timeframe !== "1D") {
+        notify({
+          title: "Weekly and monthly timeframes are not supported yet. Daily (1D) data is available.",
+          type: "warning",
+        });
+        return;
+      }
+      const today = currentScanSessionIST();
+      const effectiveScanDate = !scanDate || scanDate > today ? today : scanDate;
+      if (effectiveScanDate !== scanDate) {
+        setScanDate(effectiveScanDate);
+      }
+      activeOwnerRef.current = indicator.id;
+      selectedIdRef.current = indicator.id;
+      setBusy(true);
+      setResults([]);
+      setTopPositiveRows([]);
+      setTopNegativeRows([]);
+      setTotal(0);
+      setDiagnostics(null);
+      setPage(1);
       const cleaned = cleanFilters(filters);
-      const pineFilters = cleaned.length ? cleaned : absorbScreenFilters(absorbedSelected.columns);
+      const absorbed = absorbedFromIndicator(indicator);
+      const pineFilters = cleaned.length ? cleaned : absorbScreenFilters(absorbed.columns);
       const started = await startIndicatorScan(indicator.id, {
         universe_id: "nse-755",
         timeframe: "1D",
@@ -1098,7 +1157,10 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
         filters: pineFilters,
         sort: { field: sortField, direction: sortDir },
       });
-      if (selectedIdRef.current !== indicator.id) return;
+      if (selectedIdRef.current !== indicator.id) {
+        setBusy(false);
+        return;
+      }
       const stamped = withIndicatorOwner(started, indicator.id);
       setScan(stamped);
       scanIdRef.current = stamped.scan_id || null;
@@ -1113,7 +1175,10 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
       }
       poll(stamped.scan_id);
     } catch (err: any) {
-      if (selectedIdRef.current !== indicator.id) return;
+      if (selectedIdRef.current !== indicator?.id) {
+        setBusy(false);
+        return;
+      }
       setBusy(false);
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes("401") || msg.toLowerCase().includes("not authenticated")) {
@@ -1132,6 +1197,8 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
           type: "error",
         });
       }
+    } finally {
+      scanRequestRef.current = false;
     }
   };
 
@@ -1394,7 +1461,7 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
         type="button"
         className="st-btn-run"
         onClick={() => void handleScan()}
-        disabled={scanning && (scan?.processed_count || 0) > 0}
+        disabled={scanning}
         data-testid="btn-scan-indicator"
       >
         {scanning ? (

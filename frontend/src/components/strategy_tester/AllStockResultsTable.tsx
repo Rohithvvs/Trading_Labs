@@ -517,9 +517,13 @@ export const AllStockResultsTable: React.FC<AllStockResultsTableProps> = ({
                     )}
                     {isColVisible("signal") && (
                       <td>
-                        <span className={`st-badge-signal ${row.signal || "REJECT"}`}>
-                          {row.signal || "REJECT"}
-                        </span>
+                        {variant === "scanner" && !row.signal ? (
+                          <span className="st-badge-signal pending">—</span>
+                        ) : (
+                          <span className={`st-badge-signal ${row.signal || "REJECT"}`}>
+                            {row.signal || "REJECT"}
+                          </span>
+                        )}
                       </td>
                     )}
                     {isColVisible("entry_price") && (
