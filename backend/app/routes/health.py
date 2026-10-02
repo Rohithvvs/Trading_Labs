@@ -200,3 +200,133 @@ async def heartbeat() -> dict[str, object]:
     return sanitize_for_json({"status": "ok", "engine": await market_engine.status()})
 
 
+@router.get("/health/market-data")
+async def health_market_data() -> dict[str, object]:
+    """Verify canonical market-data history provider connectivity, configuration, and sample query."""
+    from ..services.market_data_provider import get_market_history_provider
+
+    try:
+        provider = get_market_history_provider()
+        return await provider.check_health()
+    except Exception as exc:
+        logger.warning("HEALTH_MARKET_DATA_FAILED | err=%s", exc)
+        return {
+            "backend": settings.candle_history_backend_name(),
+            "configured": False,
+            "reachable": False,
+            "sample_query": False,
+            "error": str(exc)[:200],
+        }
+
+
+@router.get("/market-data/parity")
+async def market_data_parity(
+    symbols: str = "MOTILALOFS,CARTRADE,CHENNPETRO,RELIANCE,TCS",
+    trade_date: str | None = None,
+) -> dict[str, object]:
+    """Diagnostic endpoint to compare market data and technical indicator parity across backends."""
+    from datetime import date, timedelta
+    from ..services.market_data_provider import get_market_history_provider
+    from ..services.indicator_scanner.ta_functions import rsi, sma
+    from ..utils.datetime_utils import ist_now
+
+    symbol_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+    if not symbol_list:
+        return {"error": "No symbols specified"}
+
+    target_date: date
+    if trade_date:
+        try:
+            target_date = date.fromisoformat(trade_date)
+        except ValueError:
+            target_date = ist_now().date()
+    else:
+        target_date = ist_now().date()
+
+    from_date = target_date - timedelta(days=500)
+    provider = get_market_history_provider()
+    series_by_symbol = await provider.get_daily_bars(
+        symbol_list, from_date=from_date, to_date=target_date
+    )
+
+    out: dict[str, object] = {}
+    for sym in symbol_list:
+        canon = sym if sym.endswith("-EQ") else f"{sym}-EQ"
+        series = series_by_symbol.get(sym) or series_by_symbol.get(canon)
+        if series is None or not series.dates:
+            out[sym] = {"status": "NO_DATA", "bar_count": 0}
+            continue
+
+        idx = series.index_on_or_before(target_date)
+        if idx is None:
+            out[sym] = {"status": "NO_DATA_BEFORE_DATE", "bar_count": len(series)}
+            continue
+
+        n = idx + 1
+        closes = series.close[:n]
+        highs = series.high[:n]
+        lows = series.low[:n]
+        volumes = series.volume[:n]
+        dates = series.dates[:n]
+
+        rsi_vals = rsi(closes, 14)
+        sma_20 = sma(closes, 20)
+        sma_50 = sma(closes, 50)
+        sma_200 = sma(closes, 200)
+        vol_sma_20 = sma(volumes, 20)
+
+        tr_list = []
+        for i in range(n):
+            if i == 0 or closes[i - 1] is None:
+                tr_list.append((highs[i] or 0.0) - (lows[i] or 0.0))
+            else:
+                tr_list.append(
+                    max(
+                        (highs[i] or 0.0) - (lows[i] or 0.0),
+                        abs((highs[i] or 0.0) - (closes[i - 1] or 0.0)),
+                        abs((lows[i] or 0.0) - (closes[i - 1] or 0.0)),
+                    )
+                )
+        atr_14 = sma(tr_list, 14)
+
+        cur_close = closes[-1]
+        cur_rsi = rsi_vals[-1]
+        cur_sma_50 = sma_50[-1]
+        cur_sma_200 = sma_200[-1]
+        cur_vol = volumes[-1]
+        cur_vol_20 = vol_sma_20[-1]
+
+        out[sym] = {
+            "status": "OK",
+            "date": dates[-1].isoformat(),
+            "bar_count": n,
+            "open": series.open[idx],
+            "high": series.high[idx],
+            "low": series.low[idx],
+            "close": cur_close,
+            "volume": cur_vol,
+            "indicators": {
+                "sma_20": round(float(sma_20[-1]), 2) if sma_20[-1] is not None else None,
+                "sma_50": round(float(cur_sma_50), 2) if cur_sma_50 is not None else None,
+                "sma_200": round(float(cur_sma_200), 2) if cur_sma_200 is not None else None,
+                "rsi_14": round(float(cur_rsi), 2) if cur_rsi is not None else None,
+                "atr_14": round(float(atr_14[-1]), 2) if atr_14[-1] is not None else None,
+                "vol_sma_20": round(float(cur_vol_20), 2) if cur_vol_20 is not None else None,
+            },
+            "strategy_conditions_sample": {
+                "close_gt_sma_50": bool(cur_close is not None and cur_sma_50 is not None and cur_close > cur_sma_50),
+                "sma_50_gt_sma_200": bool(cur_sma_50 is not None and cur_sma_200 is not None and cur_sma_50 > cur_sma_200),
+                "rsi_gt_55": bool(cur_rsi is not None and cur_rsi > 55),
+                "vol_gt_avg_20": bool(cur_vol is not None and cur_vol_20 is not None and cur_vol > cur_vol_20),
+            },
+        }
+
+    return {
+        "backend": provider.name,
+        "as_of": target_date.isoformat(),
+        "symbols_count": len(out),
+        "data": out,
+    }
+
+
+
