@@ -7,6 +7,7 @@
  */
 
 import { apiUrl } from "./config";
+import { authStorage } from "./utils/storage";
 import {
   ApiClientError,
   mapHttpError,
@@ -116,6 +117,10 @@ async function adminFetch(path: string, init?: RequestInit, label = "Admin API")
   };
   if (method !== "GET" && method !== "HEAD" && !headers["Content-Type"] && !headers["content-type"]) {
     headers["Content-Type"] = "application/json";
+  }
+  const token = authStorage.getAccessToken();
+  if (token && !headers["Authorization"] && !headers["authorization"]) {
+    headers["Authorization"] = `Bearer ${token}`;
   }
 
   const externalSignal = init?.signal;

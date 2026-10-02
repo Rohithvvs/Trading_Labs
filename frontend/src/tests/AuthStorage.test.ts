@@ -61,16 +61,17 @@ describe('authStorage role and profile persistence (AC-FE-01/02/03)', () => {
     expect(authStorage.getUserRole()).toBe('trader');
   });
 
-  test('does not store access token in browser storage (audit H-2)', () => {
+  test('stores access token in sessionStorage for cross-domain auth and clears localStorage (audit H-2)', () => {
     authStorage.setAccessToken('jwt.token.value');
-    expect(authStorage.getAccessToken()).toBeNull();
+    expect(authStorage.getAccessToken()).toBe('jwt.token.value');
+    expect(sessionStorage.getItem('auth_access_token')).toBe('jwt.token.value');
     expect(localStorage.getItem('auth_access_token')).toBeNull();
-    expect(sessionStorage.getItem('auth_access_token')).toBeNull();
   });
 
-  test('clears legacy access token key on get/set', () => {
+  test('migrates legacy access token from localStorage to sessionStorage', () => {
     localStorage.setItem('auth_access_token', 'legacy-jwt');
-    expect(authStorage.getAccessToken()).toBeNull();
+    expect(authStorage.getAccessToken()).toBe('legacy-jwt');
+    expect(sessionStorage.getItem('auth_access_token')).toBe('legacy-jwt');
     expect(localStorage.getItem('auth_access_token')).toBeNull();
   });
 
@@ -90,7 +91,8 @@ describe('authStorage role and profile persistence (AC-FE-01/02/03)', () => {
     expect(localStorage.getItem('auth_user_profile')).toBeNull();
   });
 
-  test('clearAuth purges role and profile (logout path)', () => {
+  test('clearAuth purges role, profile, and token (logout path)', () => {
+    authStorage.setAccessToken('tok');
     authStorage.setUserRole('admin');
     authStorage.setUserProfile({
       id: 'u',
@@ -99,6 +101,7 @@ describe('authStorage role and profile persistence (AC-FE-01/02/03)', () => {
       role: 'admin',
     });
     authStorage.clearAuth();
+    expect(authStorage.getAccessToken()).toBeNull();
     expect(authStorage.getUserRole()).toBe('trader');
     expect(authStorage.getUserProfile()).toBeNull();
   });

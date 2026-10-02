@@ -24,6 +24,7 @@ import {
   type SavedIndicator,
 } from "../../api_indicator_scanner";
 import { fetchStrategyCatalog } from "../../api_strategy_tester";
+import { authStorage } from "../../utils/storage";
 import { currentCashSessionIST } from "../../utils/tradingHours";
 import { navigateToStock } from "../../utils/stockNavigation";
 import {
@@ -67,7 +68,7 @@ export type IndicatorScreenerPanelProps = {
   appliedIndicator: SavedIndicator | null;
   navigate: NavigateFunction;
   onAddIndicator: () => void;
-  onEditIndicator: (indicator: SavedIndicator) => void;
+  onEditIndicator: (indicator: SavedIndicator, initialConditions?: string[]) => void;
   notify: (opts: { title: string; message?: string; type?: "success" | "error" | "warning" | "info" }) => void;
 };
 
@@ -1111,14 +1112,26 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
         return;
       }
       poll(stamped.scan_id);
-    } catch (err) {
+    } catch (err: any) {
       if (selectedIdRef.current !== indicator.id) return;
       setBusy(false);
-      notify({
-        title: "Failed to start scan",
-        message: err instanceof Error ? err.message : "Unknown error",
-        type: "error",
-      });
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("401") || msg.toLowerCase().includes("not authenticated")) {
+        notify({
+          title: "Session Expired",
+          message: "Please sign in again to run scans.",
+          type: "error",
+        });
+        if (navigate) {
+          navigate("/login", { state: { from: { pathname: "/strategy-tester", search: "?tab=indicator" } } });
+        }
+      } else {
+        notify({
+          title: "Failed to start scan",
+          message: msg || "Unknown error",
+          type: "error",
+        });
+      }
     }
   };
 
@@ -1587,7 +1600,7 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
                 style={{ padding: "3px 8px", fontSize: "0.72rem", display: "inline-flex", alignItems: "center", gap: 4, cursor: "pointer" }}
                 onClick={() => {
                   const ind = selected || appliedIndicator;
-                  if (ind) onEditIndicator(ind);
+                  if (ind) onEditIndicator(ind, entryConditions);
                 }}
                 data-testid="btn-edit-strategy-conditions"
                 title="Edit indicator strategy conditions"

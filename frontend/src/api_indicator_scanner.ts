@@ -1,4 +1,5 @@
 import { apiUrl } from "./config";
+import { authStorage } from "./utils/storage";
 
 async function fetchWithAuth(path: string, init: RequestInit | undefined = undefined): Promise<Response> {
   const method = (init?.method ?? "GET").toUpperCase();
@@ -8,6 +9,10 @@ async function fetchWithAuth(path: string, init: RequestInit | undefined = undef
   };
   if (method !== "GET" && method !== "HEAD" && !headers["Content-Type"] && !headers["content-type"]) {
     headers["Content-Type"] = "application/json";
+  }
+  const token = authStorage.getAccessToken();
+  if (token && !headers["Authorization"] && !headers["authorization"]) {
+    headers["Authorization"] = `Bearer ${token}`;
   }
   return fetch(apiUrl(path), { ...init, credentials: "include", headers });
 }

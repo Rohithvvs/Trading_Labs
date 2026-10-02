@@ -63,7 +63,11 @@ async function fetchWithDiagnostics(
     if (method !== "GET" && method !== "HEAD" && !headers["Content-Type"] && !headers["content-type"]) {
       headers["Content-Type"] = "application/json";
     }
-    // Session auth uses HttpOnly cookies (credentials: include). Do not pull JWT from localStorage.
+    const token = authStorage.getAccessToken();
+    if (token && !headers["Authorization"] && !headers["authorization"]) {
+      headers["Authorization"] = `Bearer ${token}`;
+    }
+    // Session auth uses HttpOnly cookies (credentials: include) with Bearer token fallback for cross-domain.
     const fetchInit: RequestInit = {
       ...init,
       credentials: "include",
@@ -1894,8 +1898,10 @@ function persistAuthFromResponse(data: any): {
     full_name: data.full_name ?? data.user?.full_name ?? "",
     role: role as "trader" | "admin",
   };
-  // Persist role/profile only (FR-015/016). JWT lives in HttpOnly cookie, not localStorage.
-  authStorage.setAccessToken(""); // clears any legacy token key
+  const token = data.access_token || data.token;
+  if (token) {
+    authStorage.setAccessToken(token);
+  }
   if (user.id && user.email) {
     authStorage.setUserProfile({
       id: user.id,
@@ -1979,6 +1985,10 @@ export async function authMe(): Promise<any> {
   const response = await fetchWithDiagnostics("/auth/me", undefined, "Auth me");
   if (!response.ok) throw new Error("Not authenticated");
   const data = await response.json();
+  const token = data.access_token || data.token;
+  if (token) {
+    authStorage.setAccessToken(token);
+  }
   const role = data.role === "admin" ? "admin" : "trader";
   const profile = {
     ...data,

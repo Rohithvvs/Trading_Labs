@@ -45,6 +45,7 @@ import { DEFAULT_PINE_TEMPLATE, parsePineScript } from "../utils/pineParser";
 import { entryConditionsToFilters, filtersToPineIndicator } from "../utils/pineGenerator";
 import { IndicatorScreenerPanel } from "../components/strategy_tester/IndicatorScreenerPanel";
 import { createIndicator, updateIndicator, type SavedIndicator } from "../api_indicator_scanner";
+import { authStorage } from "../utils/storage";
 import { useToast } from "../design-system";
 import { isoDateIST } from "../utils/tradingHours";
 import {
@@ -550,7 +551,6 @@ export const StrategyTesterPageInner: React.FC<StrategyTesterPageProps> = ({ def
     [navigate, activeRun?.run_id, activeRun?.strategy_name, results]
   );
 
-  // Run strategy handler
   const handleRunStrategy = async (overrideConfig?: {
     name?: string;
     description?: string;
@@ -605,11 +605,21 @@ export const StrategyTesterPageInner: React.FC<StrategyTesterPageProps> = ({ def
       pollRun(startRes.run_id);
     } catch (err: any) {
       setIsRunning(false);
-      notify({
-        title: "Failed to start strategy test",
-        message: err.message || "Unknown error",
-        type: "error",
-      });
+      const msg = err.message || "Unknown error";
+      if (msg.includes("401") || msg.toLowerCase().includes("not authenticated")) {
+        notify({
+          title: "Session Expired",
+          message: "Please sign in again to run strategy tests.",
+          type: "error",
+        });
+        navigate("/login", { state: { from: { pathname: "/strategy-tester", search: "?tab=strategy" } } });
+      } else {
+        notify({
+          title: "Failed to start strategy test",
+          message: msg,
+          type: "error",
+        });
+      }
     }
   };
 

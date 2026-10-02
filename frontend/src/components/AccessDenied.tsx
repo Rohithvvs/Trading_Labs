@@ -1,5 +1,6 @@
 import React from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
+import { authStorage } from "../utils/storage";
 
 export interface AccessDeniedProps {
   title?: string;
@@ -8,11 +9,20 @@ export interface AccessDeniedProps {
 }
 
 export const AccessDenied: React.FC<AccessDeniedProps> = ({
-  title = "Access Denied",
-  message = "You do not have permission to view or access this feature.",
+  title,
+  message,
   returnPath = "/markets",
 }) => {
   const navigate = useNavigate();
+  const location = useLocation();
+  const isAnonymous = !authStorage.getAccessToken() && !authStorage.getUserProfile();
+
+  const effectiveTitle = title || (isAnonymous ? "Sign In Required" : "Access Denied");
+  const effectiveMessage =
+    message ||
+    (isAnonymous
+      ? "Please sign in with your account to access this feature."
+      : "You do not have permission to view or access this feature.");
 
   return (
     <div
@@ -36,16 +46,28 @@ export const AccessDenied: React.FC<AccessDeniedProps> = ({
           <path d="M7 11V7a5 5 0 0 1 10 0v4" />
         </svg>
       </div>
-      <h1 className="text-2xl font-bold text-gray-100 mb-2">{title}</h1>
-      <p className="text-gray-400 max-w-md mb-6">{message}</p>
-      <button
-        type="button"
-        onClick={() => navigate(returnPath)}
-        className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium rounded-md transition-colors"
-        data-testid="access-denied-return-btn"
-      >
-        Back to Markets
-      </button>
+      <h1 className="text-2xl font-bold text-gray-100 mb-2">{effectiveTitle}</h1>
+      <p className="text-gray-400 max-w-md mb-6">{effectiveMessage}</p>
+      <div className="flex items-center gap-3">
+        {isAnonymous && (
+          <button
+            type="button"
+            onClick={() => navigate("/login", { state: { from: location } })}
+            className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium rounded-md transition-colors"
+            data-testid="access-denied-login-btn"
+          >
+            Sign In
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={() => navigate(returnPath)}
+          className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium rounded-md transition-colors"
+          data-testid="access-denied-return-btn"
+        >
+          Back to Markets
+        </button>
+      </div>
     </div>
   );
 };

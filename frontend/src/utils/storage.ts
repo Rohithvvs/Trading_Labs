@@ -7,8 +7,7 @@ import { UserRole, DEFAULT_ROLE, UserProfile } from '../types/auth';
 const STORAGE_KEYS = {
   USER_ROLE: 'auth_user_role',
   USER_PROFILE: 'auth_user_profile',
-  /** @deprecated JWT must not live in browser storage. */
-  LEGACY_ACCESS_TOKEN: 'auth_access_token',
+  ACCESS_TOKEN: 'auth_access_token',
   /** @deprecated legacy full user blob in localStorage */
   LEGACY_USER: 'user',
 } as const;
@@ -84,15 +83,19 @@ function removeKey(key: string): void {
 
 export const authStorage = {
   /**
-   * Browser SPA auth relies on HttpOnly cookies. Always returns null.
+   * Session-scoped access token to support cross-origin API calls (Vercel -> Render)
+   * where 3rd-party cookies are blocked by modern browsers.
    */
   getAccessToken(): string | null {
-    removeKey(STORAGE_KEYS.LEGACY_ACCESS_TOKEN);
-    return null;
+    return readString(STORAGE_KEYS.ACCESS_TOKEN);
   },
 
-  setAccessToken(_token: string): void {
-    removeKey(STORAGE_KEYS.LEGACY_ACCESS_TOKEN);
+  setAccessToken(token: string): void {
+    if (token) {
+      writeString(STORAGE_KEYS.ACCESS_TOKEN, token);
+    } else {
+      removeKey(STORAGE_KEYS.ACCESS_TOKEN);
+    }
   },
 
   getUserRole(): UserRole {
@@ -133,7 +136,6 @@ export const authStorage = {
     try {
       writeString(STORAGE_KEYS.USER_PROFILE, JSON.stringify(profile));
       this.setUserRole(profile.role);
-      removeKey(STORAGE_KEYS.LEGACY_ACCESS_TOKEN);
       removeKey(STORAGE_KEYS.LEGACY_USER);
     } catch (e) {
       console.warn('Failed to save user profile to storage', e);
@@ -141,7 +143,7 @@ export const authStorage = {
   },
 
   clearAuth(): void {
-    removeKey(STORAGE_KEYS.LEGACY_ACCESS_TOKEN);
+    removeKey(STORAGE_KEYS.ACCESS_TOKEN);
     removeKey(STORAGE_KEYS.USER_ROLE);
     removeKey(STORAGE_KEYS.USER_PROFILE);
     removeKey(STORAGE_KEYS.LEGACY_USER);
