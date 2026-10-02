@@ -28,19 +28,19 @@ describe("IndicatorEditorPanel", () => {
     seedLabIndicators.mockResolvedValue({ created: [], skipped: [], count: 0, indicators: [] });
   });
 
-  it("renders create indicator copy, template, and keeps Save & Apply clickable", () => {
+  it("renders create indicator copy, template, and has empty fields by default", () => {
     render(<IndicatorEditorPanel onCancel={vi.fn()} onSaved={vi.fn()} onSavedAndApply={vi.fn()} />);
     expect(screen.getByText("Create Indicator")).toBeTruthy();
     expect(screen.queryByText("Edit Indicator")).toBeNull();
     expect(screen.getByText(/Paste indicator Pine code, click Observe/i)).toBeTruthy();
     expect(screen.getByText(/TradingLabs supports a secure Pine Script v6-compatible subset/i)).toBeTruthy();
-    expect((screen.getByTestId("input-indicator-name") as HTMLInputElement).value).toBe("52-Week High Breakout [SCAN]");
-    expect((screen.getByTestId("pine-textarea") as HTMLTextAreaElement).value).toContain("indicator(\"52-Week High Breakout [SCAN]\"");
-    expect((screen.getByTestId("btn-save-apply-indicator") as HTMLButtonElement).disabled).toBe(false);
-    expect((screen.getByTestId("btn-save-indicator") as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByTestId("input-indicator-name") as HTMLInputElement).value).toBe("");
+    expect((screen.getByTestId("pine-textarea") as HTMLTextAreaElement).value).toBe("");
+    expect((screen.getByTestId("input-indicator-description") as HTMLTextAreaElement).value).toBe("");
+    expect((screen.getByTestId("btn-save-apply-indicator") as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByTestId("btn-save-indicator") as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByTestId("select-lab-template")).toBeTruthy();
     expect(screen.getByTestId("btn-save-all-lab-strategies")).toBeTruthy();
-    expect(DEFAULT_INDICATOR_TEMPLATE).toContain("plot(scanSignal ? 1 : 0, \"52W Breakout Signal\")");
   });
 
   it("fills pine from a research-lab template", async () => {
@@ -91,6 +91,8 @@ describe("IndicatorEditorPanel", () => {
       required_symbols: ["NSE:CNX500"],
     });
     render(<IndicatorEditorPanel onCancel={vi.fn()} onSaved={vi.fn()} onSavedAndApply={vi.fn()} />);
+    fireEvent.change(screen.getByTestId("input-indicator-name"), { target: { value: "52-Week High Breakout [SCAN]" } });
+    fireEvent.change(screen.getByTestId("pine-textarea"), { target: { value: DEFAULT_INDICATOR_TEMPLATE } });
     fireEvent.click(screen.getByTestId("btn-validate-indicator"));
     await waitFor(() => expect(screen.getByTestId("indicator-validation-panel").textContent).toContain("Valid"));
     expect(screen.getByTestId("btn-validate-indicator").textContent).toContain("Observe");
@@ -180,6 +182,8 @@ plotshape(buySignal, title="Momentum Signal")
       required_symbols: [],
     });
     render(<IndicatorEditorPanel onCancel={vi.fn()} onSaved={vi.fn()} onSavedAndApply={vi.fn()} />);
+    fireEvent.change(screen.getByTestId("input-indicator-name"), { target: { value: "Broken Indicator" } });
+    fireEvent.change(screen.getByTestId("pine-textarea"), { target: { value: '//@version=6\nstrategy("Test")\nplot(1)' } });
     fireEvent.click(screen.getByTestId("btn-save-apply-indicator"));
     await waitFor(() => expect(screen.getByText(/Line 2/)).toBeTruthy());
     expect(createIndicator).not.toHaveBeenCalled();
@@ -232,6 +236,8 @@ plotshape(buySignal, title="Momentum Signal")
     });
     const onSavedAndApply = vi.fn();
     render(<IndicatorEditorPanel onCancel={vi.fn()} onSaved={vi.fn()} onSavedAndApply={onSavedAndApply} />);
+    fireEvent.change(screen.getByTestId("input-indicator-name"), { target: { value: "52-Week High Breakout [SCAN]" } });
+    fireEvent.change(screen.getByTestId("pine-textarea"), { target: { value: DEFAULT_INDICATOR_TEMPLATE } });
     fireEvent.click(screen.getByTestId("btn-save-apply-indicator"));
     await waitFor(() => expect(onSavedAndApply).toHaveBeenCalled());
     expect(validateIndicatorSource).toHaveBeenCalled();
@@ -276,6 +282,8 @@ plotshape(buySignal, title="Momentum Signal")
     });
     const onSavedAndApply = vi.fn();
     render(<IndicatorEditorPanel onCancel={vi.fn()} onSaved={vi.fn()} onSavedAndApply={onSavedAndApply} />);
+    fireEvent.change(screen.getByTestId("input-indicator-name"), { target: { value: "52-Week High Breakout [SCAN]" } });
+    fireEvent.change(screen.getByTestId("pine-textarea"), { target: { value: DEFAULT_INDICATOR_TEMPLATE } });
     fireEvent.click(screen.getByTestId("btn-save-apply-indicator"));
     await waitFor(() => expect(onSavedAndApply).toHaveBeenCalled());
     expect(updateIndicator).toHaveBeenCalledWith(
@@ -283,5 +291,99 @@ plotshape(buySignal, title="Momentum Signal")
       expect.objectContaining({ name: "52-Week High Breakout [SCAN]" }),
     );
     expect(createIndicator).not.toHaveBeenCalled();
+  });
+
+  it("extracts filters and calls onObserveToBuilder on clicking Observe", async () => {
+    validateIndicatorSource.mockResolvedValue({
+      ok: true,
+      status: "valid",
+      errors: [],
+      warnings: [],
+      inputs: [],
+      outputs: [{ name: "Signal", kind: "plot" }],
+      title: "My Custom Screener",
+      parsed_definition: {
+        outputs: [{ name: "Signal", kind: "plot" }],
+        entry_conditions: [{ name: "Close > SMA 50" }],
+      },
+      required_bars: 50,
+      required_symbols: [],
+    });
+
+    const onObserveToBuilder = vi.fn();
+    render(
+      <IndicatorEditorPanel
+        onCancel={vi.fn()}
+        onSaved={vi.fn()}
+        onSavedAndApply={vi.fn()}
+        onObserveToBuilder={onObserveToBuilder}
+      />
+    );
+
+    fireEvent.change(screen.getByTestId("input-indicator-name"), {
+      target: { value: "Super Breakout Scanner" },
+    });
+    fireEvent.change(screen.getByTestId("pine-textarea"), {
+      target: { value: DEFAULT_INDICATOR_TEMPLATE },
+    });
+
+    fireEvent.click(screen.getByTestId("btn-validate-indicator"));
+
+    await waitFor(() => expect(onObserveToBuilder).toHaveBeenCalled());
+    const callArg = onObserveToBuilder.mock.calls[0][0];
+    expect(callArg.name).toBe("Super Breakout Scanner");
+    expect(callArg.filters.length).toBeGreaterThan(0);
+    expect(callArg.logic).toBe("ALL");
+  });
+
+  it("displays error banner and does not call onObserveToBuilder if validation fails", async () => {
+    validateIndicatorSource.mockResolvedValue({
+      ok: false,
+      status: "invalid",
+      errors: [{ line: 5, column: 2, message: "Syntax error in expression" }],
+      warnings: [],
+      inputs: [],
+      outputs: [],
+      required_bars: 0,
+      required_symbols: [],
+    });
+
+    const onObserveToBuilder = vi.fn();
+    render(
+      <IndicatorEditorPanel
+        onCancel={vi.fn()}
+        onSaved={vi.fn()}
+        onSavedAndApply={vi.fn()}
+        onObserveToBuilder={onObserveToBuilder}
+      />
+    );
+
+    fireEvent.change(screen.getByTestId("pine-textarea"), {
+      target: { value: "broken code" },
+    });
+
+    fireEvent.click(screen.getByTestId("btn-validate-indicator"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("indicator-error-banner").textContent).toContain("Line 5: Syntax error in expression")
+    );
+    expect(onObserveToBuilder).not.toHaveBeenCalled();
+  });
+
+  it("displays error banner when clicking Observe with empty code", async () => {
+    const onObserveToBuilder = vi.fn();
+    render(
+      <IndicatorEditorPanel
+        onCancel={vi.fn()}
+        onSaved={vi.fn()}
+        onSavedAndApply={vi.fn()}
+        onObserveToBuilder={onObserveToBuilder}
+      />
+    );
+
+    fireEvent.click(screen.getByTestId("btn-validate-indicator"));
+
+    expect(screen.getByTestId("indicator-error-banner").textContent).toContain("Please enter Pine Script code before observing");
+    expect(onObserveToBuilder).not.toHaveBeenCalled();
   });
 });

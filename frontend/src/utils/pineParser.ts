@@ -1080,11 +1080,16 @@ export function parsePineScript(code: string, options?: { debug?: boolean }): Pi
     }
   } else {
     const entryCandidateNames = [
+      "scanSignal",
+      "scan_signal",
+      "screenerSignal",
+      "screener_signal",
+      "screenSignal",
+      "screen_signal",
+      "signal",
       "longCondition",
       "long_condition",
       "longCond",
-      "scanSignal",
-      "scan_signal",
       "buyCondition",
       "buy_condition",
       "buySignal",
@@ -1098,6 +1103,10 @@ export function parsePineScript(code: string, options?: { debug?: boolean }): Pi
       "sellCondition",
       "sell_condition",
       "sellSignal",
+      "filterCondition",
+      "condition",
+      "cond",
+      "filter",
     ];
 
     for (const name of entryCandidateNames) {

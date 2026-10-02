@@ -1,8 +1,22 @@
 import React from "react";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { StrategyBuilderModal } from "../StrategyBuilderModal";
 import { DEFAULT_PINE_TEMPLATE } from "../../../utils/pineParser";
+
+const validateIndicatorSource = vi.fn();
+const fetchIndicators = vi.fn(async () => []);
+const fetchIndicatorTemplates = vi.fn(async () => []);
+const seedLabIndicators = vi.fn(async () => ({ created: [], skipped: [], count: 0, indicators: [] }));
+
+vi.mock("../../../api_indicator_scanner", () => ({
+  validateIndicatorSource: (...args: unknown[]) => validateIndicatorSource(...args),
+  fetchIndicators: (...args: unknown[]) => fetchIndicators(...args),
+  fetchIndicatorTemplates: (...args: unknown[]) => fetchIndicatorTemplates(...args),
+  seedLabIndicators: (...args: unknown[]) => seedLabIndicators(...args),
+  createIndicator: vi.fn(),
+  updateIndicator: vi.fn(),
+}));
 
 describe("StrategyBuilderModal", () => {
   const defaultProps = {
@@ -328,5 +342,72 @@ if longCondition
     // Click again to hide
     fireEvent.click(screen.getByTestId("btn-toggle-pine-debug"));
     expect(screen.queryByTestId("pine-debug-trace")).toBeNull();
+  });
+
+  it("Test Case 10: Observe from Indicator tab extracts filters, switches to Strategy Builder, and allows Save & Apply", async () => {
+    validateIndicatorSource.mockResolvedValue({
+      ok: true,
+      status: "valid",
+      errors: [],
+      warnings: [],
+      inputs: [],
+      outputs: [{ name: "52W Breakout Signal", kind: "plot" }],
+      title: "52-Week High Breakout [SCAN]",
+      parsed_definition: {
+        outputs: [{ name: "52W Breakout Signal", kind: "plot" }],
+        entry_conditions: [
+          { name: "Close >= Prior 252 High" },
+          { name: "Volume > Average Volume 20" },
+        ],
+      },
+      required_bars: 252,
+      required_symbols: [],
+    });
+
+    const onApply = vi.fn();
+    const onClose = vi.fn();
+    render(
+      <StrategyBuilderModal
+        {...defaultProps}
+        initialTab="indicator"
+        onApply={onApply}
+        onClose={onClose}
+      />
+    );
+
+    // Initial view should be Indicator tab
+    expect(screen.getByTestId("tab-indicator").className).toContain("is-active");
+    expect(screen.getByTestId("indicator-editor-panel")).toBeTruthy();
+
+    // Type a custom indicator name and pine code
+    const indNameInput = screen.getByTestId("input-indicator-name");
+    fireEvent.change(indNameInput, { target: { value: "My Momentum Scanner" } });
+    const pineInput = screen.getByTestId("pine-textarea");
+    fireEvent.change(pineInput, { target: { value: DEFAULT_PINE_TEMPLATE } });
+
+    // Click Observe button
+    fireEvent.click(screen.getByTestId("btn-validate-indicator"));
+
+    // Modal should automatically switch to Strategy Builder tab
+    await waitFor(() => {
+      expect(screen.getByTestId("tab-strategy-builder").className).toContain("is-active");
+    });
+
+    // Check strategy name populated
+    expect((screen.getByTestId("input-strategy-name") as HTMLInputElement).value).toBe("My Momentum Scanner");
+
+    // Check filters are rendered
+    expect(screen.getByTestId("filter-row-0")).toBeTruthy();
+    expect(screen.getByTestId("btn-apply-strategy-builder")).toBeTruthy();
+
+    // Click Save & Apply in Strategy Builder
+    fireEvent.click(screen.getByTestId("btn-apply-strategy-builder"));
+
+    // onApply should be called with extracted filters and custom name
+    expect(onApply).toHaveBeenCalledTimes(1);
+    const [savedName, , savedFilters] = onApply.mock.calls[0];
+    expect(savedName).toBe("My Momentum Scanner");
+    expect(savedFilters.length).toBeGreaterThan(0);
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 });

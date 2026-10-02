@@ -274,6 +274,35 @@ export const StrategyBuilderModal: React.FC<StrategyBuilderModalProps> = ({
     applyParsedResult(res);
   };
 
+  const handleObserveFromIndicator = (data: {
+    name: string;
+    description: string;
+    source: string;
+    filters: ModalBuilderFilter[];
+    logic: "ALL" | "ANY";
+    side: "LONG" | "SHORT";
+    warnings?: string[];
+    debugTrace?: any[];
+  }) => {
+    setName(data.name);
+    if (data.description) setDescription(data.description);
+    setSide(data.side);
+    setLogic(data.logic);
+    setFilters(data.filters);
+    setSourceType("pine");
+    setPineCode(data.source);
+    setPineWarnings(data.warnings || []);
+    setPineImportSummary({
+      title: `✓ Filters extracted from Pine Script`,
+      filterCount: data.filters.length,
+      side: data.side,
+      logic: data.logic,
+      debugTrace: data.debugTrace,
+    });
+    setIsUserModified(false);
+    setActiveTab("builder");
+  };
+
   const handleSave = () => {
     if (!name.trim()) {
       alert("Please enter a strategy name.");
@@ -340,6 +369,7 @@ export const StrategyBuilderModal: React.FC<StrategyBuilderModalProps> = ({
               key={editingIndicator?.id || "new-indicator"}
               initial={editingIndicator}
               onCancel={onClose}
+              onObserveToBuilder={handleObserveFromIndicator}
               onSaved={(indicator) => {
                 onApplyIndicator?.(indicator, false);
                 onClose();

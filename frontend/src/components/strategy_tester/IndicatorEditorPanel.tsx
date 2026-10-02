@@ -12,7 +12,9 @@ import {
 } from "../../api_indicator_scanner";
 import { uniqueIndicatorsByIdAndName } from "../../utils/indicatorScannerState";
 import { DEFAULT_INDICATOR_TEMPLATE, INDICATOR_SYNTAX_HELP, BREAKOUT_SCAN_DESCRIPTION, BREAKOUT_SCAN_TITLE } from "../../utils/indicatorTemplate";
-import { absorbFromParsedDefinition, describeAbsorbedFilter, insertScreenerSignalPlot } from "../../utils/indicatorAbsorb";
+import { absorbFromParsedDefinition, absorbEntryConditions, describeAbsorbedFilter, insertScreenerSignalPlot } from "../../utils/indicatorAbsorb";
+import { parsePineScript, type ModalBuilderFilter } from "../../utils/pineParser";
+import { entryConditionsToFilters } from "../../utils/pineGenerator";
 import { PineCodeEditor } from "./PineCodeEditor";
 
 export type IndicatorEditorPanelProps = {
@@ -20,6 +22,16 @@ export type IndicatorEditorPanelProps = {
   onCancel: () => void;
   onSaved: (indicator: SavedIndicator) => void;
   onSavedAndApply: (indicator: SavedIndicator) => void;
+  onObserveToBuilder?: (data: {
+    name: string;
+    description: string;
+    source: string;
+    filters: ModalBuilderFilter[];
+    logic: "ALL" | "ANY";
+    side: "LONG" | "SHORT";
+    warnings?: string[];
+    debugTrace?: any[];
+  }) => void;
 };
 
 export const IndicatorEditorPanel: React.FC<IndicatorEditorPanelProps> = ({
@@ -27,11 +39,12 @@ export const IndicatorEditorPanel: React.FC<IndicatorEditorPanelProps> = ({
   onCancel,
   onSaved,
   onSavedAndApply,
+  onObserveToBuilder,
 }) => {
-  const [name, setName] = useState(initial?.name || BREAKOUT_SCAN_TITLE);
-  const [description, setDescription] = useState(initial?.description || BREAKOUT_SCAN_DESCRIPTION);
+  const [name, setName] = useState(initial?.name || "");
+  const [description, setDescription] = useState(initial?.description || "");
   const [timeframe, setTimeframe] = useState(initial?.timeframe || "1D");
-  const [source, setSource] = useState(initial?.source_code || DEFAULT_INDICATOR_TEMPLATE);
+  const [source, setSource] = useState(initial?.source_code || "");
   const [validatedSource, setValidatedSource] = useState<string | null>(null);
   const [validatedTimeframe, setValidatedTimeframe] = useState<string | null>(null);
   const [validation, setValidation] = useState<IndicatorValidation | null>(null);
@@ -42,7 +55,7 @@ export const IndicatorEditorPanel: React.FC<IndicatorEditorPanelProps> = ({
 
   const isEditing = Boolean(initial?.id);
   const isValid = validation?.ok === true && validatedSource === source && validatedTimeframe === timeframe;
-  const canAttemptSave = name.trim().length > 0 && !busy && timeframe === "1D";
+  const canAttemptSave = name.trim().length > 0 && source.trim().length > 0 && !busy && timeframe === "1D";
 
   useEffect(() => {
     let cancelled = false;
@@ -60,6 +73,18 @@ export const IndicatorEditorPanel: React.FC<IndicatorEditorPanelProps> = ({
 
   const applyTemplate = (strategyId: string) => {
     setTemplateId(strategyId);
+    if (!strategyId) {
+      if (!isEditing) {
+        setName("");
+        setDescription("");
+        setSource("");
+      }
+      setValidation(null);
+      setValidatedSource(null);
+      setValidatedTimeframe(null);
+      setError(null);
+      return;
+    }
     const match = templates.find((row) => row.strategy_id === strategyId);
     if (!match?.source_code) return;
     setName((match.name || "").slice(0, 120));
@@ -100,8 +125,75 @@ export const IndicatorEditorPanel: React.FC<IndicatorEditorPanelProps> = ({
     setBusy("observe");
     setError(null);
     try {
+      if (!source.trim()) {
+        setError("Please enter Pine Script code before observing.");
+        return;
+      }
       const result = await runValidation();
-      if (result?.ok && result.title && name === BREAKOUT_SCAN_TITLE) {
+      if (result && !result.ok && result.errors && result.errors.length > 0) {
+        setError(`Unable to observe Pine code: ${result.errors.map((e) => `Line ${e.line}: ${e.message}`).join("; ")}`);
+        return;
+      }
+
+      if (onObserveToBuilder) {
+        let parsedFilters: ModalBuilderFilter[] = [];
+        let parsedLogic: "ALL" | "ANY" = "ALL";
+        let parsedSide: "LONG" | "SHORT" = "LONG";
+        let warnings: string[] = [];
+        let debugTrace: any[] = [];
+
+        try {
+          const res = parsePineScript(source, { debug: true });
+          if (res.filters && res.filters.length > 0) {
+            parsedFilters = res.filters;
+            parsedLogic = res.logic || "ALL";
+            parsedSide = res.positionSide || "LONG";
+            warnings = res.warnings || [];
+            debugTrace = res.debugTrace || [];
+          }
+        } catch {
+          // fallback
+        }
+
+        if (parsedFilters.length === 0 && result) {
+          const conditions = result.entry_conditions || (result.parsed_definition as any)?.entry_conditions;
+          if (conditions && Array.isArray(conditions) && conditions.length > 0) {
+            parsedFilters = entryConditionsToFilters(conditions);
+          } else {
+            const absorbedConditions = absorbEntryConditions(result.parsed_definition);
+            if (absorbedConditions.length > 0) {
+              parsedFilters = entryConditionsToFilters(absorbedConditions);
+            }
+          }
+        }
+
+        if (parsedFilters.length === 0) {
+          setError("No supported filter conditions could be extracted from this Pine Script. Please ensure your script defines entry conditions or signal rules.");
+          return;
+        }
+
+        const effectiveName = name.trim()
+          ? name.trim()
+          : (result?.title?.trim() || "Custom Indicator");
+
+        const effectiveDesc = description.trim()
+          ? description.trim()
+          : (result?.description?.trim() || "");
+
+        onObserveToBuilder({
+          name: effectiveName,
+          description: effectiveDesc,
+          source,
+          filters: parsedFilters,
+          logic: parsedLogic,
+          side: parsedSide,
+          warnings,
+          debugTrace,
+        });
+        return;
+      }
+
+      if (result?.ok && result.title && !name.trim()) {
         setName(result.title.slice(0, 120));
       }
     } catch (err) {
@@ -115,9 +207,10 @@ export const IndicatorEditorPanel: React.FC<IndicatorEditorPanelProps> = ({
   };
 
   const persist = async (): Promise<SavedIndicator> => {
+    const finalName = name.trim() || validation?.title?.trim() || BREAKOUT_SCAN_TITLE;
     const payload = {
-      name: name.trim().slice(0, 120),
-      description: description.trim().slice(0, 500),
+      name: finalName.slice(0, 120),
+      description: (description.trim() || validation?.description?.trim() || "").slice(0, 500),
       source_code: source,
       timeframe,
     };
@@ -187,7 +280,7 @@ export const IndicatorEditorPanel: React.FC<IndicatorEditorPanelProps> = ({
           onChange={(e) => applyTemplate(e.target.value)}
           data-testid="select-lab-template"
         >
-          <option value="">Custom / 52-Week High Breakout template</option>
+          <option value="">Custom / Blank</option>
           {templates.map((row) => (
             <option key={row.strategy_id} value={row.strategy_id}>
               {row.name}
@@ -203,6 +296,7 @@ export const IndicatorEditorPanel: React.FC<IndicatorEditorPanelProps> = ({
             value={name}
             maxLength={120}
             onChange={(e) => setName(e.target.value)}
+            placeholder="Enter indicator name..."
             data-testid="input-indicator-name"
           />
         </label>
@@ -231,11 +325,16 @@ export const IndicatorEditorPanel: React.FC<IndicatorEditorPanelProps> = ({
           maxLength={500}
           rows={2}
           onChange={(e) => setDescription(e.target.value)}
+          placeholder="Brief description of indicator..."
           data-testid="input-indicator-description"
         />
       </label>
 
-      <PineCodeEditor value={source} onChange={(val) => setSource(val)} />
+      <PineCodeEditor
+        value={source}
+        onChange={(val) => setSource(val)}
+        placeholder="// Enter Pine Script indicator code here..."
+      />
 
       <details className="ind-syntax-help">
         <summary>Supported syntax</summary>

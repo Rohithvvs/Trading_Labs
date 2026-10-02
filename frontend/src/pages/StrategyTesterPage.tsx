@@ -802,7 +802,7 @@ export const StrategyTesterPageInner: React.FC<StrategyTesterPageProps> = ({ def
         });
 
         let savedIndicator: SavedIndicator;
-        const targetId = editingIndicator?.id || appliedIndicator?.id;
+        const targetId = (editExistingIndicator && editingIndicator?.id) ? editingIndicator.id : null;
         if (targetId) {
           try {
             savedIndicator = await updateIndicator(targetId, {
@@ -956,6 +956,7 @@ export const StrategyTesterPageInner: React.FC<StrategyTesterPageProps> = ({ def
           onImportClick={() => setIsImportModalOpen(true)}
           onSaveClick={() => setIsSaveModalOpen(true)}
           onNewClick={() => {
+            setEditingIndicator(null);
             setEditExistingIndicator(false);
             setBuilderTab(workspace === "indicator" ? "indicator" : "builder");
             setIsBuilderModalOpen(true);
@@ -971,6 +972,7 @@ export const StrategyTesterPageInner: React.FC<StrategyTesterPageProps> = ({ def
             appliedIndicator={appliedIndicator}
             navigate={navigate}
             onAddIndicator={() => {
+              setEditingIndicator(null);
               setEditExistingIndicator(false);
               setBuilderTab("indicator");
               setIsBuilderModalOpen(true);
@@ -1206,6 +1208,7 @@ export const StrategyTesterPageInner: React.FC<StrategyTesterPageProps> = ({ def
         onClose={() => {
           setIsBuilderModalOpen(false);
           setEditingIndicator(null);
+          setEditExistingIndicator(false);
         }}
         onApply={handleBuilderApply}
         onApplyIndicator={(indicator, applyToScreener = true) => {
