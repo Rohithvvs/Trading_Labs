@@ -20,3 +20,12 @@ asyncio.run(import_csv(str(root / 'ind_nifty500list.csv'), 'NIFTY500'))
         value: 3.12.0
       - key: PYTHONUNBUFFERED
         value: "1"
+      # Candle history — route to Turso so the indicator scanner reads the same
+      # 738-stock tape as local. Without this, Render falls back to Postgres
+      # (no candle data) → 256 stocks skipped → only 15 matches instead of 20.
+      - key: CANDLE_HISTORY_BACKEND
+        value: turso
+      - key: TURSO_DATABASE_URL
+        value: libsql://tradinghistory-rohithvvs.aws-ap-south-1.turso.io
+      - key: TURSO_AUTH_TOKEN
+        sync: false   # Set this secret in the Render dashboard, not here
