@@ -558,16 +558,14 @@ class Settings(BaseSettings):
         return self
 
     def candle_history_backend_name(self) -> str:
-        """Live-read backend flag. Defaults to postgres; never logs secrets."""
-        try:
-            raw = os.environ.get("CANDLE_HISTORY_BACKEND")
-            if raw is not None and str(raw).strip() != "":
-                return self._normalize_candle_history_backend(raw)
-            return self._normalize_candle_history_backend(self.candle_history_backend)
-        except ValueError:
-            raise
-        except Exception:
-            return "postgres"
+        """Live-read backend flag. Defaults to postgres; never logs secrets.
+
+        An invalid value raises. It does not silently select Postgres.
+        """
+        raw = os.environ.get("CANDLE_HISTORY_BACKEND")
+        if raw is not None and str(raw).strip() != "":
+            return self._normalize_candle_history_backend(raw)
+        return self._normalize_candle_history_backend(self.candle_history_backend)
 
     def uses_turso_candle_history(self) -> bool:
         return self.candle_history_backend_name() == "turso"

@@ -4,6 +4,7 @@ import os
 import time
 
 from fastapi import APIRouter
+from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
 from ..config import settings
@@ -200,23 +201,69 @@ async def heartbeat() -> dict[str, object]:
     return sanitize_for_json({"status": "ok", "engine": await market_engine.status()})
 
 
+def _redact_health_error(exc: Exception) -> str:
+    text = f"{type(exc).__name__}: {exc}"
+    token = (settings.turso_auth_token or "").strip()
+    if token and token in text:
+        text = text.replace(token, "[redacted]")
+    return text[:200]
+
+
 @router.get("/health/market-data")
-async def health_market_data() -> dict[str, object]:
-    """Verify canonical market-data history provider connectivity, configuration, and sample query."""
+async def health_market_data():
+    """Verify the selected candle backend. Turso failures do not report Postgres as healthy."""
+    from ..services.market_data_ingestion.candle_diagnostics import candle_backend_identity
     from ..services.market_data_provider import get_market_history_provider
 
+    identity = candle_backend_identity()
     try:
         provider = get_market_history_provider()
-        return await provider.check_health()
+        payload = await provider.check_health()
     except Exception as exc:
-        logger.warning("HEALTH_MARKET_DATA_FAILED | err=%s", exc)
-        return {
-            "backend": settings.candle_history_backend_name(),
-            "configured": False,
+        logger.warning("HEALTH_MARKET_DATA_FAILED | err_type=%s", type(exc).__name__)
+        payload = {
+            "backend": identity["candle_backend"],
+            "configured": settings.turso_configured() if identity["candle_backend"] == "turso" else True,
             "reachable": False,
             "sample_query": False,
-            "error": str(exc)[:200],
+            "error": _redact_health_error(exc),
         }
+    if isinstance(payload, dict):
+        payload.setdefault("candle_backend", identity["candle_backend"])
+        payload.setdefault("database_type", identity["database_type"])
+        payload.setdefault("database_target", identity["database_target"])
+        payload["silent_postgres_fallback"] = False
+    failed = isinstance(payload, dict) and payload.get("reachable") is False
+    if failed and identity["candle_backend"] == "turso":
+        return JSONResponse(status_code=503, content=payload)
+    return payload
+
+
+@router.get("/market-data/coverage")
+async def market_data_coverage(trade_date: str | None = None):
+    """Symbols stored for one session on the active candle backend."""
+    from datetime import date as date_cls
+
+    from ..services.market_data_ingestion.candle_diagnostics import coverage_snapshot
+
+    target = None
+    if trade_date:
+        try:
+            target = date_cls.fromisoformat(trade_date)
+        except ValueError:
+            return JSONResponse(status_code=400, content={"error": "trade_date must be YYYY-MM-DD"})
+    try:
+        payload = await coverage_snapshot(target)
+    except Exception as exc:
+        logger.warning("MARKET_DATA_COVERAGE_FAILED | err_type=%s", type(exc).__name__)
+        identity_error = {
+            "reachable": False,
+            "error": _redact_health_error(exc),
+            "silent_postgres_fallback": False,
+        }
+        status = 503 if settings.uses_turso_candle_history() else 200
+        return JSONResponse(status_code=status, content=identity_error)
+    return payload
 
 
 @router.get("/market-data/parity")

@@ -155,11 +155,14 @@ def _is_fast_fresh(
     force: bool,
     universe_size: int,
     has_date_gap: bool,
+    ignore_soft_fields: bool = False,
 ) -> bool:
     """True when latest session is good enough to skip network I/O.
 
     Allows a small permanent missing-symbol set (invalid/delisted tickers) so the
     scanner is not forced to re-hit FYERS for names that never return data.
+    Scanner runs ignore thin delivery/ADTV once OHLCV itself is fresh. Those
+    fields are not indicator inputs, and chasing them re-fetches FYERS on every scan.
     """
     if force or has_date_gap:
         return False
@@ -167,10 +170,11 @@ def _is_fast_fresh(
         return False
     if snap["present_count"] == 0:
         return False
-    if snap["delivery_coverage"] < _DELIVERY_SOFT_THRESHOLD:
-        return False
-    if snap["adtv_coverage"] < _ADTV_SOFT_THRESHOLD:
-        return False
+    if not ignore_soft_fields:
+        if snap["delivery_coverage"] < _DELIVERY_SOFT_THRESHOLD:
+            return False
+        if snap["adtv_coverage"] < _ADTV_SOFT_THRESHOLD:
+            return False
     if snap["equity_coverage"] >= threshold:
         return True
     # Tolerate up to ~3% permanently missing (or 25 abs) without re-fetch thrash
@@ -332,6 +336,7 @@ async def ensure_latest_market_data(
             force=force,
             universe_size=len(universe),
             has_date_gap=needs_gap,
+            ignore_soft_fields=is_scanner,
         )
         and not need_index_history
     )
@@ -460,6 +465,7 @@ async def ensure_latest_market_data(
                 force=force,
                 universe_size=len(universe),
                 has_date_gap=bool(gap_dates),
+                ignore_soft_fields=is_scanner,
             )
             and not need_index_history
         ):

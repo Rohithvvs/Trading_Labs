@@ -27,5 +27,8 @@ asyncio.run(import_csv(str(root / 'ind_nifty500list.csv'), 'NIFTY500'))
         value: turso
       - key: TURSO_DATABASE_URL
         value: libsql://tradinghistory-rohithvvs.aws-ap-south-1.turso.io
+      # Set TURSO_AUTH_TOKEN in the Render dashboard before the next deploy.
+      # sync:false keeps the secret out of git. If it is missing, the process
+      # fails to boot. It does not fall back to Neon/Postgres candle history.
       - key: TURSO_AUTH_TOKEN
-        sync: false   # Set this secret in the Render dashboard, not here
+        sync: false

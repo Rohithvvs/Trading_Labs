@@ -365,6 +365,153 @@ async def fetch_symbols_on_trade_date(trade_date: date) -> set[str]:
     return await asyncio.to_thread(select_symbols_on_trade_date, _client(), trade_date)
 
 
+def select_symbols_with_delivery_on(
+    client: TursoClient, trade_date: date, symbols: list[str] | None = None
+) -> set[str]:
+    sql = (
+        "SELECT symbol FROM daily_ohlcv WHERE trade_date = ? "
+        "AND (delivery_pct IS NOT NULL OR delivery_qty IS NOT NULL)"
+    )
+    params: list[Any] = [_iso_date(trade_date)]
+    if symbols:
+        placeholders = ",".join("?" for _ in symbols)
+        sql += f" AND symbol IN ({placeholders})"
+        params.extend(symbols)
+    rows = client.execute(sql, params)
+    return {str(row["symbol"]) for row in rows if row.get("symbol")}
+
+
+async def fetch_symbols_with_delivery_on(
+    trade_date: date, symbols: list[str] | None = None
+) -> set[str]:
+    return await asyncio.to_thread(
+        select_symbols_with_delivery_on, _client(), trade_date, symbols
+    )
+
+
+def select_symbols_with_adtv_on(
+    client: TursoClient, trade_date: date, symbols: list[str] | None = None
+) -> set[str]:
+    sql = "SELECT symbol FROM daily_ohlcv WHERE trade_date = ? AND adtv_20 IS NOT NULL"
+    params: list[Any] = [_iso_date(trade_date)]
+    if symbols:
+        placeholders = ",".join("?" for _ in symbols)
+        sql += f" AND symbol IN ({placeholders})"
+        params.extend(symbols)
+    rows = client.execute(sql, params)
+    return {str(row["symbol"]) for row in rows if row.get("symbol")}
+
+
+async def fetch_symbols_with_adtv_on(
+    trade_date: date, symbols: list[str] | None = None
+) -> set[str]:
+    return await asyncio.to_thread(select_symbols_with_adtv_on, _client(), trade_date, symbols)
+
+
+def select_session_coverage_snapshot(
+    client: TursoClient,
+    trade_date: date,
+    symbols: list[str],
+    *,
+    index_symbol: str = "NIFTY500",
+    include_symbol_sets: bool = False,
+) -> dict[str, Any]:
+    """Coverage counts for one session. Does not read Postgres."""
+    counts = client.execute(
+        "SELECT COUNT(*) AS present_n, "
+        "SUM(CASE WHEN delivery_pct IS NOT NULL OR delivery_qty IS NOT NULL THEN 1 ELSE 0 END) AS deliv_n, "
+        "SUM(CASE WHEN adtv_20 IS NOT NULL THEN 1 ELSE 0 END) AS adtv_n "
+        "FROM daily_ohlcv WHERE trade_date = ?",
+        [_iso_date(trade_date)],
+    )
+    row = counts[0] if counts else {}
+    present_n = min(int(row.get("present_n") or 0), len(symbols))
+    deliv_n = min(int(row.get("deliv_n") or 0), len(symbols))
+    adtv_n = min(int(row.get("adtv_n") or 0), len(symbols))
+    index_ok = select_index_present(client, trade_date, index_symbol)
+    max_rows = client.execute("SELECT MAX(trade_date) AS m FROM daily_ohlcv")
+    max_eq = _parse_date(max_rows[0]["m"]) if max_rows and max_rows[0].get("m") else None
+    present: set[str] = set()
+    with_delivery: set[str] = set()
+    with_adtv: set[str] = set()
+    if include_symbol_sets and symbols:
+        placeholders = ",".join("?" for _ in symbols)
+        detail = client.execute(
+            "SELECT symbol, delivery_pct, delivery_qty, adtv_20 FROM daily_ohlcv "
+            f"WHERE trade_date = ? AND symbol IN ({placeholders})",
+            [_iso_date(trade_date), *list(symbols)],
+        )
+        for item in detail:
+            sym = item.get("symbol")
+            if not sym:
+                continue
+            present.add(str(sym))
+            if item.get("delivery_pct") is not None or item.get("delivery_qty") is not None:
+                with_delivery.add(str(sym))
+            if item.get("adtv_20") is not None:
+                with_adtv.add(str(sym))
+        present_n = len(present)
+        deliv_n = len(with_delivery)
+        adtv_n = len(with_adtv)
+    return {
+        "present": present,
+        "with_delivery": with_delivery,
+        "with_adtv": with_adtv,
+        "present_count": present_n,
+        "delivery_count": deliv_n,
+        "adtv_count": adtv_n,
+        "universe_count": len(symbols),
+        "index_present": index_ok,
+        "max_equity_date": max_eq,
+    }
+
+
+async def fetch_session_coverage_snapshot(
+    trade_date: date,
+    symbols: list[str],
+    *,
+    index_symbol: str = "NIFTY500",
+    include_symbol_sets: bool = False,
+) -> dict[str, Any]:
+    return await asyncio.to_thread(
+        select_session_coverage_snapshot,
+        _client(),
+        trade_date,
+        symbols,
+        index_symbol=index_symbol,
+        include_symbol_sets=include_symbol_sets,
+    )
+
+
+def delete_cloned_daily_rows(client: TursoClient, session: date, previous: date) -> int:
+    """Delete session rows that exactly copy the previous session. No invented bars."""
+    rows = client.execute(
+        "SELECT d.symbol AS symbol FROM daily_ohlcv AS d "
+        "INNER JOIN daily_ohlcv AS p ON d.symbol = p.symbol "
+        "WHERE d.trade_date = ? AND p.trade_date = ? "
+        "AND d.open = p.open AND d.high = p.high AND d.low = p.low "
+        "AND d.close = p.close AND d.volume = p.volume",
+        [_iso_date(session), _iso_date(previous)],
+    )
+    symbols = [str(row["symbol"]) for row in rows if row.get("symbol")]
+    if not symbols:
+        return 0
+    deleted = 0
+    for offset in range(0, len(symbols), 200):
+        chunk = symbols[offset : offset + 200]
+        placeholders = ",".join("?" for _ in chunk)
+        client.execute(
+            f"DELETE FROM daily_ohlcv WHERE trade_date = ? AND symbol IN ({placeholders})",
+            [_iso_date(session), *chunk],
+        )
+        deleted += len(chunk)
+    return deleted
+
+
+async def fetch_delete_cloned_daily_rows(session: date, previous: date) -> int:
+    return await asyncio.to_thread(delete_cloned_daily_rows, _client(), session, previous)
+
+
 def select_equity_date_span(
     client: TursoClient, symbol: str
 ) -> tuple[date | None, date | None, int]:

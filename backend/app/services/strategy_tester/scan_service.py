@@ -1003,6 +1003,14 @@ async def fill_missing_from_historical_candles(
     missing = [s for s in symbols if s not in series_by_symbol or len(series_by_symbol.get(s) or []) == 0]
     if not missing:
         return 0
+    from ...services.market_data_ingestion.history_backend import uses_turso
+
+    if uses_turso():
+        logger.info(
+            "STRATEGY_TESTER_CANDLE_FALLBACK_SKIPPED | reason=turso_fail_closed | missing=%s",
+            len(missing),
+        )
+        return 0
     try:
         from sqlalchemy import select
 

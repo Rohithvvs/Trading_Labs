@@ -179,6 +179,25 @@ def connect_turso(settings: Any) -> TursoClient:
     return _LibsqlClientAdapter(inner)
 
 
+def open_probed_turso_client(settings: Any) -> TursoClient:
+    """Open Turso and prove it answers. Never falls back to Postgres."""
+    client = connect_turso(settings)
+    try:
+        client.execute("SELECT 1 AS ok")
+    except Exception as exc:
+        try:
+            client.close()
+        except Exception:
+            pass
+        _logger.error("TURSO_STARTUP_PROBE_FAILED | err_type=%s", type(exc).__name__)
+        raise RuntimeError(
+            "CANDLE_HISTORY_BACKEND=turso but Turso did not answer the startup probe. "
+            "Postgres candle history was not selected."
+        ) from exc
+    _logger.info("TURSO_STARTUP_PROBE_OK | target=%s", public_db_target(settings.turso_database_url))
+    return client
+
+
 def _turso_http_url(url: str) -> str:
     """Prefer HTTPS Hrana HTTP over libsql/wss (Turso cloud often rejects wss 400)."""
     raw = url.strip()

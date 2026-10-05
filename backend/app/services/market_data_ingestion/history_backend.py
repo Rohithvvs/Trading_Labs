@@ -1,8 +1,8 @@
 """Candle-history backend router.
 
 Default is postgres (existing SQLAlchemy repository). Turso is selected only when
-CANDLE_HISTORY_BACKEND=turso. Callers of repository.py are unchanged until Phase 7;
-this module is the explicit routing point.
+CANDLE_HISTORY_BACKEND=turso. Repository reads and writes follow that flag and do
+not switch to the other database when Turso fails.
 """
 from __future__ import annotations
 

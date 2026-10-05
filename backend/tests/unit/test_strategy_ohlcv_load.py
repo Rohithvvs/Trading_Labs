@@ -14,6 +14,16 @@ from app.services.strategies.breakout52w.scan_service import (
 from app.services.strategies.breakout52w.identity import DEFAULT_OHLCV_LOOKBACK, HIGH_LOOKBACK
 
 
+@pytest.fixture(autouse=True)
+def _sqlalchemy_candle_store(monkeypatch):
+    """Assert SQL against the fake session.
+
+    A developer env with CANDLE_HISTORY_BACKEND=turso must not send these
+    fixture symbols to Turso, and production must not fall back either.
+    """
+    monkeypatch.setattr(repo, "_use_turso_history", lambda: False)
+
+
 def test_iter_symbol_chunks_dedupes_and_splits():
     symbols = ["A-EQ", "B-EQ", "A-EQ", "C-EQ", "", "D-EQ"]
     assert repo.iter_symbol_chunks(symbols, size=2) == [["A-EQ", "B-EQ"], ["C-EQ", "D-EQ"]]

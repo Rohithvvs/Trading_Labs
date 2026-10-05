@@ -167,7 +167,7 @@ class TursoMarketHistoryProvider:
 
     async def check_health(self) -> dict[str, Any]:
         """Safely probe Turso historical candle database."""
-        configured = settings.turso_configured()
+        configured = self._custom_client is not None or settings.turso_configured()
         if not configured:
             return {
                 "backend": "turso",
@@ -181,25 +181,47 @@ class TursoMarketHistoryProvider:
             client = self._get_client()
 
             def _probe():
-                rows = client.execute("SELECT max(trade_date) AS max_date FROM daily_ohlcv")
-                return rows[0] if rows else {}
+                # Indexed latest-session count only. A full-table COUNT on
+                # ~2.2M rows exceeds the health budget from a remote region
+                # and was reported as Turso down.
+                rows = client.execute("SELECT MAX(trade_date) AS max_date FROM daily_ohlcv")
+                sample = rows[0] if rows else {}
+                max_date = sample.get("max_date")
+                on_latest = None
+                if max_date:
+                    counted = client.execute(
+                        "SELECT COUNT(*) AS n FROM daily_ohlcv WHERE trade_date = ?",
+                        [str(max_date)[:10]],
+                    )
+                    on_latest = int(counted[0]["n"]) if counted else 0
+                return {
+                    "max_date": None if max_date is None else str(max_date)[:10],
+                    "symbols_on_latest_date": on_latest,
+                }
 
-            sample = await asyncio.wait_for(asyncio.to_thread(_probe), timeout=5.0)
+            sample = await asyncio.wait_for(asyncio.to_thread(_probe), timeout=8.0)
             return {
                 "backend": "turso",
                 "configured": True,
                 "reachable": True,
                 "sample_query": True,
                 "max_trade_date": sample.get("max_date"),
+                "symbols_on_latest_date": sample.get("symbols_on_latest_date"),
+                "silent_postgres_fallback": False,
             }
         except Exception as exc:
-            _logger.warning("TURSO_HEALTH_PROBE_FAILED | err=%s", exc)
+            _logger.warning("TURSO_HEALTH_PROBE_FAILED | err_type=%s", type(exc).__name__)
+            text = f"{type(exc).__name__}: {exc}"
+            token = (settings.turso_auth_token or "").strip()
+            if token and token in text:
+                text = text.replace(token, "[redacted]")
             return {
                 "backend": "turso",
                 "configured": True,
                 "reachable": False,
                 "sample_query": False,
-                "error": str(exc)[:200],
+                "silent_postgres_fallback": False,
+                "error": text[:200],
             }
 
 

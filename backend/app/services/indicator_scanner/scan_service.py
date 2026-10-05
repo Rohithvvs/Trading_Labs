@@ -527,6 +527,7 @@ async def execute_scan(
     input_overrides: dict[str, Any] | None,
     scan_date: date | None,
 ) -> None:
+    scan_started_at = _utc()
     total = len(instruments)
     await persistence.update_scan(
         run_id,
@@ -823,6 +824,42 @@ async def execute_scan(
             f"Requested Pine Screener bar {pine_screener_as_of} but most names evaluated on {as_of}. "
             "Lists will not match TradingView until every symbol has that 1D bar."
         )
+    from ..market_data_ingestion.candle_diagnostics import build_scan_candle_diagnostics
+
+    latest_candle_date = max(as_of_counts) if as_of_counts else (
+        max_available_date.isoformat() if max_available_date else None
+    )
+    symbols_on_scan_date = int((quality.last_bar_counts or {}).get(end_date.isoformat(), 0))
+    sufficient_history = max(0, int(quality.symbols_checked) - len(quality.insufficient_history))
+    summary.update(
+        build_scan_candle_diagnostics(
+            evaluated=total,
+            skipped=skipped,
+            matched=matched,
+            latest_candle_date=latest_candle_date,
+            symbols_on_scan_date=symbols_on_scan_date,
+            symbols_with_sufficient_history=sufficient_history,
+            fetch_report=fetch_report,
+            scan_started_at=scan_started_at.isoformat(),
+            scan_finished_at=_utc().isoformat(),
+        )
+    )
+    logger.info(
+        "CANDLE_SCAN_DIAGNOSTICS | backend=%s | database_type=%s | target=%s | "
+        "evaluated=%s | skipped=%s | matched=%s | latest=%s | on_scan_date=%s | "
+        "sufficient=%s | repair_attempts=%s | repair_failures=%s",
+        summary.get("candle_backend"),
+        summary.get("database_type"),
+        summary.get("database_target"),
+        total,
+        skipped,
+        matched,
+        latest_candle_date,
+        symbols_on_scan_date,
+        sufficient_history,
+        summary.get("repair_attempts"),
+        summary.get("repair_failures"),
+    )
     await persistence.update_scan(
         run_id,
         status="completed",

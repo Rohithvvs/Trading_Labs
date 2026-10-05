@@ -6,7 +6,7 @@ import logging
 import time
 from datetime import date, datetime, timezone
 from decimal import Decimal
-from typing import Any, Iterable
+from typing import Any, Iterable, NoReturn
 
 from sqlalchemy import bindparam, func, select, text
 from sqlalchemy.dialects.postgresql import ARRAY, VARCHAR, insert as pg_insert
@@ -17,17 +17,36 @@ from ...models.strategy_market_data import DailyOhlcv, IndexOhlcv
 _ohlcv_log = logging.getLogger("app.market_data.ohlcv")
 
 
+class CandleHistoryBackendError(RuntimeError):
+    """Selected candle backend failed. The other database is not used."""
+
+
 def _use_turso_history() -> bool:
     """Route daily/index history to Turso only when explicitly selected.
 
-    Any evaluation error falls back to Postgres so default runtime is unchanged.
+    Errors propagate. They must not switch a scan onto Postgres.
     """
-    try:
-        from .history_backend import uses_turso
+    from .history_backend import uses_turso
 
-        return bool(uses_turso())
-    except Exception:
-        return False
+    return bool(uses_turso())
+
+
+def _refuse_postgres_fallback(operation: str, exc: BaseException) -> NoReturn:
+    _ohlcv_log.error(
+        "CANDLE_BACKEND_FAIL_CLOSED | backend=turso | op=%s | err_type=%s | postgres_fallback=false",
+        operation,
+        type(exc).__name__,
+    )
+    raise CandleHistoryBackendError(
+        f"Turso candle history failed during {operation}. Postgres was not used."
+    ) from exc
+
+
+def _block_postgres_candle_write(operation: str) -> None:
+    if _use_turso_history():
+        raise CandleHistoryBackendError(
+            f"Refusing Postgres candle write during {operation} while CANDLE_HISTORY_BACKEND=turso."
+        )
 
 
 def _utc_now() -> datetime:
@@ -43,11 +62,9 @@ async def max_equity_trade_date(symbols: list[str] | None = None) -> date | None
         from . import turso_repository as turso
 
         try:
-            d = await asyncio.wait_for(turso.fetch_max_equity_trade_date(symbols), timeout=3.0)
-            if d is not None:
-                return d
+            return await turso.fetch_max_equity_trade_date(symbols)
         except Exception as exc:
-            _ohlcv_log.warning("TURSO_MAX_EQUITY_TRADE_DATE_FAILED | err=%s, falling back to postgres", exc)
+            _refuse_postgres_fallback("max_equity_trade_date", exc)
     async with AsyncSessionLocal() as db:
         stmt = select(func.max(DailyOhlcv.trade_date))
         if symbols:
@@ -97,11 +114,9 @@ async def equity_date_span(symbol: str) -> tuple[date | None, date | None, int]:
         from . import turso_repository as turso
 
         try:
-            res = await asyncio.wait_for(turso.fetch_equity_date_span(symbol), timeout=3.0)
-            if res and res[2] > 0:
-                return res
+            return await turso.fetch_equity_date_span(symbol)
         except Exception as exc:
-            _ohlcv_log.warning("TURSO_EQUITY_DATE_SPAN_FAILED | err=%s, falling back to postgres", exc)
+            _refuse_postgres_fallback("equity_date_span", exc)
     async with AsyncSessionLocal() as db:
         row = (
             await db.execute(
@@ -120,9 +135,9 @@ async def max_index_trade_date(symbol: str = "NIFTY500") -> date | None:
         from . import turso_repository as turso
 
         try:
-            return await asyncio.wait_for(turso.fetch_max_index_trade_date(symbol), timeout=3.0)
+            return await turso.fetch_max_index_trade_date(symbol)
         except Exception as exc:
-            _ohlcv_log.warning("TURSO_MAX_INDEX_TRADE_DATE_FAILED | err=%s, falling back to postgres", exc)
+            _refuse_postgres_fallback("max_index_trade_date", exc)
     async with AsyncSessionLocal() as db:
         stmt = select(func.max(IndexOhlcv.trade_date)).where(IndexOhlcv.symbol == symbol)
         return (await db.execute(stmt)).scalar_one_or_none()
@@ -133,9 +148,9 @@ async def min_index_trade_date(symbol: str = "NIFTY500") -> date | None:
         from . import turso_repository as turso
 
         try:
-            return await asyncio.wait_for(turso.fetch_min_index_trade_date(symbol), timeout=3.0)
+            return await turso.fetch_min_index_trade_date(symbol)
         except Exception as exc:
-            _ohlcv_log.warning("TURSO_MIN_INDEX_TRADE_DATE_FAILED | err=%s, falling back to postgres", exc)
+            _refuse_postgres_fallback("min_index_trade_date", exc)
     async with AsyncSessionLocal() as db:
         stmt = select(func.min(IndexOhlcv.trade_date)).where(IndexOhlcv.symbol == symbol)
         return (await db.execute(stmt)).scalar_one_or_none()
@@ -146,9 +161,9 @@ async def index_row_count(symbol: str = "NIFTY500") -> int:
         from . import turso_repository as turso
 
         try:
-            return await asyncio.wait_for(turso.fetch_index_row_count(symbol), timeout=3.0)
+            return await turso.fetch_index_row_count(symbol)
         except Exception as exc:
-            _ohlcv_log.warning("TURSO_INDEX_ROW_COUNT_FAILED | err=%s, falling back to postgres", exc)
+            _refuse_postgres_fallback("index_row_count", exc)
     async with AsyncSessionLocal() as db:
         stmt = select(func.count()).select_from(IndexOhlcv).where(IndexOhlcv.symbol == symbol)
         return int((await db.execute(stmt)).scalar() or 0)
@@ -159,9 +174,9 @@ async def symbols_present_on(trade_date: date, symbols: list[str] | None = None)
         from . import turso_repository as turso
 
         try:
-            return await asyncio.wait_for(turso.fetch_symbols_present_on(trade_date, symbols), timeout=5.0)
+            return await turso.fetch_symbols_present_on(trade_date, symbols)
         except Exception as exc:
-            _ohlcv_log.warning("TURSO_SYMBOLS_PRESENT_ON_FAILED | err=%s, falling back to postgres", exc)
+            _refuse_postgres_fallback("symbols_present_on", exc)
     async with AsyncSessionLocal() as db:
         stmt = select(DailyOhlcv.symbol).where(DailyOhlcv.trade_date == trade_date)
         if symbols:
@@ -175,9 +190,9 @@ async def index_present(trade_date: date, symbol: str = "NIFTY500") -> bool:
         from . import turso_repository as turso
 
         try:
-            return await asyncio.wait_for(turso.fetch_index_present(trade_date, symbol), timeout=3.0)
+            return await turso.fetch_index_present(trade_date, symbol)
         except Exception as exc:
-            _ohlcv_log.warning("TURSO_INDEX_PRESENT_FAILED | err=%s, falling back to postgres", exc)
+            _refuse_postgres_fallback("index_present", exc)
     async with AsyncSessionLocal() as db:
         stmt = (
             select(IndexOhlcv.symbol)
@@ -191,6 +206,13 @@ async def symbols_with_delivery_on(
     trade_date: date, symbols: list[str] | None = None
 ) -> set[str]:
     """Symbols that have non-null delivery_pct (or delivery_qty) on trade_date."""
+    if _use_turso_history():
+        from . import turso_repository as turso
+
+        try:
+            return await turso.fetch_symbols_with_delivery_on(trade_date, symbols)
+        except Exception as exc:
+            _refuse_postgres_fallback("symbols_with_delivery_on", exc)
     async with AsyncSessionLocal() as db:
         stmt = select(DailyOhlcv.symbol).where(
             DailyOhlcv.trade_date == trade_date,
@@ -205,6 +227,13 @@ async def symbols_with_adtv_on(
     trade_date: date, symbols: list[str] | None = None
 ) -> set[str]:
     """Symbols that have non-null adtv_20 on trade_date."""
+    if _use_turso_history():
+        from . import turso_repository as turso
+
+        try:
+            return await turso.fetch_symbols_with_adtv_on(trade_date, symbols)
+        except Exception as exc:
+            _refuse_postgres_fallback("symbols_with_adtv_on", exc)
     async with AsyncSessionLocal() as db:
         stmt = select(DailyOhlcv.symbol).where(
             DailyOhlcv.trade_date == trade_date,
@@ -239,6 +268,19 @@ async def session_coverage_snapshot(
             "index_present": False,
             "max_equity_date": None,
         }
+
+    if _use_turso_history():
+        from . import turso_repository as turso
+
+        try:
+            return await turso.fetch_session_coverage_snapshot(
+                trade_date,
+                symbols,
+                index_symbol=index_symbol,
+                include_symbol_sets=include_symbol_sets,
+            )
+        except Exception as exc:
+            _refuse_postgres_fallback("session_coverage_snapshot", exc)
 
     async with AsyncSessionLocal() as db:
         # Avoid huge IN (...) lists on the fast path — count the session day globally.
@@ -321,6 +363,7 @@ async def update_adtv_for_session(
     """Bulk-set adtv_20 for symbols on a session. Returns rows updated."""
     if not symbol_adtv:
         return 0
+    _block_postgres_candle_write("update_adtv_for_session")
     from sqlalchemy import text
 
     payload = [(sym, val) for sym, val in symbol_adtv.items() if val is not None]
@@ -370,11 +413,9 @@ async def upsert_daily_bars(rows: list[dict[str, Any]]) -> tuple[int, int]:
 
         try:
             n = turso.upsert_daily_rows(turso._client(), accepted)
-            if n > 0 or not accepted:
-                return n, rejected_n
-            _ohlcv_log.warning("TURSO_UPSERT_DAILY_RETURNED_ZERO | falling back to postgres")
         except Exception as exc:
-            _ohlcv_log.warning("TURSO_UPSERT_DAILY_FAILED | err=%s, falling back to postgres", exc)
+            _refuse_postgres_fallback("upsert_daily_bars", exc)
+        return n, rejected_n
     if not accepted:
         return 0, rejected_n
     loaded_at = _utc_now()
@@ -422,6 +463,13 @@ async def upsert_daily_bars(rows: list[dict[str, Any]]) -> tuple[int, int]:
 
 async def delete_cloned_daily_bars(session: date, previous: date) -> int:
     """Delete rows on `session` whose OHLCV is an exact copy of `previous`."""
+    if _use_turso_history():
+        from . import turso_repository as turso
+
+        try:
+            return await turso.fetch_delete_cloned_daily_rows(session, previous)
+        except Exception as exc:
+            _refuse_postgres_fallback("delete_cloned_daily_bars", exc)
     async with AsyncSessionLocal() as db:
         result = await db.execute(
             text(
@@ -451,6 +499,7 @@ async def update_delivery_fields(rows: list[dict[str, Any]]) -> int:
     """
     if not rows:
         return 0
+    _block_postgres_candle_write("update_delivery_fields")
     from sqlalchemy import update
 
     updated = 0
@@ -493,6 +542,7 @@ async def update_delivery_for_session(
     """
     if not delivery_map:
         return 0
+    _block_postgres_candle_write("update_delivery_for_session")
     from sqlalchemy import text
 
     from .derived import compute_delivery_pct
@@ -560,6 +610,7 @@ async def update_delivery_for_session(
 
 async def backfill_adtv_20_sql() -> int:
     """Populate adtv_20 for all rows using a 20-session rolling average of close*volume."""
+    _block_postgres_candle_write("backfill_adtv_20_sql")
     from sqlalchemy import text
 
     async with AsyncSessionLocal() as db:
@@ -598,6 +649,7 @@ async def backfill_adtv_20_for_session(
     Replaces the previous N×``fetch_equity_history`` Python loop that blocked
     scanners for minutes with zero progress events.
     """
+    _block_postgres_candle_write("backfill_adtv_20_for_session")
     from sqlalchemy import text
 
     async with AsyncSessionLocal() as db:
@@ -650,12 +702,9 @@ async def fetch_recent_equity_before(
         from . import turso_repository as turso
 
         try:
-            return await asyncio.wait_for(
-                turso.fetch_recent_equity_before(symbol, before_date, limit),
-                timeout=5.0,
-            )
+            return await turso.fetch_recent_equity_before(symbol, before_date, limit)
         except Exception as exc:
-            _ohlcv_log.warning("TURSO_FETCH_RECENT_EQUITY_BEFORE_FAILED | err=%s, falling back to postgres", exc)
+            _refuse_postgres_fallback("fetch_recent_equity_before", exc)
     async with AsyncSessionLocal() as db:
         stmt = (
             select(DailyOhlcv)
@@ -693,12 +742,9 @@ async def upsert_index_bars(rows: list[dict[str, Any]]) -> int:
         from . import turso_repository as turso
 
         try:
-            n = turso.upsert_index_rows(turso._client(), accepted)
-            if n > 0 or not accepted:
-                return n
-            _ohlcv_log.warning("TURSO_UPSERT_INDEX_RETURNED_ZERO | falling back to postgres")
+            return turso.upsert_index_rows(turso._client(), accepted)
         except Exception as exc:
-            _ohlcv_log.warning("TURSO_UPSERT_INDEX_FAILED | err=%s, falling back to postgres", exc)
+            _refuse_postgres_fallback("upsert_index_bars", exc)
     if not accepted:
         return 0
     loaded_at = _utc_now()
@@ -765,12 +811,9 @@ async def fetch_equity_history(
         from . import turso_repository as turso
 
         try:
-            return await asyncio.wait_for(
-                turso.fetch_equity_history(symbol, from_date=from_date, limit=limit),
-                timeout=5.0,
-            )
+            return await turso.fetch_equity_history(symbol, from_date=from_date, limit=limit)
         except Exception as exc:
-            _ohlcv_log.warning("TURSO_FETCH_EQUITY_HISTORY_FAILED | err=%s, falling back to postgres", exc)
+            _refuse_postgres_fallback("fetch_equity_history", exc)
     from ...utils.symbol import ohlcv_symbol_variants, preferred_ohlcv_store_symbol
 
     variants = ohlcv_symbol_variants(symbol) or [symbol]
@@ -805,12 +848,9 @@ async def fetch_index_history(
         from . import turso_repository as turso
 
         try:
-            return await asyncio.wait_for(
-                turso.fetch_index_history(symbol, from_date=from_date),
-                timeout=5.0,
-            )
+            return await turso.fetch_index_history(symbol, from_date=from_date)
         except Exception as exc:
-            _ohlcv_log.warning("TURSO_FETCH_INDEX_HISTORY_FAILED | err=%s, falling back to postgres", exc)
+            _refuse_postgres_fallback("fetch_index_history", exc)
     async with AsyncSessionLocal() as db:
         stmt = select(IndexOhlcv).where(IndexOhlcv.symbol == symbol)
         if from_date:
@@ -836,12 +876,9 @@ async def symbol_has_sufficient_history(symbol: str, min_rows: int = 500) -> boo
         from . import turso_repository as turso
 
         try:
-            return await asyncio.wait_for(
-                turso.fetch_symbol_has_sufficient_history(symbol, min_rows),
-                timeout=3.0,
-            )
+            return await turso.fetch_symbol_has_sufficient_history(symbol, min_rows)
         except Exception as exc:
-            _ohlcv_log.warning("TURSO_SYMBOL_SUFFICIENT_HISTORY_FAILED | err=%s, falling back to postgres", exc)
+            _refuse_postgres_fallback("symbol_has_sufficient_history", exc)
     async with AsyncSessionLocal() as db:
         cnt = (
             await db.execute(
@@ -989,19 +1026,17 @@ async def fetch_daily_ohlcv_for_symbols(
         from collections import namedtuple
         from . import turso_repository as turso
 
+        col_names = _ohlcv_column_names(columns)
         try:
-            col_names = _ohlcv_column_names(columns)
-            dict_rows = await asyncio.wait_for(
-                turso.fetch_daily_ohlcv_for_symbols(
-                    unique, lookback=lookback, from_date=from_date, to_date=to_date, columns=col_names
-                ),
-                timeout=8.0,
+            dict_rows = await turso.fetch_daily_ohlcv_for_symbols(
+                unique, lookback=lookback, from_date=from_date, to_date=to_date, columns=col_names
             )
-            if dict_rows:
-                RowCls = namedtuple("DailyOhlcvRow", col_names)
-                return [RowCls(*(r.get(c) for c in col_names)) for r in dict_rows]
         except Exception as exc:
-            _ohlcv_log.warning("TURSO_FETCH_DAILY_OHLCV_FAILED | err=%s, falling back to postgres", exc)
+            _refuse_postgres_fallback("fetch_daily_ohlcv_for_symbols", exc)
+        if not dict_rows:
+            return []
+        RowCls = namedtuple("DailyOhlcvRow", col_names)
+        return [RowCls(*(r.get(c) for c in col_names)) for r in dict_rows]
     col_names = _ohlcv_column_names(columns)
     cols = columns or _default_ohlcv_columns()
     bound = None if from_date is not None else (clamp_ohlcv_lookback(lookback) if lookback is not None else None)

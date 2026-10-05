@@ -355,7 +355,9 @@ async def lifespan(app: FastAPI):
     except RuntimeError:
         raise
     except Exception:
-        pass
+        logger.exception("CANDLE_HISTORY_STARTUP_CHECK_FAILED")
+        if settings.uses_turso_candle_history():
+            raise
     try:
         from .core.server_state import read_shutdown_time
         last_shutdown = read_shutdown_time()
@@ -501,8 +503,8 @@ async def lifespan(app: FastAPI):
             await ensure_default_feature_permissions(fp_db, commit=True)
 
         if _startup_settings.uses_turso_candle_history():
-            from .db.turso import connect_turso
-            app.state.turso_client = connect_turso(_startup_settings)
+            from .db.turso import open_probed_turso_client
+            app.state.turso_client = open_probed_turso_client(_startup_settings)
             logger.info("TURSO_CLIENT | opened for CANDLE_HISTORY_BACKEND=turso in safe API mode")
 
         await _await_redis_wsl_prewarm()
@@ -557,8 +559,8 @@ async def lifespan(app: FastAPI):
                 raise
             logger.warning("API-only pod migration/admin bootstrap check failed: %s", e)
         if _startup_settings.uses_turso_candle_history():
-            from .db.turso import connect_turso
-            app.state.turso_client = connect_turso(_startup_settings)
+            from .db.turso import open_probed_turso_client
+            app.state.turso_client = open_probed_turso_client(_startup_settings)
             logger.info("TURSO_CLIENT | opened for CANDLE_HISTORY_BACKEND=turso in API-only pod")
         await _await_redis_wsl_prewarm()
         yield
@@ -1033,9 +1035,9 @@ async def lifespan(app: FastAPI):
     logger.info("APP_LIFESPAN_COMPLETED | Lifespan startup fully completed")
     turso_client = None
     if settings.uses_turso_candle_history():
-        from .db.turso import connect_turso
+        from .db.turso import open_probed_turso_client
 
-        turso_client = connect_turso(settings)
+        turso_client = open_probed_turso_client(settings)
         app.state.turso_client = turso_client
         logger.info("TURSO_CLIENT | opened for CANDLE_HISTORY_BACKEND=turso")
     else:
