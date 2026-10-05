@@ -104,6 +104,10 @@ def _apply_common_mocks(ctx, replay_fn=None, ev_fn=None, build_payload_fn=None):
         patch.object(scan_service, "replay_book", _fake_replay_book),
         patch.object(scan_service, "evaluate_session", lambda **kw: ev_fn()),
         patch.object(scan_service, "build_payload", build_payload_fn),
+        patch(
+            "app.services.market_data_ingestion.scanner_turso_sync.sync_before_scan",
+            new=AsyncMock(return_value={"sync_status": "reused", "backend": "turso"}),
+        ),
     ]
 
 
@@ -166,6 +170,10 @@ def test_portfolio_backtest_timeout_fails_safely_and_releases_lock():
         )),
         patch.object(scan_service, "replay_book", _slow_replay),
         patch.object(scan_service.settings, "w52_portfolio_backtest_timeout_seconds", 1),
+        patch(
+            "app.services.market_data_ingestion.scanner_turso_sync.sync_before_scan",
+            new=AsyncMock(return_value={"sync_status": "reused", "backend": "turso"}),
+        ),
     ]
 
     result = _run_with_mocks(mocks, run_scan(scan_id=run_id))

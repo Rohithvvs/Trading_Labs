@@ -424,6 +424,12 @@ async def run_scan(*, mode: str | None = None, progress_cb=None, scan_id: uuid.U
     try:
         await stage("evaluating", 5, "evaluating")
         symbols = await UniverseService.get_active_nifty500_symbols()
+        from ...market_data_ingestion.history_backend import uses_turso
+
+        if uses_turso():
+            from ...market_data_ingestion.scanner_turso_sync import sync_before_scan
+
+            await sync_before_scan(symbols, strategy="ltm")
         from .candle_backfill import ensure_strategy_daily_ready
 
         await ensure_strategy_daily_ready(symbols, min_sessions=253)

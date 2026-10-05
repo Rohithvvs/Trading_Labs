@@ -51,6 +51,18 @@ async def test_execute_scan_blocks_on_stale(monkeypatch):
             "app.services.market_data_ingestion.freshness.evaluate_freshness",
             new=AsyncMock(return_value=FakeFresh()),
         ),
+        patch(
+            "app.services.market_data_ingestion.history_backend.uses_turso",
+            return_value=False,
+        ),
+        patch(
+            "app.services.daily_scan_sync_service.sync_daily_market_data_for_scan",
+            new=AsyncMock(return_value={"status": "ok"}),
+        ),
+        patch(
+            "app.services.strategy_tester.scan_service.load_universe",
+            new=AsyncMock(return_value=[{"store_symbol": "INFY-EQ", "symbol": "INFY"}]),
+        ),
     ):
         import os
 

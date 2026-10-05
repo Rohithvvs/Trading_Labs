@@ -386,6 +386,14 @@ async def test_fetch_current_indicator_market_data_ensures_then_overlays():
             "app.services.market_data_ingestion.calendar_utils.expected_last_completed_session",
             return_value=date(2026, 9, 8),
         ),
+        patch(
+            "app.services.market_data_ingestion.history_backend.uses_turso",
+            return_value=False,
+        ),
+        patch(
+            "app.services.daily_scan_sync_service.sync_daily_market_data_for_scan",
+            new=AsyncMock(return_value={"status": "ok"}),
+        ),
     ):
         loaded, bench, source, report = await fetch_current_indicator_market_data(
             ["AAA"],

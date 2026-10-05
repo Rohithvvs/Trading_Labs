@@ -209,37 +209,121 @@ class ScanExecutionService:
                     "heartbeat": True,
                 },
             )
-            try:
-                from ..services.daily_scan_sync_service import (
-                    DAILY_SYNC_TIMEOUT_S,
-                    sync_daily_market_data_for_scan,
+            from ..services.market_data_ingestion.history_backend import uses_turso
+
+            ensure_t0 = time.perf_counter()
+            if uses_turso():
+                from ..services.market_data_ingestion.scanner_turso_sync import (
+                    TursoSyncError,
+                    sync_before_scan,
                 )
                 from ..services.strategy_tester.scan_service import load_universe
 
-                universe_rows = await load_universe("NIFTY500")
-                store_symbols = [
-                    str(item.get("store_symbol") or item.get("symbol") or "")
-                    for item in universe_rows
-                    if item.get("store_symbol") or item.get("symbol")
-                ]
-                daily_sync = await asyncio.wait_for(
-                    sync_daily_market_data_for_scan(store_symbols),
-                    timeout=DAILY_SYNC_TIMEOUT_S,
+                await ScanExecutionService._emit(
+                    progress_queue,
+                    {
+                        "stage": "Syncing Turso candle history...",
+                        "progress": 3,
+                        "scan_id": scan_id,
+                        "heartbeat": True,
+                    },
                 )
-                logger.info(
-                    "SCAN_DAILY_SYNC | scan_id=%s | status=%s | history=%s..%s | rows=%s | live=%s",
-                    scan_id,
-                    daily_sync.get("status"),
-                    daily_sync.get("history_from"),
-                    daily_sync.get("history_to"),
-                    daily_sync.get("rows_upserted"),
-                    daily_sync.get("live_synced"),
-                )
-            except asyncio.TimeoutError:
-                logger.warning("SCAN_DAILY_SYNC_TIMEOUT | scan_id=%s", scan_id)
-            except Exception as exc:
-                logger.warning("SCAN_DAILY_SYNC_FAILED | scan_id=%s | err=%s", scan_id, type(exc).__name__)
-            ensure_t0 = time.perf_counter()
+                try:
+                    try:
+                        universe_rows = await load_universe("NIFTY500")
+                        store_symbols = [
+                            str(item.get("store_symbol") or item.get("symbol") or "")
+                            for item in universe_rows
+                            if item.get("store_symbol") or item.get("symbol")
+                        ]
+                        if not store_symbols:
+                            raise TursoSyncError(
+                                "Turso candle sync has no symbols. "
+                                "Scanner was not started. Postgres was not used."
+                            )
+                        mode_name = getattr(getattr(payload, "mode", None), "value", None) or "scanner"
+                        daily_sync = await sync_before_scan(store_symbols, strategy=str(mode_name))
+                    except TursoSyncError:
+                        raise
+                    except Exception as exc:
+                        logger.error(
+                            "TURSO_SYNC_UNIVERSE_FAILED | scan_id=%s | err_type=%s",
+                            scan_id,
+                            type(exc).__name__,
+                        )
+                        raise TursoSyncError(
+                            "Could not load the scanner universe for the Turso candle sync. "
+                            "Scanner was not started. Postgres candle history was not used."
+                        ) from exc
+                    ensure_result = {
+                        "status": "SUCCESS",
+                        "data_date": daily_sync.get("latest_equity_date"),
+                        "fetched": daily_sync.get("symbols_updated"),
+                        "duration_ms": daily_sync.get("sync_duration_ms"),
+                        "timed_out": False,
+                        "backend": "turso",
+                        "sync_status": daily_sync.get("sync_status"),
+                        "latest_index_date": daily_sync.get("latest_index_date"),
+                        "symbols_processed": daily_sync.get("symbols_processed"),
+                        "symbols_failed": daily_sync.get("symbols_failed"),
+                    }
+                except TursoSyncError as exc:
+                    logger.error(
+                        "TURSO_SYNC_FAILED | scan_id=%s | err_type=%s | postgres_fallback=false",
+                        scan_id,
+                        type(exc).__name__,
+                    )
+                    await ScanExecutionService._emit(
+                        progress_queue,
+                        {
+                            "status": "error",
+                            "code": "TURSO_SYNC_FAILED",
+                            "message": str(exc),
+                            "scan_id": scan_id,
+                            "backend": "turso",
+                        },
+                    )
+                    try:
+                        await lock.release()
+                    except Exception:
+                        pass
+                    raise
+            else:
+                try:
+                    from ..services.daily_scan_sync_service import (
+                        DAILY_SYNC_TIMEOUT_S,
+                        sync_daily_market_data_for_scan,
+                    )
+                    from ..services.strategy_tester.scan_service import load_universe
+
+                    universe_rows = await load_universe("NIFTY500")
+                    store_symbols = [
+                        str(item.get("store_symbol") or item.get("symbol") or "")
+                        for item in universe_rows
+                        if item.get("store_symbol") or item.get("symbol")
+                    ]
+                    daily_sync = await asyncio.wait_for(
+                        sync_daily_market_data_for_scan(store_symbols),
+                        timeout=DAILY_SYNC_TIMEOUT_S,
+                    )
+                    logger.info(
+                        "SCAN_DAILY_SYNC | scan_id=%s | status=%s | history=%s..%s | rows=%s | live=%s",
+                        scan_id,
+                        daily_sync.get("status"),
+                        daily_sync.get("history_from"),
+                        daily_sync.get("history_to"),
+                        daily_sync.get("rows_upserted"),
+                        daily_sync.get("live_synced"),
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning("SCAN_DAILY_SYNC_TIMEOUT | scan_id=%s", scan_id)
+                except Exception as exc:
+                    logger.warning(
+                        "SCAN_DAILY_SYNC_FAILED | scan_id=%s | err=%s",
+                        scan_id,
+                        type(exc).__name__,
+                    )
+                ensure_t0 = time.perf_counter()
 
             def _ensure_progress(update: dict) -> None:
                 # Called from async ensure on the event loop — keep SSE queue warm.
@@ -273,27 +357,28 @@ class ScanExecutionService:
                 except Exception:
                     pass
 
-            try:
-                # Hard outer budget: never hold the scanner at 4% past ~50s.
-                ensure_result = await asyncio.wait_for(
-                    ensure_latest_market_data(
-                        trigger_source="SCANNER",
-                        progress_callback=_ensure_progress,
-                        max_duration_s=45.0,
-                    ),
-                    timeout=50.0,
-                )
-            except asyncio.TimeoutError:
-                ensure_result = {
-                    "status": "TIMEOUT",
-                    "error": "ensure_outer_timeout",
-                    "duration_ms": int((time.perf_counter() - ensure_t0) * 1000),
-                }
-                logger.error(
-                    "SCAN_STAGE_END | stage=ensure_market_data | scan_id=%s | status=TIMEOUT | duration_ms=%s",
-                    scan_id,
-                    ensure_result["duration_ms"],
-                )
+            if not uses_turso():
+                try:
+                    # Hard outer budget: never hold the scanner at 4% past ~50s.
+                    ensure_result = await asyncio.wait_for(
+                        ensure_latest_market_data(
+                            trigger_source="SCANNER",
+                            progress_callback=_ensure_progress,
+                            max_duration_s=45.0,
+                        ),
+                        timeout=50.0,
+                    )
+                except asyncio.TimeoutError:
+                    ensure_result = {
+                        "status": "TIMEOUT",
+                        "error": "ensure_outer_timeout",
+                        "duration_ms": int((time.perf_counter() - ensure_t0) * 1000),
+                    }
+                    logger.error(
+                        "SCAN_STAGE_END | stage=ensure_market_data | scan_id=%s | status=TIMEOUT | duration_ms=%s",
+                        scan_id,
+                        ensure_result["duration_ms"],
+                    )
 
             logger.info(
                 "ENSURE_MARKET_DATA_SCAN | scan_id=%s | status=%s | date=%s | "

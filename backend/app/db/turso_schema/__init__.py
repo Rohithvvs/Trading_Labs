@@ -5,12 +5,17 @@ from pathlib import Path
 
 SCHEMA_DIR = Path(__file__).resolve().parent
 V1_SCHEMA_FILE = SCHEMA_DIR / "001_v1_daily_index_ohlcv.sql"
+SYNC_SCHEMA_FILE = SCHEMA_DIR / "002_candle_sync_day.sql"
 V1_TABLES = ("daily_ohlcv", "index_ohlcv")
 FORBIDDEN_V1_TABLES = ("historical_candles", "market_data.candles")
 
 
 def load_v1_schema_sql() -> str:
     return V1_SCHEMA_FILE.read_text(encoding="utf-8")
+
+
+def load_sync_schema_sql() -> str:
+    return SYNC_SCHEMA_FILE.read_text(encoding="utf-8")
 
 
 def split_sql_statements(sql: str) -> list[str]:

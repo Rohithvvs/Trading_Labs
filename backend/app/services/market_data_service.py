@@ -20,6 +20,43 @@ from ..utils import get_logger, safe_int
 logger = get_logger("app.market_data")
 
 _IST = ZoneInfo("Asia/Kolkata")
+_DAILY_TIMEFRAMES = {"1D", "D"}
+
+
+def _is_daily_timeframe(timeframe: str) -> bool:
+    return str(timeframe or "").strip().upper() in _DAILY_TIMEFRAMES
+
+
+def _turso_daily_requested(timeframe: str) -> bool:
+    if not _is_daily_timeframe(timeframe):
+        return False
+    from .market_data_ingestion.history_backend import uses_turso
+
+    return bool(uses_turso())
+
+
+def _raise_turso_read(operation: str, exc: BaseException) -> None:
+    from .market_data_ingestion.repository import CandleHistoryBackendError
+
+    logger.error(
+        "CANDLE_BACKEND_FAIL_CLOSED | backend=turso | op=%s | err_type=%s | postgres_fallback=false",
+        operation,
+        type(exc).__name__,
+    )
+    raise CandleHistoryBackendError(
+        f"Turso daily candle read failed during {operation}. Postgres was not used."
+    ) from exc
+
+
+def _parse_loaded_at(value: object) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
 # Rewrite the boundary bar when the missing window is short. A mid-session
 # scan stores a forming daily candle; the next day's first scan must replace
 # that print with the completed bar instead of starting strictly after it.
@@ -32,6 +69,10 @@ _UPSERT_MAX_CONCURRENCY = 4
 
 class MarketDataService:
     async def get_latest_candle_time(self, symbol: str, timeframe: str) -> datetime | None:
+        if _turso_daily_requested(timeframe):
+            meta = await self.get_candle_meta_batch([symbol], timeframe)
+            row = meta.get(symbol) or (0, None, None, None)
+            return row[1]
         async with AsyncSessionLocal() as db:
             stmt = select(HistoricalCandle.timestamp).where(
                 HistoricalCandle.symbol == symbol,
@@ -41,6 +82,9 @@ class MarketDataService:
             return result
 
     async def get_candle_count(self, symbol: str, timeframe: str) -> int:
+        if _turso_daily_requested(timeframe):
+            meta = await self.get_candle_meta_batch([symbol], timeframe)
+            return int((meta.get(symbol) or (0,))[0] or 0)
         async with AsyncSessionLocal() as db:
             stmt = select(func.count(HistoricalCandle.timestamp)).where(
                 HistoricalCandle.symbol == symbol,
@@ -435,6 +479,97 @@ class MarketDataService:
 
         return ohlcv_symbol_variants(symbol)
 
+    async def _turso_candle_meta_batch(
+        self,
+        symbols: list[str],
+    ) -> dict[str, tuple[int, datetime | None, str | None, datetime | None]]:
+        from .market_data_ingestion import turso_repository as turso
+
+        meta: dict[str, tuple[int, datetime | None, str | None, datetime | None]] = {
+            symbol: (0, None, None, None) for symbol in symbols
+        }
+        variant_to_universe: dict[str, list[str]] = {}
+        unique_variants: list[str] = []
+        for symbol in symbols:
+            for variant in self.symbol_lookup_variants(symbol):
+                variant_to_universe.setdefault(variant, []).append(symbol)
+                unique_variants.append(variant)
+        unique_variants = list(dict.fromkeys(unique_variants))
+        try:
+            rows = turso.select_daily_meta(turso._client(), unique_variants)
+        except Exception as exc:
+            _raise_turso_read("get_candle_meta_batch", exc)
+        for row in rows:
+            db_symbol = str(row.get("symbol") or "")
+            count = int(row.get("n") or 0)
+            latest_day = row.get("latest")
+            latest = None
+            if latest_day:
+                latest = quote_session_timestamp(datetime.fromisoformat(str(latest_day)[:10]).date())
+            updated_at = _parse_loaded_at(row.get("loaded_at"))
+            for universe_symbol in variant_to_universe.get(db_symbol, []):
+                if count > meta[universe_symbol][0]:
+                    meta[universe_symbol] = (count, latest, db_symbol, updated_at)
+        return meta
+
+    async def _turso_load_histories_batch(
+        self,
+        symbols: list[str],
+        *,
+        stored_symbol_map: dict[str, str] | None,
+        max_bars: int | None,
+    ) -> dict[str, pd.DataFrame]:
+        from .market_data_ingestion import turso_repository as turso
+
+        bar_limit = int(max_bars) if max_bars and max_bars > 0 else None
+        if bar_limit is not None:
+            bar_limit = max(60, min(bar_limit, 2000))
+        stored_symbol_map = stored_symbol_map or {symbol: symbol for symbol in symbols}
+        universe_to_db = {symbol: stored_symbol_map.get(symbol, symbol) for symbol in symbols}
+        db_to_universe: dict[str, list[str]] = {}
+        for universe_symbol, db_symbol in universe_to_db.items():
+            db_to_universe.setdefault(db_symbol, []).append(universe_symbol)
+        frames: dict[str, pd.DataFrame] = {symbol: pd.DataFrame() for symbol in symbols}
+        if not db_to_universe:
+            return frames
+        try:
+            rows = turso.select_latest_daily_bars(
+                turso._client(), list(db_to_universe), limit=bar_limit
+            )
+        except Exception as exc:
+            _raise_turso_read("load_histories_batch", exc)
+        by_db: dict[str, list[dict]] = {symbol: [] for symbol in db_to_universe}
+        for row in rows:
+            db_symbol = str(row.get("symbol") or "")
+            if db_symbol not in by_db:
+                continue
+            day = datetime.fromisoformat(str(row["trade_date"])[:10]).date()
+            by_db[db_symbol].append(
+                {
+                    "date": quote_session_timestamp(day),
+                    "open": row.get("open"),
+                    "high": row.get("high"),
+                    "low": row.get("low"),
+                    "close": row.get("close"),
+                    "volume": row.get("volume"),
+                }
+            )
+        for db_symbol, symbol_rows in by_db.items():
+            if not symbol_rows:
+                continue
+            frame = pd.DataFrame(symbol_rows)
+            frame.set_index("date", inplace=True)
+            frame.sort_index(inplace=True)
+            for col in ("open", "high", "low", "close"):
+                frame[col] = frame[col].astype(float)
+            if "volume" in frame.columns:
+                frame["volume"] = frame["volume"].apply(
+                    lambda value, name=db_symbol: safe_int(value, symbol=name, field="volume")
+                )
+            for universe_symbol in db_to_universe.get(db_symbol, [db_symbol]):
+                frames[universe_symbol] = frame
+        return frames
+
     async def get_candle_meta_batch(
         self,
         symbols: list[str],
@@ -449,6 +584,8 @@ class MarketDataService:
         """
         if not symbols:
             return {}
+        if _turso_daily_requested(timeframe):
+            return await self._turso_candle_meta_batch(symbols)
 
         meta: dict[str, tuple[int, datetime | None, str | None, datetime | None]] = {
             symbol: (0, None, None, None) for symbol in symbols
@@ -508,6 +645,8 @@ class MarketDataService:
         """
         if not symbols:
             return {}
+        if meta_result is None and _turso_daily_requested(timeframe):
+            meta_result = await self.get_candle_meta_batch(symbols, timeframe)
         if meta_result is not None:
             return {
                 sym: row[2]
@@ -567,6 +706,10 @@ class MarketDataService:
         """
         if not symbols:
             return {}
+        if _turso_daily_requested(timeframe):
+            return await self._turso_load_histories_batch(
+                symbols, stored_symbol_map=stored_symbol_map, max_bars=max_bars
+            )
 
         # Swing indicators need ~240 bars; keep a small buffer for ffill / gaps.
         bar_limit = int(max_bars) if max_bars and max_bars > 0 else None

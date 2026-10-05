@@ -295,6 +295,76 @@ def select_daily_ohlcv_for_symbols(
     return rows
 
 
+_IN_CHUNK = 120
+
+
+def select_daily_meta(client: TursoClient, symbols: list[str]) -> list[dict[str, Any]]:
+    """Grouped count and latest session. Does not load the candle body."""
+    if not symbols:
+        return []
+    out: list[dict[str, Any]] = []
+    for offset in range(0, len(symbols), _IN_CHUNK):
+        chunk = symbols[offset : offset + _IN_CHUNK]
+        placeholders = ",".join("?" for _ in chunk)
+        out.extend(
+            client.execute(
+                f"""
+                SELECT symbol, COUNT(*) AS n, MAX(trade_date) AS latest, MAX(loaded_at) AS loaded_at
+                FROM daily_ohlcv
+                WHERE symbol IN ({placeholders})
+                GROUP BY symbol
+                """,
+                list(chunk),
+            )
+        )
+    return out
+
+
+def select_latest_daily_bars(
+    client: TursoClient,
+    symbols: list[str],
+    *,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    """Latest N daily bars per symbol, oldest first. The window stays in SQL."""
+    if not symbols:
+        return []
+    out: list[dict[str, Any]] = []
+    for offset in range(0, len(symbols), _IN_CHUNK):
+        chunk = symbols[offset : offset + _IN_CHUNK]
+        placeholders = ",".join("?" for _ in chunk)
+        if limit is not None and int(limit) > 0:
+            rows = client.execute(
+                f"""
+                WITH ranked AS (
+                    SELECT trade_date, symbol, open, high, low, close, volume,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY symbol ORDER BY trade_date DESC
+                           ) AS rn
+                    FROM daily_ohlcv
+                    WHERE symbol IN ({placeholders})
+                )
+                SELECT trade_date, symbol, open, high, low, close, volume
+                FROM ranked
+                WHERE rn <= ?
+                ORDER BY symbol ASC, trade_date ASC
+                """,
+                [*chunk, int(limit)],
+            )
+        else:
+            rows = client.execute(
+                f"""
+                SELECT trade_date, symbol, open, high, low, close, volume
+                FROM daily_ohlcv
+                WHERE symbol IN ({placeholders})
+                ORDER BY symbol ASC, trade_date ASC
+                """,
+                list(chunk),
+            )
+        out.extend(rows)
+    return out
+
+
 async def fetch_daily_ohlcv_for_symbols(
     symbols: list[str],
     *,

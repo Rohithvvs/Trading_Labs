@@ -256,50 +256,60 @@ async def fetch_current_indicator_market_data(
     One live-quote overlay only. A second FYERS quote pass on 755 names was doubling
     scan time (the 6-minute runs) without changing the last 1D bar.
     """
+    from ...services.market_data_ingestion.history_backend import uses_turso
     from ...services.market_data_ingestion.session_repair import repair_scan_market_history
     from ..daily_scan_sync_service import DAILY_SYNC_TIMEOUT_S, sync_daily_market_data_for_scan
 
     report: dict[str, Any] = {}
-    try:
-        # Hard cap so a Fyers refresh cannot pin the process until Render restarts
-        # it and the startup reaper marks the run SCAN_INTERRUPTED.
-        report["daily_sync"] = await asyncio.wait_for(
-            sync_daily_market_data_for_scan(store_symbols or symbols),
-            timeout=DAILY_SYNC_TIMEOUT_S,
-        )
-    except asyncio.TimeoutError:
-        logger.warning("INDICATOR_SCAN_DAILY_SYNC_TIMEOUT | continuing with stored candles")
-        report["daily_sync"] = {"status": "TIMEOUT"}
-    except Exception as exc:
-        logger.warning("INDICATOR_SCAN_DAILY_SYNC_FAILED | err=%s", exc)
-        report["daily_sync"] = {"status": "FAILED", "error": type(exc).__name__}
+    if uses_turso():
+        from ...services.market_data_ingestion.scanner_turso_sync import sync_before_scan
 
-    try:
-        report["ensure"] = await ensure_universe_market_data(
-            store_symbols or symbols,
-            target_date=_ensure_target_date(end_date),
-            max_duration_s=ENSURE_TIMEOUT_S,
+        report["daily_sync"] = await sync_before_scan(
+            store_symbols or symbols, strategy="indicator"
         )
-    except Exception as exc:
-        report["ensure"] = {"status": "FAILED", "error": type(exc).__name__}
-        logger.warning("INDICATOR_SCAN_ENSURE_FAILED | err=%s", type(exc).__name__)
+        report["ensure"] = {"status": "SKIPPED_TURSO_DAY_SYNC"}
+        report["repair"] = {"status": "SKIPPED_TURSO_DAY_SYNC"}
+    else:
+        try:
+            # Hard cap so a Fyers refresh cannot pin the process until Render restarts
+            # it and the startup reaper marks the run SCAN_INTERRUPTED.
+            report["daily_sync"] = await asyncio.wait_for(
+                sync_daily_market_data_for_scan(store_symbols or symbols),
+                timeout=DAILY_SYNC_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("INDICATOR_SCAN_DAILY_SYNC_TIMEOUT | continuing with stored candles")
+            report["daily_sync"] = {"status": "TIMEOUT"}
+        except Exception as exc:
+            logger.warning("INDICATOR_SCAN_DAILY_SYNC_FAILED | err=%s", exc)
+            report["daily_sync"] = {"status": "FAILED", "error": type(exc).__name__}
 
-    try:
-        report["repair"] = await asyncio.wait_for(
-            repair_scan_market_history(
+        try:
+            report["ensure"] = await ensure_universe_market_data(
                 store_symbols or symbols,
-                end=end_date,
-                min_bars=max(min_bars, 253),
-                skip_thin=True,
-            ),
-            timeout=REPAIR_TIMEOUT_S,
-        )
-    except asyncio.TimeoutError:
-        report["repair"] = {"error": "timeout"}
-        logger.warning("INDICATOR_SCAN_REPAIR_TIMEOUT")
-    except Exception as exc:
-        report["repair"] = {"error": type(exc).__name__}
-        logger.warning("INDICATOR_SCAN_REPAIR_FAILED | err=%s", type(exc).__name__)
+                target_date=_ensure_target_date(end_date),
+                max_duration_s=ENSURE_TIMEOUT_S,
+            )
+        except Exception as exc:
+            report["ensure"] = {"status": "FAILED", "error": type(exc).__name__}
+            logger.warning("INDICATOR_SCAN_ENSURE_FAILED | err=%s", type(exc).__name__)
+
+        try:
+            report["repair"] = await asyncio.wait_for(
+                repair_scan_market_history(
+                    store_symbols or symbols,
+                    end=end_date,
+                    min_bars=max(min_bars, 253),
+                    skip_thin=True,
+                ),
+                timeout=REPAIR_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError:
+            report["repair"] = {"error": "timeout"}
+            logger.warning("INDICATOR_SCAN_REPAIR_TIMEOUT")
+        except Exception as exc:
+            report["repair"] = {"error": type(exc).__name__}
+            logger.warning("INDICATOR_SCAN_REPAIR_FAILED | err=%s", type(exc).__name__)
 
     # Only attempt live FYERS quote overlay when the token is actually available.
     # On Render/production the FYERS_ACCESS_TOKEN env-var may be expired or missing,

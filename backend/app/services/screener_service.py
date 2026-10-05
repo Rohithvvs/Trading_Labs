@@ -796,28 +796,40 @@ class ScreenerService:
 
             upsert_t0 = time.perf_counter()
             if pending_upserts:
-                written = await md_service.upsert_candles_multi(pending_upserts)
-                self.logger.info(
-                    "SCANNER_UPSERT_BATCH | stage=%s | symbols_written=%s | upsert_ms=%.0f",
-                    stage_name,
-                    written,
-                    (time.perf_counter() - upsert_t0) * 1000,
-                )
+                from .market_data_ingestion.history_backend import uses_turso
+
+                turso_history = uses_turso()
+                if turso_history:
+                    written = 0
+                    self.logger.info(
+                        "SCANNER_UPSERT_BATCH | stage=%s | symbols_written=0 | backend=turso | postgres_fallback=false",
+                        stage_name,
+                    )
+                else:
+                    written = await md_service.upsert_candles_multi(pending_upserts)
+                    self.logger.info(
+                        "SCANNER_UPSERT_BATCH | stage=%s | symbols_written=%s | upsert_ms=%.0f",
+                        stage_name,
+                        written,
+                        (time.perf_counter() - upsert_t0) * 1000,
+                    )
                 try:
                     stored = await persist_fyers_scan_bars(
                         pending_upserts,
                         refresh_index=False,
                     )
                     self.logger.info(
-                        "SCANNER_FYERS_STORED | stage=%s | daily_upserted=%s | index_upserted=%s",
+                        "SCANNER_FYERS_STORED | stage=%s | daily_upserted=%s | index_upserted=%s | backend=%s",
                         stage_name,
                         stored.get("daily_upserted"),
                         stored.get("index_upserted"),
+                        "turso" if turso_history else "postgres",
                     )
                 except Exception:
                     self.logger.exception(
-                        "SCANNER_FYERS_STORE_FAILED | stage=%s | candle cache was saved",
+                        "SCANNER_FYERS_STORE_FAILED | stage=%s | postgres_fallback=%s",
                         stage_name,
+                        "false" if turso_history else "true",
                     )
             stage_timings["upsert_ms"] = (time.perf_counter() - upsert_t0) * 1000
 

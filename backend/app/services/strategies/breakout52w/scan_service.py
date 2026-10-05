@@ -579,6 +579,12 @@ async def run_scan(*, mode: str | None = None, progress_cb=None, scan_id: uuid.U
         logger.info("SCAN_STARTED strategy=%s scan_id=%s mode=%s", STRATEGY_ID, scan_id, mode_u)
         await stage("evaluating", 5, "evaluating")
         symbols = await UniverseService.get_active_nifty500_symbols()
+        from ...market_data_ingestion.history_backend import uses_turso
+
+        if uses_turso():
+            from ...market_data_ingestion.scanner_turso_sync import sync_before_scan
+
+            await sync_before_scan(symbols, strategy="w52")
         fresh = await evaluate_freshness(active_symbols=symbols)
         if settings.is_strategy_market_data_gate_enabled() and not fresh.ok:
             payload = {"error_code": "MARKET_DATA_STALE", **fresh.to_dict(), "recommendations_final": False}
