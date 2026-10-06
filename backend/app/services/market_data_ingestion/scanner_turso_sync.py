@@ -7,8 +7,14 @@ source of truth. Candle reads and writes stay on Turso when
 
 Only sessions after 2026-10-01 are requested. Weekends, NSE holidays, and
 bars that fail the OHLCV gate are not inserted. A forming session is stored
-from the broker quote. After the cash close, that print is replaced once
-with the official daily bar.
+from batched broker quotes. After the cash close, that same quote batch is
+stored once as the official daily bar. Per-symbol history is only for older
+missing sessions. A 755-name history download is what pinned hosted scans.
+
+A finished day lock is reused only when Turso already holds that session for
+this universe. A smaller sync cannot satisfy a later full scan. When the
+stored Fyers access token is expired and the headless TOTP login is
+configured, the first scan refreshes the token and then fetches.
 """
 from __future__ import annotations
 
@@ -124,6 +130,8 @@ def plan_scanner_candle_sync(
     index_latest: date | None,
     *,
     live_bars_on_completed: int = 0,
+    completed_symbol_count: int = 0,
+    coverage_requirement: int = MIN_COVERED_SYMBOLS,
 ) -> dict[str, Any]:
     """Decide the missing window. Does not fetch or insert."""
     from ..trading_hours_service import CLOSE_TIME, OPEN_TIME
@@ -141,10 +149,21 @@ def plan_scanner_candle_sync(
         if day > SYNC_FLOOR
     ]
     replace_existing = False
+    # Yesterday's live bars are already the history the scan reads. Re-downloading
+    # that covered session one symbol at a time held IND-20261006-016 on
+    # "Fetching" for five minutes and the page gave up. Same-day after the close
+    # still overwrites today's forming print with one quote batch. A thin previous
+    # session (under the coverage bar) is still filled.
+    previous_covered = (
+        completed < today
+        and coverage_requirement > 0
+        and completed_symbol_count >= coverage_requirement
+    )
     if (
         live_bars_on_completed > 0
         and _session_is_final(completed, now)
         and completed > SYNC_FLOOR
+        and not previous_covered
     ):
         # A forming print after the sync floor is already stored. The official
         # bar must overwrite it. The floor day itself is not downloaded again.
@@ -162,11 +181,18 @@ def plan_scanner_candle_sync(
     else:
         required_state = "current"
         satisfy = completed
+    # After the close, today's bar is one batched quote request. History for
+    # every name is what kept IND scans on "Running" for half an hour.
+    quote_session = live_session
+    if session_closed and completed == today and completed in history:
+        history = [day for day in history if day != completed]
+        quote_session = completed
     return {
         "today": today,
         "completed_target": completed,
         "history_days": history,
         "live_session": live_session,
+        "quote_session": quote_session,
         "replace_existing": replace_existing,
         "required_state": required_state,
         "satisfy_session": satisfy,
@@ -187,6 +213,11 @@ def _reuse_ok(row: dict[str, Any] | None, plan: dict[str, Any]) -> bool:
     if need == "live":
         return have in {"live", "eod"}
     return True
+
+
+def _universe_is_covered(client: Any, session: date, universe_size: int) -> bool:
+    """True when this universe's session is already stored, not merely the newest date."""
+    return _session_count(client, session) >= _coverage_requirement(universe_size)
 
 
 def _lease_held_by_other(row: dict[str, Any] | None, owner: str, now: datetime) -> bool:
@@ -239,11 +270,14 @@ def _claim_sync(
     owner: str,
     plan: dict[str, Any],
     now: datetime,
+    *,
+    covered: bool,
 ) -> tuple[str, dict[str, Any] | None]:
     """Return acquired, completed, or busy.
 
     The primary key is the lock. Ownership is read back after the write so a
-    RETURNING column-name mismatch cannot grant a second sync.
+    RETURNING column-name mismatch cannot grant a second sync. A completed row
+    that does not cover this universe can be taken over.
     """
     lease = _iso(now + timedelta(seconds=LEASE_SECONDS))
     started = _iso(now)
@@ -259,12 +293,13 @@ def _claim_sync(
     row = _read_sync_row(client, sync_date)
     if _we_own_running(row, owner):
         return "acquired", row
-    if _reuse_ok(row, plan):
+    if covered and _reuse_ok(row, plan):
         return "completed", row
     if _lease_held_by_other(row, owner, now):
         return "busy", row
     satisfy = plan["satisfy_session"].isoformat()
     required = plan["required_state"]
+    covered_flag = 1 if covered else 0
     client.execute(
         """
         UPDATE candle_sync_day
@@ -288,14 +323,27 @@ def _claim_sync(
                 OR (? = 'live' AND COALESCE(bar_state, '') IN ('live', 'eod'))
                 OR (? = 'eod' AND COALESCE(bar_state, '') = 'eod')
             )
+            AND ? = 1
           )
         """,
-        [owner, lease, started, sync_date.isoformat(), owner, _iso(now), satisfy, required, required, required],
+        [
+            owner,
+            lease,
+            started,
+            sync_date.isoformat(),
+            owner,
+            _iso(now),
+            satisfy,
+            required,
+            required,
+            required,
+            covered_flag,
+        ],
     )
     row = _read_sync_row(client, sync_date)
     if _we_own_running(row, owner):
         return "acquired", row
-    if _reuse_ok(row, plan):
+    if covered and _reuse_ok(row, plan):
         return "completed", row
     return "busy", row
 
@@ -520,9 +568,9 @@ async def _persist_rows(client: Any, rows: list[dict[str, Any]], *, table: str) 
     return _count_landed(client, table, rows)
 
 
-def _require_broker_session() -> None:
-    """Stop before a universe-sized FYERS loop when the session is already expired."""
-    from ...services.fyers_service import FyersAuthExpiredError, FyersService
+def _broker_session_problem() -> str | None:
+    """Why a FYERS refresh cannot run. None means a broker call can be attempted."""
+    from ...services.fyers_service import FyersService
     from ...services.token_service import (
         _decode_jwt_expiry,
         _ensure_utc,
@@ -530,15 +578,111 @@ def _require_broker_session() -> None:
         utc_now,
     )
 
+    if not FyersService().is_fyers_sdk_available():
+        return "sdk"
     token, _source = get_current_access_token_sync()
-    expiry = _decode_jwt_expiry(token) if token else None
-    expired = expiry is not None and _ensure_utc(expiry) <= utc_now()
-    if (
-        not token
-        or not str(token).strip()
-        or expired
-        or not FyersService().is_fyers_sdk_available()
-    ):
+    if not token or not str(token).strip():
+        return "missing"
+    expiry = _decode_jwt_expiry(token)
+    if expiry is not None and _ensure_utc(expiry) <= utc_now():
+        return "expired"
+    return None
+
+
+def _headless_refresh_configured() -> bool:
+    """True when this process can mint a Fyers access token without a browser login."""
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return False
+    from ...config.settings import settings
+
+    def _val(*names: str, setting: str = "") -> str:
+        for name in names:
+            raw = os.environ.get(name)
+            if raw and str(raw).strip():
+                return str(raw).strip()
+        if setting:
+            return str(getattr(settings, setting, "") or "").strip()
+        return ""
+
+    return bool(
+        _val("FYERS_TOTP_SECRET", setting="fyers_totp_secret")
+        and _val("FYERS_PIN", setting="fyers_pin")
+        and _val("FYERS_CLIENT_ID", setting="fyers_client_id")
+        and _val("FYERS_APP_ID", setting="fyers_app_id")
+        and _val("FYERS_APP_SECRET", "FYERS_SECRET_ID", setting="fyers_secret_id")
+    )
+
+
+async def _refresh_broker_token() -> bool:
+    """Mint a new access token and return True only when a broker call can proceed."""
+    from ...db.session import AsyncSessionLocal
+    from ..token_service import generate_and_persist_fyers_token
+
+    try:
+        async with AsyncSessionLocal() as db:
+            await generate_and_persist_fyers_token(db)
+    except Exception as exc:
+        logger.warning("TURSO_SYNC_TOKEN_REFRESH_FAILED | err_type=%s", type(exc).__name__)
+        return False
+    return _broker_session_problem() is None
+
+
+async def _resolve_broker_problem() -> str | None:
+    """Return why FYERS cannot be called. Refresh an expired login once when configured."""
+    problem = _broker_session_problem()
+    if problem is None or problem == "sdk":
+        return problem
+    if not _headless_refresh_configured():
+        return problem
+    logger.info("TURSO_SYNC_TOKEN_REFRESH | reason=%s", problem)
+    refreshed = await _refresh_broker_token()
+    if not refreshed:
+        return _broker_session_problem() or problem
+    return _broker_session_problem()
+
+
+def _stored_session_covers(
+    client: Any,
+    session: date,
+    index_latest: date | None,
+    universe_size: int,
+) -> bool:
+    """True when Turso already has the last completed session for this universe."""
+    if index_latest is None or index_latest < session:
+        return False
+    return _session_count(client, session) >= _coverage_requirement(universe_size)
+
+
+def _stored_session_warning(problem: str) -> str:
+    if problem == "sdk":
+        return (
+            "Fyers is unavailable, so today's candles were not refreshed. "
+            "The scan is using the last stored session."
+        )
+    return (
+        "Fyers login expired, so today's candles were not refreshed. "
+        "The scan is using the last stored session."
+    )
+
+
+def _auth_blocks_scan_message(problem: str) -> str:
+    if problem == "sdk":
+        return (
+            "Fyers is unavailable. Stored candles do not cover the last session, "
+            "so the scanner was not started. Postgres was not used."
+        )
+    return (
+        "Fyers login expired. Reconnect Fyers, then click Scan. "
+        "Stored candles do not cover the last session, so the scanner was not started. "
+        "Postgres was not used."
+    )
+
+
+def _require_broker_session() -> None:
+    """Stop before a universe-sized FYERS loop when the session is already expired."""
+    from ...services.fyers_service import FyersAuthExpiredError
+
+    if _broker_session_problem():
         raise FyersAuthExpiredError(
             "Fyers access token has expired. Scanner was not started. Postgres was not used."
         )
@@ -671,23 +815,52 @@ async def ensure_scanner_turso_sync(
 
     completed = expected_last_completed_session(moment)
     live_on_completed = _live_bar_count(client, completed)
+    completed_count = _session_count(client, completed)
     plan = plan_scanner_candle_sync(
         moment,
         equity_latest,
         index_latest,
         live_bars_on_completed=live_on_completed,
+        completed_symbol_count=completed_count,
+        coverage_requirement=_coverage_requirement(len(universe)),
     )
+
+    # Default fetchers talk to FYERS. Refresh an expired login once, then
+    # fall back to the last covered session. Do not open Postgres for candles.
+    if fetch_history is None and fetch_index is None and fetch_quotes is None:
+        problem = await _resolve_broker_problem()
+        if problem:
+            if _stored_session_covers(client, plan["completed_target"], index_latest, len(universe)):
+                report = _diagnostics(
+                    sync_date=sync_day,
+                    status="stored",
+                    equity=equity_latest,
+                    index=index_latest,
+                    processed=len(universe),
+                    updated=0,
+                    failed=0,
+                    duration_ms=int((time.perf_counter() - started) * 1000),
+                    reused=True,
+                )
+                report["auth"] = problem
+                report["warning"] = _stored_session_warning(problem)
+                _log_report(strategy, report)
+                return report
+            raise TursoSyncError(_auth_blocks_scan_message(problem))
 
     deadline = time.monotonic() + max(1.0, float(wait_s))
     while True:
-        state, row = _claim_sync(client, sync_day, owner, plan, moment)
-        if state == "completed" and row is not None:
+        covered = _universe_is_covered(client, plan["satisfy_session"], len(universe))
+        state, row = _claim_sync(client, sync_day, owner, plan, moment, covered=covered)
+        if state == "completed" and row is not None and covered:
             report = _from_row(row, reused=True)
             _log_report(strategy, report)
             return report
         if state == "acquired":
             break
-        outcome = await _wait_for_owner(client, sync_day, plan, deadline, poll_s)
+        outcome = await _wait_for_owner(
+            client, sync_day, plan, deadline, poll_s, universe_size=len(universe)
+        )
         if outcome is not None:
             _log_report(strategy, outcome)
             return outcome
@@ -727,12 +900,17 @@ async def _wait_for_owner(
     plan: dict[str, Any],
     deadline: float,
     poll_s: float,
+    *,
+    universe_size: int,
 ) -> dict[str, Any] | None:
     while time.monotonic() < deadline:
         await asyncio.sleep(max(0.01, poll_s))
         row = _read_sync_row(client, sync_day)
         if _reuse_ok(row, plan) and row is not None:
-            return _from_row(row, reused=True)
+            if _universe_is_covered(client, plan["satisfy_session"], universe_size):
+                return _from_row(row, reused=True)
+            # A smaller sync finished this day. The caller must take the lock.
+            return None
         if row and row.get("status") == "failed":
             report = _from_row(row, reused=False)
             report["sync_status"] = "failed"
@@ -800,7 +978,8 @@ async def _run_owner_sync(
     failed: set[str] = set()
     rows_upserted = 0
     history_days: list[date] = list(plan["history_days"])
-    live_session: date | None = plan["live_session"]
+    quote_session: date | None = plan.get("quote_session") or plan.get("live_session")
+    official_close = plan.get("required_state") == "eod"
 
     if history_days:
         _renew_lease(client, sync_day, owner, moment)
@@ -862,17 +1041,30 @@ async def _run_owner_sync(
                 raise TursoSyncError(message)
             rows_upserted += stored_index
 
-    if live_session is not None:
+    if quote_session is not None:
         _renew_lease(client, sync_day, owner, moment)
         try:
-            quote_rows, index_rows, quote_failed = await fetch_quotes(universe, live_session)
+            quote_rows, index_rows, quote_failed = await fetch_quotes(universe, quote_session)
         except Exception as exc:
             message = _safe_failure(exc)
             _mark_failed(client, sync_day, owner, plan, started, message)
             raise TursoSyncError(message) from exc
+        if official_close:
+            quote_rows = [{**row, "source": "FYERS"} for row in quote_rows]
+            index_rows = [{**row, "source": "FYERS"} for row in index_rows]
+            if not index_rows:
+                try:
+                    index_rows = [
+                        {**row, "source": "FYERS"}
+                        for row in await fetch_index(quote_session, quote_session)
+                    ]
+                except Exception as exc:
+                    message = _safe_failure(exc)
+                    _mark_failed(client, sync_day, owner, plan, started, message)
+                    raise TursoSyncError(message) from exc
         failed.update(quote_failed)
         accepted, _calendar, invalid = prepare_sync_rows(
-            quote_rows, allowed_sessions={live_session}
+            quote_rows, allowed_sessions={quote_session}
         )
         if accepted:
             stored = await _persist_rows(client, accepted, table="daily_ohlcv")
@@ -886,7 +1078,7 @@ async def _run_owner_sync(
             rows_upserted += stored
             updated.update(str(row["symbol"]) for row in accepted)
         index_accepted, _c2, _b2 = prepare_sync_rows(
-            index_rows, allowed_sessions={live_session}
+            index_rows, allowed_sessions={quote_session}
         )
         if index_accepted:
             stored_index = await _persist_rows(client, index_accepted, table="index_ohlcv")
@@ -911,11 +1103,12 @@ async def _run_owner_sync(
             )
         if index_latest is None or index_latest < newest:
             problems.append(f"NIFTY 500 candle is missing for {newest.isoformat()}")
-    if live_session is not None:
-        count = _session_count(client, live_session)
+    if quote_session is not None:
+        count = _session_count(client, quote_session)
         if count < required:
+            label = "live session" if not official_close else "equity session"
             problems.append(
-                f"live session {live_session.isoformat()} has {count} symbols, need {required}"
+                f"{label} {quote_session.isoformat()} has {count} symbols, need {required}"
             )
     if equity_latest is None or equity_latest < plan["completed_target"]:
         problems.append("latest equity candle is behind the completed NSE session")

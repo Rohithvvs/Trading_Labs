@@ -326,9 +326,22 @@ export async function fetchLatestIndicatorScan(indicatorId: string): Promise<Ind
 }
 
 export async function fetchIndicatorScan(scanId: string): Promise<IndicatorScanStatus> {
-  const response = await fetchWithAuth(`/indicator-scans/${encodeURIComponent(scanId)}`);
-  if (!response.ok) throw new Error(await parseError(response, "Unable to load scan status."));
-  return response.json();
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), 12_000);
+  try {
+    const response = await fetchWithAuth(`/indicator-scans/${encodeURIComponent(scanId)}`, {
+      signal: controller.signal,
+    });
+    if (!response.ok) throw new Error(await parseError(response, "Unable to load scan status."));
+    return response.json();
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw new Error("Scan status request timed out.");
+    }
+    throw err;
+  } finally {
+    window.clearTimeout(timer);
+  }
 }
 
 export async function fetchIndicatorScanResult(

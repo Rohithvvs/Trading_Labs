@@ -316,13 +316,36 @@ async def fetch_current_indicator_market_data(
     # which would send 755 symbols through 3-retry FYERS API calls and hang the scan
     # for 30+ minutes. Fall back gracefully to stored EOD data in that case.
     overlay_live = False
+    daily_sync = report.get("daily_sync") if isinstance(report.get("daily_sync"), dict) else {}
+    broker_blocked = str(daily_sync.get("auth") or "") in {"expired", "missing", "sdk"}
+    turso_has_scan_bar = (
+        str(daily_sync.get("sync_status") or "") in {"completed", "reused"}
+        and str(daily_sync.get("latest_equity_date") or "") >= end_date.isoformat()
+    )
     try:
         from ...services.fyers_service import FyersService
         _svc = FyersService()
-        overlay_live = _svc.is_fyers_sdk_available() and _svc.has_fyers_credentials()
+        overlay_live = (
+            not broker_blocked
+            and not turso_has_scan_bar
+            and _svc.is_fyers_sdk_available()
+            and _svc.has_fyers_credentials()
+        )
     except Exception:
         overlay_live = False
-    if not overlay_live:
+    if broker_blocked:
+        logger.info(
+            "INDICATOR_SCAN_OVERLAY_SKIPPED | reason=fyers_%s | using_stored_session",
+            daily_sync.get("auth"),
+        )
+        report["overlay_live"] = "skipped_fyers_auth"
+    elif turso_has_scan_bar:
+        logger.info(
+            "INDICATOR_SCAN_OVERLAY_SKIPPED | reason=turso_day_sync | session=%s",
+            daily_sync.get("latest_equity_date"),
+        )
+        report["overlay_live"] = "turso_day_sync"
+    elif not overlay_live:
         logger.info(
             "INDICATOR_SCAN_OVERLAY_SKIPPED | reason=fyers_not_configured | "
             "falling_back_to_stored_eod"
@@ -829,6 +852,13 @@ async def execute_scan(
                 )
         except Exception:
             pass
+    daily_sync = fetch_report.get("daily_sync") if isinstance(fetch_report.get("daily_sync"), dict) else {}
+    refresh_warning = daily_sync.get("warning")
+    if isinstance(refresh_warning, str) and refresh_warning.strip():
+        existing_note = summary.get("scan_bar_note")
+        summary["scan_bar_note"] = (
+            f"{existing_note} {refresh_warning}".strip() if isinstance(existing_note, str) and existing_note else refresh_warning
+        )
     if "scan_bar_note" not in summary and (as_of != pine_screener_as_of or len(as_of_counts) > 1):
         summary["scan_bar_warning"] = (
             f"Requested Pine Screener bar {pine_screener_as_of} but most names evaluated on {as_of}. "

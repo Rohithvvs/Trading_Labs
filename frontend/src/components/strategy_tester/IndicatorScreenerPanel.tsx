@@ -151,8 +151,10 @@ const FETCHING_DATA_STAGES = new Set([
   "loading_market_data",
 ]);
 
-// Server budget before the first scored row: daily sync 180s + ensure 20s + repair 10s + bar fill 45s.
-const MARKET_DATA_WATCHDOG_MS = 300_000;
+// Turso catch-up holds "Fetching current market data" at 2% for up to the
+// server wait (SCANNER_SYNC_WAIT_S = 900s). Failing locally at 5 minutes hid
+// IND-20261006-016, which the server then scored on 2026-10-06.
+const MARKET_DATA_WATCHDOG_MS = 960_000;
 
 function isFetchingCurrentData(status: IndicatorScanStatus | null): boolean {
   if (!status) return false;
@@ -767,6 +769,13 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
       if (scanIdRef.current !== scanId) return;
       setBusy(false);
       setScan(withIndicatorOwner(status));
+      if (status.status === "failed") {
+        notify({
+          title: "Scan did not finish",
+          message: status.error_detail || "Click Scan to try again.",
+          type: "error",
+        });
+      }
       if (status.status === "completed") {
         try {
           const fresh = await fetchIndicatorScan(status.scan_id);
@@ -797,7 +806,10 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
       pollConsecutiveErrorsRef.current = 0;
       scanIdRef.current = scanId;
       const pollStart = Date.now();
+      let inFlight = false;
       const tick = async () => {
+        if (inFlight) return;
+        inFlight = true;
         try {
           const status = await fetchIndicatorScan(scanId);
           pollConsecutiveErrorsRef.current = 0;
@@ -849,6 +861,8 @@ export const IndicatorScreenerPanel: React.FC<IndicatorScreenerPanelProps> = ({
               });
             }
           }
+        } finally {
+          inFlight = false;
         }
       };
       void tick();

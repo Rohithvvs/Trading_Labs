@@ -41,6 +41,12 @@
         { "key": "X-Accel-Buffering", "value": "no" },
         { "key": "Connection", "value": "keep-alive" }
       ]
+    },
+    {
+      "source": "/indicator-scans/:path*",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" }
+      ]
     }
   ]
 }

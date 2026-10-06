@@ -6,7 +6,7 @@ import uuid
 from datetime import date
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -440,7 +440,12 @@ def _scan_owned(run, user: User):
 
 
 @scan_router.get("/{scan_id}")
-async def get_scan(scan_id: str, user: User = Depends(require_feature("advanced_scanner"))):
+async def get_scan(
+    scan_id: str,
+    response: Response,
+    user: User = Depends(require_feature("advanced_scanner")),
+):
+    response.headers["Cache-Control"] = "no-store"
     run = _scan_owned(await _load_scan(scan_id), user)
     run = await ensure_summary_analytics(run)
     return scan_status_payload(run)

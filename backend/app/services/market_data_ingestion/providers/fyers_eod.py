@@ -11,6 +11,22 @@ from ....utils import safe_int
 
 logger = logging.getLogger("app.market_data_ingestion.fyers_eod")
 
+# One shared cooldown. Six workers each sleeping 45s, 90s, 135s, 180s, and 225s
+# is what held a 755-name catch-up on "Running" for half an hour.
+_rate_limit_lock = asyncio.Lock()
+_rate_limit_until = 0.0
+
+
+async def _shared_rate_limit_delay(attempt: int) -> float:
+    """Return how long this caller should wait. Concurrent 429s share one window."""
+    global _rate_limit_until
+    step = min(8.0, 2.0 * max(1, attempt))
+    async with _rate_limit_lock:
+        now = asyncio.get_running_loop().time()
+        if _rate_limit_until <= now:
+            _rate_limit_until = now + step
+        return max(0.0, _rate_limit_until - now)
+
 # FYERS history rejects multi-year daily ranges in a single request (code=-50).
 # Keep each request to at most this many calendar days (inclusive window length).
 _MAX_CHUNK_DAYS = 365
@@ -114,7 +130,7 @@ class FyersEodProvider:
             )
             response = None
             last_exc: Exception | None = None
-            for attempt in range(1, 6):
+            for attempt in range(1, 4):
                 try:
                     response = await loop.run_in_executor(
                         svc._network_pool,
@@ -124,7 +140,7 @@ class FyersEodProvider:
                     break
                 except FyersRateLimitError as exc:
                     last_exc = exc
-                    wait_s = 45 * attempt
+                    wait_s = await _shared_rate_limit_delay(attempt)
                     logger.warning(
                         "FYERS_EOD_RATE_LIMIT | symbol=%s | from=%s | to=%s | attempt=%s | sleep_s=%s",
                         symbol,
